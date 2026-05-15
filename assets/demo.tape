@@ -70,7 +70,7 @@ Set TypingSpeed 75ms
 # Launch vix
 # (vixd should already be running)
 Sleep 500ms
-Type "vix" 
+Type "vix --appear-as-cc" 
 Sleep 1000ms  
 Enter
 Sleep 4000ms 
@@ -83,34 +83,36 @@ Enter
 Sleep 3000ms
 
 # Hinting at command palette
-Type "In vix you can access the command palette with ctrl+P"
+Type "In vix you can access the command palette with ctrl+P and create new tab"
 Sleep 500ms
 
 # Show command palette
 Ctrl+p
 Sleep 5000ms 
-Escape
+Type "Tab"
+Sleep 500ms
+Enter
 Sleep 500ms
 
 # Hinting at the history
-Ctrl+U
-Sleep 100ms
-Type "And go through prompt history with ctrl+R"
-Sleep 500ms
+# Ctrl+U
+# Sleep 100ms
+# Type "And go through prompt history with ctrl+R"
+# Sleep 500ms
 
 # Show history
-Ctrl+r
-Sleep 1000ms
-Up
-Sleep 500ms
-Up
-Sleep 500ms
-Up
-Sleep 500ms
-Up
-Sleep 3000ms
-Escape
-Sleep 1s
+# Ctrl+r
+# Sleep 1000ms
+# Up
+# Sleep 500ms
+# Up
+# Sleep 500ms
+# Up
+# Sleep 500ms
+# Up
+# Sleep 3000ms
+# Escape
+# Sleep 1s
 
 # Show off markdown rendering
 Ctrl+U

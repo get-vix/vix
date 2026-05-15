@@ -62,7 +62,7 @@ All benchmarks are fully reproducible and include the full LLM transcripts and p
 > Works only for macOS and Linus for now.
 
 ```bash
-curl -fsSL https://getvix.dev/install | sh
+curl -fsSL https://getvix.dev/install.sh | bash
 ```
 
 You will need to define `ANTHROPIC_API_KEY` in your environment variables.
