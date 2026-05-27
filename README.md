@@ -68,7 +68,7 @@ curl -fsSL https://getvix.dev/install.sh | bash
 You will need to define `ANTHROPIC_API_KEY` in your environment variables.
 
 ```bash
-brew tap kirby88/vix-releases
+brew tap kirby88/vix
 brew install vix
 ```
 
