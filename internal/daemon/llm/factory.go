@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -178,7 +179,12 @@ func NewFromModel(spec string, plugin PluginConfig, effort string, maxTokens int
 	if err != nil {
 		return nil, err
 	}
-	cred := config.ResolveProviderCredential(prov.CredentialName(), prov == ProviderAnthropic)
+	// Resolve the credential, refreshing an expired stored OAuth token if
+	// needed. The timeout bounds a possible token-refresh round-trip without
+	// stalling LLM construction indefinitely.
+	refreshCtx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+	defer cancel()
+	cred := config.ResolveProviderCredentialFresh(refreshCtx, prov.CredentialName(), prov == ProviderAnthropic)
 	if cred.Value == "" {
 		return nil, fmt.Errorf("no credential for %s (set %s)", prov, EnvVarFor(prov))
 	}

@@ -31,6 +31,17 @@ import (
 var Version = "dev"
 
 func main() {
+	// Subcommands handled before flag parsing. `vix login [provider]` and
+	// `vix logout <provider>` drive the OAuth login/auth system and exit.
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "login":
+			os.Exit(runLogin(os.Args[2:]))
+		case "logout":
+			os.Exit(runLogout(os.Args[2:]))
+		}
+	}
+
 	versionFlag := flag.Bool("version", false, "Print version and exit")
 	forceInit := flag.Bool("force-init", false, "Delete and re-create the .vix directory")
 	testMode := flag.Bool("test", false, "Fill chat with fake data for UI testing")
@@ -179,7 +190,7 @@ func main() {
 	if apiKey == "" && !hasNonAnthropicKey() {
 		isHeadless := *prompt != ""
 		if isHeadless {
-			fmt.Fprintf(os.Stderr, "Error: no API key found. Set ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN, OPENAI_API_KEY, OPENROUTER_API_KEY, MINIMAX_API_KEY, or MIMO_API_KEY.\n")
+			fmt.Fprintf(os.Stderr, "Error: no API key found. Set ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN, OPENAI_API_KEY, OPENROUTER_API_KEY, MINIMAX_API_KEY, or MIMO_API_KEY — or run 'vix login' to authenticate via OAuth.\n")
 			os.Exit(1)
 		}
 		if isatty.IsTerminal(os.Stdin.Fd()) || isatty.IsCygwinTerminal(os.Stdin.Fd()) {

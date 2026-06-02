@@ -1,11 +1,15 @@
 package config
 
 import (
+	"context"
+	"errors"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/kirby88/vix/internal/auth"
 	"github.com/zalando/go-keyring"
 )
 
@@ -138,6 +142,16 @@ func ResolveProviderKey(provider string, allowOAuth bool) (key string, source Ke
 		return key, source
 	}
 
+	// Stored interactive OAuth login (`vix login`). This is a local keychain
+	// lookup with no network refresh, so it is safe to call from UI/render
+	// paths. The daemon's LLM construction uses ResolveProviderCredentialFresh,
+	// which refreshes an expired token before use.
+	if allowOAuth {
+		if token, _, ok := auth.DefaultStorage().AccessToken(provider); ok && token != "" {
+			return token, KeySourceOAuthToken
+		}
+	}
+
 	// Fall back to Claude Code OAuth token (anthropic only)
 	if allowOAuth && provider == "anthropic" {
 		key, source = resolveKey("CLAUDE_CODE_OAUTH_TOKEN", "claude-code-oauth-token")
@@ -147,6 +161,43 @@ func ResolveProviderKey(provider string, allowOAuth bool) (key string, source Ke
 	}
 
 	return "", KeySourceNone
+}
+
+// ResolveProviderCredentialFresh resolves a provider credential like
+// ResolveProviderCredential, but when the credential comes from a stored OAuth
+// login (`vix login`) it refreshes an expired access token over the network
+// before returning. It is intended for the daemon's LLM construction path,
+// where a network round-trip is acceptable; ctx bounds the refresh.
+//
+// Explicit API keys (env var, keychain, .env) still win and never trigger a
+// network call.
+func ResolveProviderCredentialFresh(ctx context.Context, provider string, allowOAuth bool) Credential {
+	if key, src := resolveKey(providerEnvVar(provider), providerKeyringUser(provider)); key != "" {
+		return Credential{Value: key, Source: src}
+	}
+
+	if allowOAuth {
+		// Returns ErrNoCredentials when no login is stored, or a refresh error
+		// when one is stored but cannot be refreshed; both fall through to the
+		// remaining sources below. A genuine refresh failure is logged (to the
+		// daemon log / vixd.log) so it is not silently swallowed; full detail is
+		// in the auth log (see auth.AuthLogPath).
+		token, err := auth.DefaultStorage().AccessTokenRefreshing(ctx, provider)
+		if err == nil && token != "" {
+			return Credential{Value: token, Source: KeySourceOAuthToken}
+		}
+		if err != nil && !errors.Is(err, auth.ErrNoCredentials) {
+			log.Printf("[auth] stored OAuth credential for %q unusable: %v", provider, err)
+		}
+	}
+
+	if allowOAuth && provider == "anthropic" {
+		if key, _ := resolveKey("CLAUDE_CODE_OAUTH_TOKEN", "claude-code-oauth-token"); key != "" {
+			return Credential{Value: key, Source: KeySourceOAuthToken}
+		}
+	}
+
+	return Credential{Source: KeySourceNone}
 }
 
 // ResolveProviderCredential returns a Credential for the given provider.
