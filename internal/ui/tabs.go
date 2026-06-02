@@ -168,7 +168,7 @@ func renderSessionsView(sessions []*SessionState, width, height int, s Styles, f
 }
 
 // renderSettingsView renders the Settings tab content.
-func renderSettingsView(width, height int, s Styles, activeSection, providerSel, modelSel, modelColumn int, activeModel string, keys []config.ProviderKey, keySel int, inKeyInput bool, keyInputProvider, keyInputView string, showThinking bool) string {
+func renderSettingsView(width, height int, s Styles, activeSection, providerSel, modelSel, modelColumn int, activeModel string, keys []config.ProviderKey, keySel int, inKeyInput bool, keyInputProvider, keyInputView string, showThinking bool, modelsLoading bool, modelsFor func(string) []ModelInfo, emptyHint func(string) []string) string {
 	dimStyle := lipgloss.NewStyle().Foreground(colorDim)
 	innerWidth := width - 4
 	if innerWidth < 0 {
@@ -231,45 +231,56 @@ func renderSettingsView(width, height int, s Styles, activeSection, providerSel,
 	if providerSel >= 0 && providerSel < len(AvailableProviders) {
 		providerForModels = AvailableProviders[providerSel].Name
 	}
-	models := ModelsForProvider(providerForModels)
+	var models []ModelInfo
 	var modelLines []string
-	for i, m := range models {
-		isCursor := sectionActive && modelColumn == 1 && i == modelSel
-		isActive := m.Spec == activeModel
-		prefix := "  "
-		if isCursor {
-			prefix = "▸ "
-		}
-		label := prefix + m.DisplayName
-		if isActive {
-			label += " ✓"
-		}
-		var rendered string
-		switch {
-		case isCursor && isActive:
-			rendered = lipgloss.NewStyle().Bold(true).Foreground(colorPrimary).Width(modelColWidth).Render(label)
-		case isCursor:
-			rendered = lipgloss.NewStyle().Bold(true).Foreground(colorPrimary).Width(modelColWidth).Render(label)
-		case isActive:
-			rendered = lipgloss.NewStyle().Foreground(colorSecondary).Width(modelColWidth).Render(label)
-		default:
-			rendered = dimStyle.Width(modelColWidth).Render(label)
-		}
-		modelLines = append(modelLines, rendered)
-	}
-	// If the active model isn't in the curated catalogue for this provider,
-	// surface it as a dim footer so users see what's really running.
 	customFooter := ""
-	if activeModel != "" && activeProviderName == providerForModels {
-		found := false
-		for _, m := range models {
-			if m.Spec == activeModel {
-				found = true
-				break
+	if modelsLoading {
+		// Fetch in flight — show a spinner-less waiting line in the model column.
+		modelLines = append(modelLines, dimStyle.Italic(true).Width(modelColWidth).Render("  Loading available models…"))
+	} else {
+		models = modelsFor(providerForModels)
+		for i, m := range models {
+			isCursor := sectionActive && modelColumn == 1 && i == modelSel
+			isActive := m.Spec == activeModel
+			prefix := "  "
+			if isCursor {
+				prefix = "▸ "
+			}
+			label := prefix + m.DisplayName
+			if isActive {
+				label += " ✓"
+			}
+			var rendered string
+			switch {
+			case isCursor && isActive:
+				rendered = lipgloss.NewStyle().Bold(true).Foreground(colorPrimary).Width(modelColWidth).Render(label)
+			case isCursor:
+				rendered = lipgloss.NewStyle().Bold(true).Foreground(colorPrimary).Width(modelColWidth).Render(label)
+			case isActive:
+				rendered = lipgloss.NewStyle().Foreground(colorSecondary).Width(modelColWidth).Render(label)
+			default:
+				rendered = dimStyle.Width(modelColWidth).Render(label)
+			}
+			modelLines = append(modelLines, rendered)
+		}
+		if len(models) == 0 {
+			for _, h := range emptyHint(providerForModels) {
+				modelLines = append(modelLines, dimStyle.Italic(true).Width(modelColWidth).Render("  "+h))
 			}
 		}
-		if !found {
-			customFooter = dimStyle.Italic(true).Width(modelColWidth).Render("  (custom: " + activeModel + ")")
+		// If the active model isn't in the catalogue for this provider, surface
+		// it as a dim footer so users see what's really running.
+		if activeModel != "" && activeProviderName == providerForModels {
+			found := false
+			for _, m := range models {
+				if m.Spec == activeModel {
+					found = true
+					break
+				}
+			}
+			if !found {
+				customFooter = dimStyle.Italic(true).Width(modelColWidth).Render("  (custom: " + activeModel + ")")
+			}
 		}
 	}
 

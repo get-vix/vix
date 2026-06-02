@@ -30,7 +30,7 @@ type Client struct {
 	// `auth_token` field. Set via SetAuthToken from cmd/vix/main.go after
 	// reading the token file pointed at by -auth-token-path. Empty when the
 	// daemon is also unauthenticated (the default when vixd was started
-// without -auth-token-path, or in-process test embeddings).
+	// without -auth-token-path, or in-process test embeddings).
 	authToken string
 }
 
@@ -103,6 +103,32 @@ func (c *Client) Ping() bool {
 		return false
 	}
 	return resp["status"] == "ok"
+}
+
+// ListModels fetches the live model catalogue from the daemon, keyed by
+// provider id. Every known provider has an entry carrying its authentication
+// status and (when authenticated) its models.
+func (c *Client) ListModels() (map[string]protocol.ProviderModels, error) {
+	resp, err := c.sendRequest(map[string]any{"command": "list_models"})
+	if err != nil {
+		return nil, err
+	}
+	if resp["status"] != "ok" {
+		msg, _ := resp["message"].(string)
+		return nil, fmt.Errorf("list_models failed: %s", msg)
+	}
+	// Re-marshal the loosely-typed data into the typed shape.
+	raw, err := json.Marshal(resp["data"])
+	if err != nil {
+		return nil, err
+	}
+	var parsed struct {
+		Providers map[string]protocol.ProviderModels `json:"providers"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return nil, fmt.Errorf("parse list_models data: %w", err)
+	}
+	return parsed.Providers, nil
 }
 
 // ExecuteTool sends a tool execution request to the daemon.

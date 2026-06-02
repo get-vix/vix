@@ -136,6 +136,7 @@ func main() {
 
 	server := daemon.NewServer(*socketPathFlag, cred, sessionID, model, daemonConfig, pluginCfg)
 	daemon.RegisterBuiltinHandlers(server)
+	daemon.RegisterModelsHandler(server)
 	brain.RegisterBrainHandlers(func(cmd string, handler func(map[string]any) (map[string]any, error)) {
 		server.RegisterHandler(cmd, handler)
 	}, cred, ctx)

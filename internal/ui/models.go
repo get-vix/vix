@@ -26,6 +26,7 @@ var AvailableProviders = []ProviderInfo{
 	{Name: "openrouter", DisplayName: "OpenRouter"},
 	{Name: "minimax", DisplayName: "MiniMax"},
 	{Name: "mimo", DisplayName: "Xiaomi MiMo"},
+	{Name: "github-copilot", DisplayName: "GitHub Copilot"},
 }
 
 // AvailableModels is the curated catalogue of selectable models. OpenRouter
@@ -64,6 +65,34 @@ var AvailableModels = []ModelInfo{
 	{Spec: "mimo/mimo-v2.5-pro", Provider: "mimo", DisplayName: "MiMo v2.5 Pro"},
 	{Spec: "mimo/mimo-v2.5", Provider: "mimo", DisplayName: "MiMo v2.5"},
 	{Spec: "mimo/mimo-v2-flash", Provider: "mimo", DisplayName: "MiMo v2 Flash"},
+}
+
+// providerCatalog is the per-provider result of a live model fetch: whether a
+// usable credential was found, and the models returned.
+type providerCatalog struct {
+	authenticated bool
+	models        []ModelInfo
+}
+
+// providerAuthHint returns short, actionable lines telling the user how to
+// authenticate a provider so its models can be fetched. Shown in the picker
+// when a provider has no usable credential.
+func providerAuthHint(provider string) []string {
+	switch provider {
+	case "anthropic":
+		return []string{"run: vix login anthropic", "or set ANTHROPIC_API_KEY"}
+	case "openai":
+		return []string{"set OPENAI_API_KEY"}
+	case "openrouter":
+		return []string{"set OPENROUTER_API_KEY"}
+	case "minimax":
+		return []string{"set MINIMAX_API_KEY"}
+	case "mimo":
+		return []string{"set MIMO_API_KEY"}
+	case "github-copilot":
+		return []string{"run: vix login github-copilot"}
+	}
+	return []string{"no models available"}
 }
 
 // ModelsForProvider returns the entries in AvailableModels whose Provider

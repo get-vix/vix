@@ -16,10 +16,10 @@ type rightPanelMode int
 
 const (
 	rpModeModel    rightPanelMode = iota // model selection list
-	rpModeKeys                            // stored API key manager
-	rpModeKeyInput                        // inline key entry form
-	rpModeWorkflow                        // live workflow step progress
-	rpModeTodos                           // pending todo list
+	rpModeKeys                           // stored API key manager
+	rpModeKeyInput                       // inline key entry form
+	rpModeWorkflow                       // live workflow step progress
+	rpModeTodos                          // pending todo list
 )
 
 // RightPanelAction is the action returned by HandleKey.
@@ -27,11 +27,11 @@ type RightPanelAction int
 
 const (
 	rpActionNone          RightPanelAction = iota
-	rpActionClose                           // close the panel
-	rpActionModelSelected                   // payload = model API name
-	rpActionKeyDeleted                      // payload = provider name
-	rpActionKeyStored                       // payload = "provider:key"
-	rpActionNeedKey                         // payload = "provider:pendingModel"
+	rpActionClose                          // close the panel
+	rpActionModelSelected                  // payload = model API name
+	rpActionKeyDeleted                     // payload = provider name
+	rpActionKeyStored                      // payload = "provider:key"
+	rpActionNeedKey                        // payload = "provider:pendingModel"
 )
 
 // RightPanel is a full-height sidebar on the right side of the screen that
@@ -42,7 +42,9 @@ type RightPanel struct {
 	height  int
 
 	// Model selection state
-	modelSel int
+	modelSel      int
+	models        []ModelInfo // the catalogue to choose from (dynamic when available)
+	modelsLoading bool        // a live fetch is in flight
 
 	// Key manager state
 	keySel int
@@ -66,19 +68,43 @@ func (rp *RightPanel) IsVisible() bool { return rp.visible }
 // Close hides the panel.
 func (rp *RightPanel) Close() { rp.visible = false }
 
-// OpenModelSelect opens the model selection list, pre-selecting the active model.
-func (rp *RightPanel) OpenModelSelect(height int, activeModel string) {
+// OpenModelSelect opens the model selection list, pre-selecting the active
+// model. models is the catalogue to show (caller passes the dynamic list when
+// available); loading reports whether a live refresh is in flight.
+func (rp *RightPanel) OpenModelSelect(height int, activeModel string, models []ModelInfo, loading bool) {
 	rp.visible = true
 	rp.mode = rpModeModel
 	rp.height = height
+	rp.models = models
+	rp.modelsLoading = loading
 	// Pre-position cursor on the currently active model
 	rp.modelSel = 0
-	for i, m := range AvailableModels {
+	for i, m := range rp.models {
 		if m.Spec == activeModel {
 			rp.modelSel = i
 			break
 		}
 	}
+}
+
+// SetModels replaces the selector's catalogue (e.g. when an async fetch
+// completes) and clears the loading state, keeping the cursor on the active
+// model when possible.
+func (rp *RightPanel) SetModels(models []ModelInfo, activeModel string) {
+	rp.models = models
+	rp.modelsLoading = false
+	rp.modelSel = 0
+	for i, m := range models {
+		if m.Spec == activeModel {
+			rp.modelSel = i
+			break
+		}
+	}
+}
+
+// IsModelMode reports whether the panel is currently showing the model selector.
+func (rp *RightPanel) IsModelMode() bool {
+	return rp.visible && rp.mode == rpModeModel
 }
 
 // OpenKeyManager opens the API key manager.
@@ -142,12 +168,12 @@ func (rp *RightPanel) HandleKey(msg tea.KeyPressMsg) (RightPanelAction, string) 
 				rp.modelSel--
 			}
 		case "down", "j":
-			if rp.modelSel < len(AvailableModels)-1 {
+			if rp.modelSel < len(rp.models)-1 {
 				rp.modelSel++
 			}
 		case "enter":
-			if rp.modelSel < len(AvailableModels) {
-				m := AvailableModels[rp.modelSel]
+			if rp.modelSel < len(rp.models) {
+				m := rp.models[rp.modelSel]
 				apiKey, _ := config.ResolveProviderKey(m.Provider, true)
 				if apiKey != "" {
 					return rpActionModelSelected, m.Spec
@@ -210,7 +236,17 @@ func (rp *RightPanel) View(height int, s Styles, focused bool, activeModel strin
 		title := lipgloss.NewStyle().Bold(true).Foreground(colorPrimary).Width(innerWidth).Render("Select Model")
 		sep := lipgloss.NewStyle().Foreground(colorDim).Width(innerWidth).Render(strings.Repeat("─", innerWidth))
 		lines = append(lines, title, sep)
-		for i, m := range AvailableModels {
+		if rp.modelsLoading && len(rp.models) == 0 {
+			lines = append(lines, lipgloss.NewStyle().Italic(true).Foreground(colorDim).Width(innerWidth).Render("Loading available models…"))
+			break
+		}
+		if len(rp.models) == 0 {
+			hintStyle := lipgloss.NewStyle().Italic(true).Foreground(colorDim).Width(innerWidth)
+			lines = append(lines, hintStyle.Render("No models available."))
+			lines = append(lines, hintStyle.Render("Set an API key or run 'vix login'."))
+			break
+		}
+		for i, m := range rp.models {
 			label := m.DisplayName
 			if m.Provider == "openai" {
 				label = "[OpenAI] " + m.DisplayName

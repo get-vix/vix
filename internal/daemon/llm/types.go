@@ -12,12 +12,20 @@ const (
 	ProviderOpenRouter ProviderID = "openrouter"
 	ProviderMiniMax    ProviderID = "minimax"
 	ProviderMiMo       ProviderID = "mimo"
+	ProviderCopilot    ProviderID = "github-copilot"
 )
 
 // CredentialName returns the name used for credential resolution and
 // keyring lookups for this provider.
 func (p ProviderID) CredentialName() string {
 	return string(p)
+}
+
+// UsesOAuth reports whether this provider's credential comes from an
+// interactive OAuth login (see internal/auth) rather than an API key.
+// Credential resolution allows OAuth tokens for these providers.
+func (p ProviderID) UsesOAuth() bool {
+	return p == ProviderAnthropic || p == ProviderCopilot
 }
 
 // Role identifies the author of a message.

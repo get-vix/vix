@@ -96,10 +96,12 @@ func ParseModel(spec string) (ProviderID, string, error) {
 		return ProviderOpenAI, strings.TrimPrefix(spec, "openai/"), nil
 	case strings.HasPrefix(spec, "anthropic/"):
 		return ProviderAnthropic, strings.TrimPrefix(spec, "anthropic/"), nil
+	case strings.HasPrefix(spec, "github-copilot/"):
+		return ProviderCopilot, strings.TrimPrefix(spec, "github-copilot/"), nil
 	case spec == "":
 		return "", "", fmt.Errorf("model spec is empty")
 	default:
-		return "", "", fmt.Errorf("model spec %q must start with anthropic/, openai/, openrouter/, minimax/, or mimo/", spec)
+		return "", "", fmt.Errorf("model spec %q must start with anthropic/, openai/, openrouter/, minimax/, mimo/, or github-copilot/", spec)
 	}
 }
 
@@ -167,6 +169,8 @@ func EnvVarFor(p ProviderID) string {
 		return "MINIMAX_API_KEY"
 	case ProviderMiMo:
 		return "MIMO_API_KEY"
+	case ProviderCopilot:
+		return "" // OAuth-only: `vix login github-copilot`
 	}
 	return ""
 }
@@ -184,8 +188,11 @@ func NewFromModel(spec string, plugin PluginConfig, effort string, maxTokens int
 	// stalling LLM construction indefinitely.
 	refreshCtx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()
-	cred := config.ResolveProviderCredentialFresh(refreshCtx, prov.CredentialName(), prov == ProviderAnthropic)
+	cred := config.ResolveProviderCredentialFresh(refreshCtx, prov.CredentialName(), prov.UsesOAuth())
 	if cred.Value == "" {
+		if prov.UsesOAuth() && EnvVarFor(prov) == "" {
+			return nil, fmt.Errorf("no credential for %s (run: vix login %s)", prov, prov.CredentialName())
+		}
 		return nil, fmt.Errorf("no credential for %s (set %s)", prov, EnvVarFor(prov))
 	}
 	cfg := Config{
@@ -209,6 +216,8 @@ func NewFromModel(spec string, plugin PluginConfig, effort string, maxTokens int
 		return NewMiniMax(cfg)
 	case ProviderMiMo:
 		return NewMiMo(cfg)
+	case ProviderCopilot:
+		return NewCopilot(cfg)
 	}
 	return nil, fmt.Errorf("unsupported provider: %s", prov)
 }

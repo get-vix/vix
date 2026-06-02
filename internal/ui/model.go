@@ -14,9 +14,9 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/atotto/clipboard"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/ultraviolet/screen"
-	"github.com/atotto/clipboard"
 
 	"github.com/kirby88/vix/internal/config"
 	"github.com/kirby88/vix/internal/daemon"
@@ -116,6 +116,84 @@ func startSessionEventLoop(client *daemon.SessionClient) tea.Cmd {
 	}
 }
 
+// modelsLoadedMsg carries the result of an async model-catalogue fetch.
+type modelsLoadedMsg struct {
+	catalog map[string]providerCatalog
+	err     error
+}
+
+// loadModelsCmd fetches the live model catalogue from the daemon. It runs on a
+// background goroutine (one-shot RPC) and reports back via modelsLoadedMsg.
+func loadModelsCmd(socketPath, authToken string) tea.Cmd {
+	return func() tea.Msg {
+		client := daemon.NewClient(socketPath)
+		client.SetAuthToken(authToken)
+		res, err := client.ListModels()
+		if err != nil {
+			return modelsLoadedMsg{err: err}
+		}
+		out := make(map[string]providerCatalog, len(res))
+		for provider, pm := range res {
+			arr := make([]ModelInfo, 0, len(pm.Models))
+			for _, mi := range pm.Models {
+				name := mi.DisplayName
+				if name == "" {
+					name = mi.Spec
+				}
+				arr = append(arr, ModelInfo{Spec: mi.Spec, Provider: mi.Provider, DisplayName: name})
+			}
+			out[provider] = providerCatalog{authenticated: pm.Authenticated, models: arr}
+		}
+		return modelsLoadedMsg{catalog: out}
+	}
+}
+
+// modelsForProvider returns the model list to show for a provider. Priority:
+// live models > curated fallback (only when the provider is authenticated but
+// returned nothing, for resilience) > nil (unauthenticated — the caller shows
+// an auth hint instead).
+func (m Model) modelsForProvider(provider string) []ModelInfo {
+	if m.modelsLoaded {
+		if cat, ok := m.dynModels[provider]; ok {
+			if len(cat.models) > 0 {
+				return cat.models
+			}
+			if !cat.authenticated {
+				return nil
+			}
+			// Authenticated but no live models (fetch failed/empty): fall
+			// through to the curated list so the picker still works.
+		}
+	}
+	return ModelsForProvider(provider)
+}
+
+// providerEmptyHint returns the lines to show when a provider's model column is
+// empty: how to authenticate (when no credential) or a neutral note otherwise.
+func (m Model) providerEmptyHint(provider string) []string {
+	authed := false
+	if m.modelsLoaded {
+		if cat, ok := m.dynModels[provider]; ok {
+			authed = cat.authenticated
+		}
+	}
+	if !authed {
+		return providerAuthHint(provider)
+	}
+	return []string{"no models available"}
+}
+
+// allModelsFlat returns every model across all providers as a single flat list
+// (provider order, newest-first within each), used by the right-panel quick
+// model switcher. Uses the dynamic catalogue where available.
+func (m Model) allModelsFlat() []ModelInfo {
+	var out []ModelInfo
+	for _, p := range AvailableProviders {
+		out = append(out, m.modelsForProvider(p.Name)...)
+	}
+	return out
+}
+
 // attemptReconnect tries to reconnect a session to the daemon.
 // targetDaemonSessionID identifies which session this attempt is for; it is
 // echoed back in the result message so the handler can match it to the right
@@ -210,8 +288,8 @@ type Model struct {
 
 	// Global overlay dialog state (quit confirm, session close confirm).
 	// Normal operation = StateWaitingForInput (no overlay).
-	state            AppState
-	quitSelected     int
+	state                AppState
+	quitSelected         int
 	sessionCloseIdx      int
 	sessionCloseSelected int
 
@@ -220,10 +298,10 @@ type Model struct {
 	sessionsSelected int
 
 	// Settings tab UI
-	settingsActiveSection    int // 0=model section, 1=keys section, 2=display
-	settingsProviderSel      int // row in AvailableProviders (Model section, column 0)
-	settingsModelSel         int // row in ModelsForProvider(AvailableProviders[settingsProviderSel].Name) (Model section, column 1)
-	settingsModelColumn      int // 0 = provider column focused, 1 = model column focused
+	settingsActiveSection    int    // 0=model section, 1=keys section, 2=display
+	settingsProviderSel      int    // row in AvailableProviders (Model section, column 0)
+	settingsModelSel         int    // row in ModelsForProvider(AvailableProviders[settingsProviderSel].Name) (Model section, column 1)
+	settingsModelColumn      int    // 0 = provider column focused, 1 = model column focused
 	settingsModelPending     string // model spec awaiting an API key
 	settingsKeySel           int
 	settingsKeys             []config.ProviderKey
@@ -231,25 +309,33 @@ type Model struct {
 	settingsKeyInput         textinput.Model
 	settingsInKeyInput       bool
 
+	// Dynamic model catalogue, fetched from the daemon each time the model
+	// list opens. dynModels is keyed by provider id and carries each
+	// provider's auth status plus its live models.
+	modelsLoading bool
+	modelsLoaded  bool
+	dynModels     map[string]providerCatalog
+	modelsErr     error
+
 	// Shared rendering
 	mdRenderer     *MarkdownRenderer
 	commandPalette CommandPalette
 
 	// Tab alert blink (Chat tab label pulses when a session needs attention)
-	tabAlertActive  bool
-	tabAlertBlinkOn bool
+	tabAlertActive   bool
+	tabAlertBlinkOn  bool
 	tabAlertBlinkGen int
 
 	// Transient status bar message (second line)
 	statusMsg StatusMessage
 
 	// Connection parameters (for reconnect / new sessions)
-	socketPath                      string
-	cwd                             string
-	authToken                       string
-	forceInit                       bool
-	enableAutomaticWritePermission  bool
-	enableAutomaticDirectoryAccess  bool
+	socketPath                     string
+	cwd                            string
+	authToken                      string
+	forceInit                      bool
+	enableAutomaticWritePermission bool
+	enableAutomaticDirectoryAccess bool
 
 	// Global settings
 	hasDarkBG      bool
@@ -272,23 +358,23 @@ func NewModel(cfg *config.Config, client *daemon.SessionClient, testMode bool, a
 	initialSession := newSessionState(cfg, client)
 
 	m := Model{
-		state:           StateWaitingForInput,
-		activeTab:       TabKindChat,
-		sessions:        []*SessionState{initialSession},
-		selectedSession: 0,
-		sessionsInput:   newSessionsInput(),
-		commandPalette:  NewCommandPalette(),
-		hasDarkBG:       true,
-		styles:          NewStyles(true),
-		mdRenderer:      NewMarkdownRenderer(80, true, NewStyles(true).CodeBoxBorderStyle),
-		cfg:             cfg,
-		socketPath:      cfg.SocketPath,
-		cwd:             cfg.CWD,
-		forceInit:       cfg.ForceInit,
-		authToken:       authToken,
+		state:                          StateWaitingForInput,
+		activeTab:                      TabKindChat,
+		sessions:                       []*SessionState{initialSession},
+		selectedSession:                0,
+		sessionsInput:                  newSessionsInput(),
+		commandPalette:                 NewCommandPalette(),
+		hasDarkBG:                      true,
+		styles:                         NewStyles(true),
+		mdRenderer:                     NewMarkdownRenderer(80, true, NewStyles(true).CodeBoxBorderStyle),
+		cfg:                            cfg,
+		socketPath:                     cfg.SocketPath,
+		cwd:                            cfg.CWD,
+		forceInit:                      cfg.ForceInit,
+		authToken:                      authToken,
 		enableAutomaticWritePermission: enableWrite,
 		enableAutomaticDirectoryAccess: enableDir,
-		testMode:        testMode,
+		testMode:                       testMode,
 	}
 
 	if testMode {
@@ -576,6 +662,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					initActiveModel = initSess.modelName
 				}
 				m.settingsProviderSel, m.settingsModelSel = locateActiveModel(initActiveModel)
+				m.modelsLoading = true
+				cmds = append(cmds, loadModelsCmd(m.socketPath, m.authToken))
 				return m, tea.Batch(cmds...)
 			default:
 				var cmd tea.Cmd
@@ -632,7 +720,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 				clampModelSel := func() {
-					models := ModelsForProvider(AvailableProviders[m.settingsProviderSel].Name)
+					models := m.modelsForProvider(AvailableProviders[m.settingsProviderSel].Name)
 					if m.settingsModelSel < 0 {
 						m.settingsModelSel = 0
 					}
@@ -663,7 +751,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							m.settingsModelSel = 0
 						}
 					} else {
-						models := ModelsForProvider(AvailableProviders[m.settingsProviderSel].Name)
+						models := m.modelsForProvider(AvailableProviders[m.settingsProviderSel].Name)
 						if m.settingsModelSel < len(models)-1 {
 							m.settingsModelSel++
 						}
@@ -681,7 +769,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.settingsModelSel = 0
 						clampModelSel()
 					} else {
-						models := ModelsForProvider(AvailableProviders[m.settingsProviderSel].Name)
+						models := m.modelsForProvider(AvailableProviders[m.settingsProviderSel].Name)
 						if len(models) > 0 && m.settingsModelSel < len(models) {
 							mod := models[m.settingsModelSel]
 							apiKey, _ := config.ResolveProviderKey(mod.Provider, true)
@@ -1037,6 +1125,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				initActiveModel2 = initSess2.modelName
 			}
 			m.settingsProviderSel, m.settingsModelSel = locateActiveModel(initActiveModel2)
+			m.modelsLoading = true
+			cmds = append(cmds, loadModelsCmd(m.socketPath, m.authToken))
 			return m, tea.Batch(cmds...)
 
 		case "shift+tab":
@@ -1292,6 +1382,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case clearStatusMsgMsg:
 		if msg.gen == m.statusMsg.gen {
 			m.statusMsg = StatusMessage{}
+		}
+		return m, nil
+
+	case modelsLoadedMsg:
+		m.modelsLoading = false
+		if msg.err != nil {
+			m.modelsErr = msg.err
+			// Keep the curated fallback list; surface the failure briefly.
+			return m, m.emitStatusMsg("Could not load live model list: "+msg.err.Error(), StatusMsgInfo)
+		}
+		m.modelsErr = nil
+		m.dynModels = msg.catalog
+		m.modelsLoaded = true
+		// The fetched list may differ from the curated one, so re-clamp the
+		// model cursor to the (possibly shorter) list for the selected provider.
+		if m.settingsProviderSel >= 0 && m.settingsProviderSel < len(AvailableProviders) {
+			n := len(m.modelsForProvider(AvailableProviders[m.settingsProviderSel].Name))
+			if m.settingsModelSel >= n {
+				m.settingsModelSel = n - 1
+			}
+			if m.settingsModelSel < 0 {
+				m.settingsModelSel = 0
+			}
+		}
+		// If the right-panel quick switcher is open, refresh its list too.
+		if sess := m.currentSession(); sess != nil && sess.rightPanel.IsModelMode() {
+			sess.rightPanel.SetModels(m.allModelsFlat(), sess.modelName)
 		}
 		return m, nil
 
@@ -2028,7 +2145,7 @@ func (m Model) View() tea.View {
 			}
 			settingsShowThinking = settSess.showThinking
 		}
-		sv := renderSettingsView(m.width, settingsHeight, m.styles, m.settingsActiveSection, m.settingsProviderSel, m.settingsModelSel, m.settingsModelColumn, settingsActiveModel, m.settingsKeys, m.settingsKeySel, m.settingsInKeyInput, m.settingsKeyInputProvider, m.settingsKeyInput.View(), settingsShowThinking)
+		sv := renderSettingsView(m.width, settingsHeight, m.styles, m.settingsActiveSection, m.settingsProviderSel, m.settingsModelSel, m.settingsModelColumn, settingsActiveModel, m.settingsKeys, m.settingsKeySel, m.settingsInKeyInput, m.settingsKeyInputProvider, m.settingsKeyInput.View(), settingsShowThinking, m.modelsLoading, m.modelsForProvider, m.providerEmptyHint)
 		uv.NewStyledString(sv).Draw(canvas, image.Rect(0, y, m.width, y+settingsHeight))
 		y += settingsHeight
 	}
@@ -2133,7 +2250,12 @@ func (m *Model) handleCommandAction(action string, sess *SessionState) []tea.Cmd
 	switch action {
 	case "change_model":
 		if sess != nil {
-			sess.rightPanel.OpenModelSelect(m.height, sess.modelName)
+			// Show the current best catalogue immediately; if we've never
+			// fetched, show a loading state. Always kick off a fresh fetch so
+			// the list is up to date every time it opens.
+			sess.rightPanel.OpenModelSelect(m.height, sess.modelName, m.allModelsFlat(), !m.modelsLoaded)
+			m.modelsLoading = true
+			cmds = append(cmds, loadModelsCmd(m.socketPath, m.authToken))
 			m.updateChatWidth()
 			sess.focus = FocusRightPanel
 			sess.input.Blur()
