@@ -1436,35 +1436,37 @@ func renderWorkflowComplete(name string, success bool, summary string, stepCosts
 	}
 }
 
-// formatModelName converts a model ID like "claude-sonnet-4-6" to "Claude Sonnet 4.6".
-// Non-Claude models are title-cased as-is.
+// formatModelName turns a model spec like "anthropic/claude-opus-4-8" into a
+// compact, lowercase kebab-case label like "claude-opus-4.8": it drops the
+// provider (and any routing) prefix and joins a trailing two-part numeric
+// version with a dot (4-8 → 4.8).
 func formatModelName(model string) string {
-	isClaude := strings.HasPrefix(model, "claude-")
-	if isClaude {
-		model = strings.TrimPrefix(model, "claude-")
+	// Drop everything up to and including the last "/", keeping the bare model
+	// id (e.g. "openrouter/anthropic/claude-opus-4-8" → "claude-opus-4-8").
+	if i := strings.LastIndex(model, "/"); i >= 0 {
+		model = model[i+1:]
 	}
+	model = strings.ToLower(model)
 	parts := strings.Split(model, "-")
-	for i, p := range parts {
-		if len(p) > 0 {
-			parts[i] = string(unicode.ToUpper(rune(p[0]))) + p[1:]
+	// Join a trailing "<major>-<minor>" numeric version with a dot: 4-8 → 4.8.
+	if n := len(parts); n >= 2 && isShortNumber(parts[n-1]) && isShortNumber(parts[n-2]) {
+		parts = append(parts[:n-2], parts[n-2]+"."+parts[n-1])
+	}
+	return strings.Join(parts, "-")
+}
+
+// isShortNumber reports whether s is a 1- or 2-digit number — a model version
+// component like "4" or "8".
+func isShortNumber(s string) bool {
+	if len(s) == 0 || len(s) > 2 {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
 		}
 	}
-	// Join version numbers with dots: "Sonnet 4 6" → "Sonnet 4.6"
-	result := strings.Join(parts, " ")
-	// Find last space-separated number pair and join with dot
-	words := strings.Fields(result)
-	if len(words) >= 2 {
-		last := words[len(words)-1]
-		prev := words[len(words)-2]
-		if len(last) <= 2 && last[0] >= '0' && last[0] <= '9' && len(prev) <= 2 && prev[0] >= '0' && prev[0] <= '9' {
-			words = append(words[:len(words)-2], prev+"."+last)
-			result = strings.Join(words, " ")
-		}
-	}
-	if isClaude {
-		return "Claude " + result
-	}
-	return result
+	return true
 }
 
 // rerender re-renders msg at the given width using the provided markdown renderer and styles.
