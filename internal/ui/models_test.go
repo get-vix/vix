@@ -21,9 +21,10 @@ func TestAvailableModels_AllPrefixed(t *testing.T) {
 // TestModelsForProvider_GroupsCorrectly asserts the filter returns models
 // whose Provider matches AND covers every provider in AvailableProviders.
 func TestModelsForProvider_GroupsCorrectly(t *testing.T) {
-	// github-copilot is intentionally dynamic-only: its catalogue varies per
-	// account and is fetched live at runtime, so it has no curated entries.
-	dynamicOnly := map[string]bool{"github-copilot": true}
+	// Every provider currently ships at least one curated entry. If a future
+	// provider is dynamic-only (fetched live with no curated rows), list it
+	// here so this check doesn't flag it.
+	dynamicOnly := map[string]bool{}
 	for _, p := range AvailableProviders {
 		models := ModelsForProvider(p.Name)
 		if len(models) == 0 && !dynamicOnly[p.Name] {

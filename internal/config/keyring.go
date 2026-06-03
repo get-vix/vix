@@ -21,11 +21,12 @@ const (
 type KeySource string
 
 const (
-	KeySourceEnv        KeySource = "env"
-	KeySourceOAuthToken KeySource = "oauth-token"
-	KeySourceKeychain   KeySource = "keychain"
-	KeySourceEnvFile    KeySource = "dotenv"
-	KeySourceNone       KeySource = "none"
+	KeySourceEnv         KeySource = "env"
+	KeySourceOAuthToken  KeySource = "oauth-token"
+	KeySourceOAuthAPIKey KeySource = "oauth-api-key"
+	KeySourceKeychain    KeySource = "keychain"
+	KeySourceEnvFile     KeySource = "dotenv"
+	KeySourceNone        KeySource = "none"
 )
 
 // Credential bundles an API key or OAuth token with its source.
@@ -35,7 +36,11 @@ type Credential struct {
 	Source KeySource
 }
 
-// RequestOptions returns the appropriate Anthropic SDK options for this credential.
+// RequestOptions returns the appropriate Anthropic SDK options for this
+// credential. A raw OAuth access token (KeySourceOAuthToken, e.g. a
+// CLAUDE_CODE_OAUTH_TOKEN) is sent as a Bearer token; everything else —
+// including the metered API key minted by `vix login anthropic`
+// (KeySourceOAuthAPIKey) — is sent as an x-api-key.
 func (c Credential) RequestOptions() []option.RequestOption {
 	if c.Source == KeySourceOAuthToken {
 		return []option.RequestOption{
@@ -43,6 +48,17 @@ func (c Credential) RequestOptions() []option.RequestOption {
 		}
 	}
 	return []option.RequestOption{option.WithAPIKey(c.Value)}
+}
+
+// oauthCredentialSource reports how a provider's stored interactive-login
+// credential authenticates inference. `vix login anthropic` mints a metered
+// API key (sent as x-api-key, so KeySourceOAuthAPIKey); other OAuth providers
+// (e.g. OpenAI Codex) authenticate with a Bearer access token.
+func oauthCredentialSource(provider string) KeySource {
+	if provider == "anthropic" {
+		return KeySourceOAuthAPIKey
+	}
+	return KeySourceOAuthToken
 }
 
 // ResolveEnvVar checks the environment and .env files for a variable.
@@ -148,7 +164,7 @@ func ResolveProviderKey(provider string, allowOAuth bool) (key string, source Ke
 	// which refreshes an expired token before use.
 	if allowOAuth {
 		if token, _, ok := auth.DefaultStorage().AccessToken(provider); ok && token != "" {
-			return token, KeySourceOAuthToken
+			return token, oauthCredentialSource(provider)
 		}
 	}
 
@@ -184,7 +200,7 @@ func ResolveProviderCredentialFresh(ctx context.Context, provider string, allowO
 		// in the auth log (see auth.AuthLogPath).
 		token, err := auth.DefaultStorage().AccessTokenRefreshing(ctx, provider)
 		if err == nil && token != "" {
-			return Credential{Value: token, Source: KeySourceOAuthToken}
+			return Credential{Value: token, Source: oauthCredentialSource(provider)}
 		}
 		if err != nil && !errors.Is(err, auth.ErrNoCredentials) {
 			log.Printf("[auth] stored OAuth credential for %q unusable: %v", provider, err)

@@ -2,9 +2,9 @@ package auth
 
 import "sync"
 
-// Provider registry. Mirrors pi's oauth/index.ts registry: built-in providers
-// are registered at init, custom ones can be added, and unregistering a
-// built-in restores its default implementation.
+// Provider registry: built-in providers are registered at init, custom ones
+// can be added, and unregistering a built-in restores its default
+// implementation.
 var (
 	registryMu    sync.RWMutex
 	providerByID  map[string]Provider
@@ -16,7 +16,6 @@ var (
 func init() {
 	builtins := []Provider{
 		newAnthropicProvider(),
-		newGitHubCopilotProvider(),
 		newOpenAICodexProvider(),
 	}
 	builtinByID = make(map[string]Provider, len(builtins))

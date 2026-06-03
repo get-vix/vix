@@ -10,9 +10,8 @@ import (
 
 // fileBackend persists credentials in a JSON file with 0600 permissions. It is
 // the fallback used when the OS keychain is unavailable — e.g. headless Linux
-// or WSL sessions with no D-Bus Secret Service. This mirrors pi's auth.json
-// storage. Writes are atomic (temp file + rename) so concurrent readers never
-// observe a torn file.
+// or WSL sessions with no D-Bus Secret Service. Writes are atomic (temp file +
+// rename) so concurrent readers never observe a torn file.
 type fileBackend struct {
 	path string
 	mu   sync.Mutex

@@ -97,8 +97,8 @@ func (b *MemoryBackend) Delete(key string) error {
 	return nil
 }
 
-// Storage manages OAuth credentials with automatic refresh-on-expiry. It is
-// the Go counterpart of pi's AuthStorage, adapted to vix's keychain storage.
+// Storage manages OAuth credentials with automatic refresh-on-expiry, backed by
+// vix's keychain (or file-fallback) storage.
 type Storage struct {
 	backend   Backend
 	refreshMu sync.Mutex // serializes refreshes within this process

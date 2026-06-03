@@ -14,7 +14,7 @@ type authInput struct {
 // parseAuthorizationInput extracts an authorization code (and optional state)
 // from a value the user pasted. It accepts, in order: a full redirect URL with
 // query parameters, a "code#state" fragment, a raw "code=...&state=..." query
-// string, or a bare code. Mirrors pi's parseAuthorizationInput.
+// string, or a bare code.
 func parseAuthorizationInput(input string) authInput {
 	value := strings.TrimSpace(input)
 	if value == "" {
@@ -41,22 +41,4 @@ func parseAuthorizationInput(input string) authInput {
 	}
 
 	return authInput{code: value}
-}
-
-// normalizeDomain extracts a bare hostname from a domain or URL the user
-// entered, or returns "" if it cannot be parsed. Mirrors pi's normalizeDomain.
-func normalizeDomain(input string) string {
-	trimmed := strings.TrimSpace(input)
-	if trimmed == "" {
-		return ""
-	}
-	raw := trimmed
-	if !strings.Contains(trimmed, "://") {
-		raw = "https://" + trimmed
-	}
-	u, err := url.Parse(raw)
-	if err != nil || u.Hostname() == "" {
-		return ""
-	}
-	return u.Hostname()
 }

@@ -17,7 +17,7 @@ var modelListProviders = []llm.ProviderID{
 	llm.ProviderOpenRouter,
 	llm.ProviderMiniMax,
 	llm.ProviderMiMo,
-	llm.ProviderCopilot,
+	llm.ProviderCodex,
 }
 
 // RegisterModelsHandler registers the "list_models" RPC, which fetches the live

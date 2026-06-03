@@ -14,7 +14,7 @@ import (
 
 // httpClient is the client used for all OAuth HTTP calls. It is a package
 // variable so tests could substitute a custom transport; the per-request
-// timeout mirrors pi's 30s fetch timeout.
+// timeout bounds each call at 30s.
 var httpClient = &http.Client{Timeout: 30 * time.Second}
 
 // httpRequest performs a single HTTP request and returns the status code and
@@ -56,7 +56,7 @@ func httpRequest(ctx context.Context, method, rawURL string, headers map[string]
 }
 
 // postJSONForToken POSTs a JSON body and returns the raw response body,
-// erroring on any non-2xx status. Mirrors pi's anthropic postJson helper.
+// erroring on any non-2xx status.
 func postJSONForToken(ctx context.Context, rawURL string, body map[string]any) ([]byte, error) {
 	buf, err := json.Marshal(body)
 	if err != nil {
@@ -76,7 +76,7 @@ func postJSONForToken(ctx context.Context, rawURL string, body map[string]any) (
 }
 
 // postFormJSON POSTs a form-encoded body and decodes a JSON response into out.
-// It errors on non-2xx, matching pi's fetchJson ("status statusText: body").
+// It errors on non-2xx, formatting the failure as "status statusText: body".
 func postFormJSON(ctx context.Context, rawURL string, form url.Values, headers map[string]string, out any) error {
 	h := map[string]string{
 		"Accept":       "application/json",
@@ -96,7 +96,7 @@ func postFormJSON(ctx context.Context, rawURL string, form url.Values, headers m
 }
 
 // getJSON performs a GET and decodes a JSON response into out, erroring on
-// non-2xx. Mirrors pi's fetchJson for GET requests.
+// non-2xx.
 func getJSON(ctx context.Context, rawURL string, headers map[string]string, out any) error {
 	status, data, err := httpRequest(ctx, http.MethodGet, rawURL, headers, nil)
 	if err != nil {

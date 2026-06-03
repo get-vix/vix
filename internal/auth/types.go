@@ -1,14 +1,11 @@
-// Package auth ports pi's OAuth login + credential system to Go.
+// Package auth implements the OAuth login + credential system for vix's
+// subscription-based providers — Anthropic (Claude Pro/Max) and OpenAI Codex
+// (ChatGPT) — plus the shared machinery they rely on: PKCE generation, RFC 8628
+// device-code polling, a local callback HTTP server, a provider registry, and
+// credential storage with automatic token refresh.
 //
-// It implements the OAuth flows for the providers pi supports — Anthropic
-// (Claude Pro/Max), GitHub Copilot, and OpenAI Codex (ChatGPT) — plus the
-// shared machinery they rely on: PKCE generation, RFC 8628 device-code
-// polling, a local callback HTTP server, a provider registry, and credential
-// storage with automatic token refresh.
-//
-// Unlike pi, which persists credentials to a plaintext auth.json, vix stores
-// OAuth credentials in the OS keychain (see storage.go) to match the rest of
-// the codebase's secret handling.
+// Credentials are stored in the OS keychain (see storage.go), falling back to a
+// 0600 JSON file on headless systems with no keychain.
 package auth
 
 import (
@@ -16,13 +13,12 @@ import (
 	"encoding/json"
 )
 
-// Credentials holds the OAuth tokens for a provider.
+// Credentials holds the stored credential material for a provider.
 //
-// It mirrors pi's OAuthCredentials: a flat JSON object with the well-known
-// access/refresh/expires fields plus arbitrary provider-specific extras
-// (e.g. accountId for OpenAI Codex, enterpriseUrl for GitHub Copilot). The
-// extras round-trip through storage via custom JSON (un)marshalling so the
-// stored object stays flat, exactly like pi.
+// It is a flat JSON object with the well-known access/refresh/expires fields
+// plus arbitrary provider-specific extras (e.g. apiKey for Anthropic, accountId
+// for OpenAI Codex). The extras round-trip through storage via custom JSON
+// (un)marshalling so the stored object stays flat.
 type Credentials struct {
 	// Access is the token used to authenticate API requests.
 	Access string
@@ -38,7 +34,7 @@ type Credentials struct {
 }
 
 // MarshalJSON flattens Extra into the same object as access/refresh/expires so
-// the on-disk/keychain representation matches pi's flat credential shape.
+// the on-disk/keychain representation stays a single flat object.
 func (c Credentials) MarshalJSON() ([]byte, error) {
 	m := make(map[string]any, len(c.Extra)+3)
 	for k, v := range c.Extra {
@@ -122,12 +118,11 @@ type SelectPrompt struct {
 	Options []SelectOption
 }
 
-// LoginCallbacks is the set of UI hooks a login flow drives. It mirrors pi's
-// OAuthLoginCallbacks. Optional hooks may be nil; the flows degrade
-// gracefully (e.g. falling back to OnPrompt when OnManualCodeInput is nil).
+// LoginCallbacks is the set of UI hooks a login flow drives. Optional hooks may
+// be nil; the flows degrade gracefully (e.g. falling back to OnPrompt when
+// OnManualCodeInput is nil).
 //
-// Cancellation is carried by the context.Context passed to Login rather than
-// pi's AbortSignal.
+// Cancellation is carried by the context.Context passed to Login.
 type LoginCallbacks struct {
 	// OnAuth is invoked with an authorization URL the user should open.
 	OnAuth func(AuthInfo)
@@ -151,8 +146,7 @@ func (c LoginCallbacks) progress(msg string) {
 	}
 }
 
-// Provider is the interface every OAuth provider implements. It mirrors pi's
-// OAuthProviderInterface.
+// Provider is the interface every OAuth provider implements.
 type Provider interface {
 	// ID is the stable identifier used as the storage key and registry key.
 	ID() string

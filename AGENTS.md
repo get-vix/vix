@@ -79,16 +79,6 @@ Start the daemon and client in separate terminals:
 
 - **Go 1.26+** required
 - **ANTHROPIC_API_KEY** environment variable or `.env` file for LLM access
-- **OAuth login** (alternative to API keys): `vix login [provider]` runs an OAuth
-  flow (Anthropic Claude Pro/Max, GitHub Copilot, or OpenAI Codex/ChatGPT) and
-  stores the credentials in the OS keychain under `<provider>-oauth`. `vix logout
-  <provider>` removes them. The flows live in `internal/auth/`; credential
-  resolution (`internal/config/keyring.go`) consults stored OAuth logins after
-  explicit API keys, and the daemon refreshes expired access tokens on demand
-  via `config.ResolveProviderCredentialFresh`. Only the Anthropic OAuth token is
-  wired into inference today (it reuses the existing Bearer path); Copilot/Codex
-  logins are stored and ready but need provider adapters before they can serve
-  requests.
 - **LSP servers** (optional): gopls, pylsp, typescript-language-server for code intelligence
 - **LSP config**: `.vix/settings.json` in project root
 

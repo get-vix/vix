@@ -13,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kirby88/vix/internal/auth"
 	"github.com/kirby88/vix/internal/config"
 )
 
@@ -43,8 +42,8 @@ func ListModels(ctx context.Context, provider ProviderID, cred config.Credential
 		return listOpenAICompatibleModels(ctx, miniMaxBaseURLFromEnv(), "minimax", cred, nil, nil)
 	case ProviderMiMo:
 		return listOpenAICompatibleModels(ctx, miMoBaseURLFromEnv(), "mimo", cred, nil, nil)
-	case ProviderCopilot:
-		return listCopilotModels(ctx, auth.GitHubCopilotBaseURL(cred.Value, ""), cred)
+	case ProviderCodex:
+		return listCodexModels()
 	}
 	return nil, fmt.Errorf("model listing not supported for provider %q", provider)
 }
@@ -205,59 +204,20 @@ func listOpenAICompatibleModels(ctx context.Context, baseURL, prefix string, cre
 	return out, nil
 }
 
-// listCopilotModels calls GET <base>/models. base is derived from the proxy
-// endpoint embedded in the Copilot token (passed in for testability).
-func listCopilotModels(ctx context.Context, base string, cred config.Credential) ([]ModelListing, error) {
-	headers := map[string]string{
-		"Authorization":          "Bearer " + cred.Value,
-		"Accept":                 "application/json",
-		"Copilot-Integration-Id": "vscode-chat",
-		"Editor-Version":         "vscode/1.107.0",
-		"Editor-Plugin-Version":  "copilot-chat/0.35.0",
-		"User-Agent":             "GitHubCopilotChat/0.35.0",
-	}
+// codexModels is the curated set of models reachable through a ChatGPT/Codex
+// subscription. The ChatGPT backend has no public model-list endpoint, so —
+// unlike the other providers — this list is static. Keep it short and current.
+var codexModels = []ModelListing{
+	{Spec: "openai-codex/gpt-5-codex", Provider: "openai-codex", DisplayName: "GPT-5 Codex"},
+	{Spec: "openai-codex/gpt-5", Provider: "openai-codex", DisplayName: "GPT-5"},
+}
 
-	var resp struct {
-		Data []struct {
-			ID                 string `json:"id"`
-			Name               string `json:"name"`
-			ModelPickerEnabled *bool  `json:"model_picker_enabled"`
-			Capabilities       struct {
-				Type string `json:"type"`
-			} `json:"capabilities"`
-		} `json:"data"`
-	}
-	if err := getModelsJSON(ctx, strings.TrimRight(base, "/")+"/models", headers, &resp); err != nil {
-		return nil, err
-	}
-
-	out := make([]ModelListing, 0, len(resp.Data))
-	seen := map[string]bool{}
-	for _, m := range resp.Data {
-		if m.ID == "" || seen[m.ID] {
-			continue
-		}
-		// Only chat models a user can actually pick.
-		if m.Capabilities.Type != "" && m.Capabilities.Type != "chat" {
-			continue
-		}
-		if m.ModelPickerEnabled != nil && !*m.ModelPickerEnabled {
-			continue
-		}
-		seen[m.ID] = true
-		name := m.Name
-		if name == "" {
-			name = m.ID
-		}
-		out = append(out, ModelListing{
-			Spec:        "github-copilot/" + m.ID,
-			Provider:    "github-copilot",
-			DisplayName: name,
-		})
-	}
-	// Copilot's catalogue has no timestamps; keep stable alphabetical-ish order
-	// by display name so the list isn't random.
-	sort.SliceStable(out, func(i, j int) bool { return out[i].DisplayName < out[j].DisplayName })
+// listCodexModels returns the curated Codex catalogue. It takes no credential
+// because there is nothing to fetch — ListAllModels still gates the call on the
+// user having a stored Codex login, so the models only surface once logged in.
+func listCodexModels() ([]ModelListing, error) {
+	out := make([]ModelListing, len(codexModels))
+	copy(out, codexModels)
 	return out, nil
 }
 

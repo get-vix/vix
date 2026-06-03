@@ -22,7 +22,13 @@ import (
 // re-send the full conversation each turn rather than relying on the
 // server's previous_response_id linking, so the abstraction is symmetric
 // across providers.
+//
+// The same adapter backs the ChatGPT/Codex subscription (see NewCodex), which
+// speaks the identical Responses wire format against a different base URL and
+// auth headers; provider records which one so logging and Provider() report it
+// correctly.
 type openaiClient struct {
+	provider             ProviderID
 	sdk                  openai.Client
 	model                string
 	effort               string
@@ -49,6 +55,13 @@ func NewOpenAI(cfg Config) (Client, error) {
 		opts = append(opts, option.WithBaseURL(cfg.BaseURL))
 	}
 
+	return newResponsesClient(cfg, ProviderOpenAI, opts), nil
+}
+
+// newResponsesClient builds a Responses-API adapter from a fully-assembled set
+// of SDK request options. Shared by NewOpenAI and NewCodex (Codex speaks the
+// same wire format against the ChatGPT backend).
+func newResponsesClient(cfg Config, provider ProviderID, opts []option.RequestOption) *openaiClient {
 	sdk := openai.NewClient(opts...)
 
 	idle := cfg.StreamIdle
@@ -61,6 +74,7 @@ func NewOpenAI(cfg Config) (Client, error) {
 	}
 
 	return &openaiClient{
+		provider:             provider,
 		sdk:                  sdk,
 		model:                cfg.Model,
 		effort:               cfg.Effort,
@@ -69,10 +83,10 @@ func NewOpenAI(cfg Config) (Client, error) {
 		systemPrefix:         cfg.PluginCfg.SystemPrefix,
 		streamIdleTimeout:    idle,
 		thinkingStallTimeout: stall,
-	}, nil
+	}
 }
 
-func (o *openaiClient) Provider() ProviderID          { return ProviderOpenAI }
+func (o *openaiClient) Provider() ProviderID          { return o.provider }
 func (o *openaiClient) Model() string                 { return o.model }
 func (o *openaiClient) Credential() config.Credential { return o.cred }
 func (o *openaiClient) MaxTokens() int64              { return o.maxTokens }
@@ -180,8 +194,8 @@ func (o *openaiClient) StreamMessageWith(
 		reqID = NewRequestID()
 		ctx = WithRequestID(ctx, reqID)
 	}
-	log.Printf("[llm req=%s] stream_start provider=openai model=%s max_tokens=%d messages=%d tools=%d effort=%q",
-		reqID, o.model, maxTokens, len(messages), len(tools), effort)
+	log.Printf("[llm req=%s] stream_start provider=%s model=%s max_tokens=%d messages=%d tools=%d effort=%q",
+		reqID, o.provider, o.model, maxTokens, len(messages), len(tools), effort)
 
 	stream := o.sdk.Responses.NewStreaming(ctx, params)
 

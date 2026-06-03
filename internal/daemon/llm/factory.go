@@ -96,12 +96,12 @@ func ParseModel(spec string) (ProviderID, string, error) {
 		return ProviderOpenAI, strings.TrimPrefix(spec, "openai/"), nil
 	case strings.HasPrefix(spec, "anthropic/"):
 		return ProviderAnthropic, strings.TrimPrefix(spec, "anthropic/"), nil
-	case strings.HasPrefix(spec, "github-copilot/"):
-		return ProviderCopilot, strings.TrimPrefix(spec, "github-copilot/"), nil
+	case strings.HasPrefix(spec, "openai-codex/"):
+		return ProviderCodex, strings.TrimPrefix(spec, "openai-codex/"), nil
 	case spec == "":
 		return "", "", fmt.Errorf("model spec is empty")
 	default:
-		return "", "", fmt.Errorf("model spec %q must start with anthropic/, openai/, openrouter/, minimax/, mimo/, or github-copilot/", spec)
+		return "", "", fmt.Errorf("model spec %q must start with anthropic/, openai/, openai-codex/, openrouter/, minimax/, or mimo/", spec)
 	}
 }
 
@@ -126,7 +126,7 @@ func DefaultEffortFromSpec(spec string) string {
 			return "medium"
 		}
 		return ""
-	case ProviderOpenAI, ProviderOpenRouter:
+	case ProviderOpenAI, ProviderOpenRouter, ProviderCodex:
 		if isReasoningOpenAIModel(model) {
 			return "medium"
 		}
@@ -169,8 +169,8 @@ func EnvVarFor(p ProviderID) string {
 		return "MINIMAX_API_KEY"
 	case ProviderMiMo:
 		return "MIMO_API_KEY"
-	case ProviderCopilot:
-		return "" // OAuth-only: `vix login github-copilot`
+	case ProviderCodex:
+		return "" // OAuth-only: `vix login openai-codex`
 	}
 	return ""
 }
@@ -216,8 +216,8 @@ func NewFromModel(spec string, plugin PluginConfig, effort string, maxTokens int
 		return NewMiniMax(cfg)
 	case ProviderMiMo:
 		return NewMiMo(cfg)
-	case ProviderCopilot:
-		return NewCopilot(cfg)
+	case ProviderCodex:
+		return NewCodex(cfg)
 	}
 	return nil, fmt.Errorf("unsupported provider: %s", prov)
 }

@@ -28,24 +28,3 @@ func TestParseAuthorizationInput(t *testing.T) {
 		})
 	}
 }
-
-func TestNormalizeDomain(t *testing.T) {
-	cases := []struct {
-		in   string
-		want string
-	}{
-		{"company.ghe.com", "company.ghe.com"},
-		{"https://company.ghe.com", "company.ghe.com"},
-		{"https://company.ghe.com/some/path", "company.ghe.com"},
-		{"http://sub.example.org:8080/x", "sub.example.org"},
-		{"  github.com  ", "github.com"},
-		{"", ""},
-		{"https://", ""},
-		{"foo bar", ""},
-	}
-	for _, tc := range cases {
-		if got := normalizeDomain(tc.in); got != tc.want {
-			t.Errorf("normalizeDomain(%q) = %q, want %q", tc.in, got, tc.want)
-		}
-	}
-}

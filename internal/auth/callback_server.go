@@ -19,9 +19,9 @@ type callbackResult struct {
 }
 
 // callbackHost returns the interface the local OAuth callback server binds to.
-// It honours pi's PI_OAUTH_CALLBACK_HOST override and defaults to 127.0.0.1.
+// It honours the VIX_OAUTH_CALLBACK_HOST override and defaults to 127.0.0.1.
 func callbackHost() string {
-	if h := os.Getenv("PI_OAUTH_CALLBACK_HOST"); h != "" {
+	if h := os.Getenv("VIX_OAUTH_CALLBACK_HOST"); h != "" {
 		return h
 	}
 	return "127.0.0.1"
@@ -85,7 +85,7 @@ type callbackServer struct {
 }
 
 // startCallbackServer binds host:port and serves the redirect handler at path.
-// redirectURI is reported as http://localhost:port/path to match pi.
+// redirectURI is reported to the provider as http://localhost:port/path.
 func startCallbackServer(host string, port int, path, successMsg, expectedState string) (*callbackServer, error) {
 	results := make(chan callbackResult, 1)
 	handler := newCallbackHandler(path, expectedState, successMsg, results)
@@ -134,8 +134,8 @@ func (cs *callbackServer) close() {
 
 // waitForAuthorizationCode resolves the authorization code for a callback-based
 // flow. When OnManualCodeInput is provided it is raced against the local
-// callback server (whichever resolves first wins), mirroring pi's behaviour.
-// A returned empty code means the caller should fall back to OnPrompt.
+// callback server (whichever resolves first wins). A returned empty code means
+// the caller should fall back to OnPrompt.
 func waitForAuthorizationCode(ctx context.Context, server *callbackServer, cb LoginCallbacks, expectedState string) (code, state string, err error) {
 	if cb.OnManualCodeInput == nil {
 		res, ok := server.waitForCode(ctx)

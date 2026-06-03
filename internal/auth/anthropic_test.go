@@ -21,16 +21,19 @@ func TestAnthropicProviderBasics(t *testing.T) {
 	if p.clientID != "9d1c250a-e61b-44d9-88ed-5944d1962f5e" {
 		t.Errorf("clientID = %q", p.clientID)
 	}
+	// The minted metered API key (stored under Extra) is the inference
+	// credential; Access is only a legacy fallback.
+	if got := p.APIKey(Credentials{Extra: map[string]any{"apiKey": "sk-ant-minted"}}); got != "sk-ant-minted" {
+		t.Errorf("APIKey (minted) = %q", got)
+	}
 	if got := p.APIKey(Credentials{Access: "tok"}); got != "tok" {
-		t.Errorf("APIKey = %q", got)
+		t.Errorf("APIKey (fallback) = %q", got)
 	}
 }
 
 func TestAnthropicExchangeAuthorizationCode(t *testing.T) {
-	setNow(t, 1_000_000)
-
-	var gotGrant string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var gotGrant, gotKeyAuth string
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var m map[string]any
 		_ = json.Unmarshal(body, &m)
@@ -38,10 +41,18 @@ func TestAnthropicExchangeAuthorizationCode(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"access_token":"acc","refresh_token":"ref","expires_in":3600}`))
 	}))
-	defer srv.Close()
+	defer tokenSrv.Close()
+
+	keySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotKeyAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"raw_key":"sk-ant-minted"}`))
+	}))
+	defer keySrv.Close()
 
 	p := newAnthropicProvider()
-	p.tokenURL = srv.URL
+	p.tokenURL = tokenSrv.URL
+	p.createAPIKeyURL = keySrv.URL
 
 	creds, err := p.exchangeAuthorizationCode(context.Background(), "code", "state", "verifier")
 	if err != nil {
@@ -50,12 +61,55 @@ func TestAnthropicExchangeAuthorizationCode(t *testing.T) {
 	if gotGrant != "authorization_code" {
 		t.Errorf("grant_type = %q", gotGrant)
 	}
-	if creds.Access != "acc" || creds.Refresh != "ref" {
-		t.Errorf("creds = %+v", creds)
+	// The minted key is requested with the freshly-obtained access token.
+	if gotKeyAuth != "Bearer acc" {
+		t.Errorf("create_api_key Authorization = %q, want %q", gotKeyAuth, "Bearer acc")
 	}
-	// 1_000_000 + 3600*1000 - 5*60*1000 = 4_300_000.
-	if creds.Expires != 4_300_000 {
-		t.Errorf("expires = %d, want 4300000", creds.Expires)
+	// The metered API key is stored as the credential; the raw OAuth tokens are
+	// discarded, and the credential is marked non-expiring.
+	if got := p.APIKey(creds); got != "sk-ant-minted" {
+		t.Errorf("minted key = %q, want sk-ant-minted", got)
+	}
+	if creds.Access != "" {
+		t.Errorf("raw access token should not be stored, got %q", creds.Access)
+	}
+	if creds.Expired() {
+		t.Errorf("minted-key credential should not be expired")
+	}
+}
+
+func TestAnthropicCreateAPIKey(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer the-access-token" {
+			t.Errorf("Authorization = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"raw_key":"sk-ant-raw"}`))
+	}))
+	defer srv.Close()
+
+	p := newAnthropicProvider()
+	p.createAPIKeyURL = srv.URL
+	key, err := p.createAPIKey(context.Background(), "the-access-token")
+	if err != nil {
+		t.Fatalf("createAPIKey: %v", err)
+	}
+	if key != "sk-ant-raw" {
+		t.Errorf("key = %q, want sk-ant-raw", key)
+	}
+}
+
+func TestAnthropicCreateAPIKeyHTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"forbidden"}`))
+	}))
+	defer srv.Close()
+
+	p := newAnthropicProvider()
+	p.createAPIKeyURL = srv.URL
+	if _, err := p.createAPIKey(context.Background(), "tok"); err == nil {
+		t.Fatal("expected error on non-2xx")
 	}
 }
 

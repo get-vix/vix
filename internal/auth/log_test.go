@@ -53,13 +53,19 @@ func TestHTTPErrorIsLogged(t *testing.T) {
 func TestTokenExchangeLogsAreRedacted(t *testing.T) {
 	logs := captureLogs(t)
 	const secret = "supersecret-access-token-value"
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	const mintedKey = "minted-secret-key"
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"access_token":"` + secret + `","refresh_token":"rrr-secret","expires_in":3600}`))
 	}))
-	defer srv.Close()
+	defer tokenSrv.Close()
+	keySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"raw_key":"` + mintedKey + `"}`))
+	}))
+	defer keySrv.Close()
 
 	p := newAnthropicProvider()
-	p.tokenURL = srv.URL
+	p.tokenURL = tokenSrv.URL
+	p.createAPIKeyURL = keySrv.URL
 	if _, err := p.exchangeAuthorizationCode(context.Background(), "c", "s", "v"); err != nil {
 		t.Fatalf("exchange: %v", err)
 	}
@@ -68,8 +74,8 @@ func TestTokenExchangeLogsAreRedacted(t *testing.T) {
 	if !strings.Contains(out, "token exchange succeeded") {
 		t.Errorf("expected success log, got:\n%s", out)
 	}
-	if strings.Contains(out, secret) || strings.Contains(out, "rrr-secret") {
-		t.Errorf("logs leaked a token:\n%s", out)
+	if strings.Contains(out, secret) || strings.Contains(out, "rrr-secret") || strings.Contains(out, mintedKey) {
+		t.Errorf("logs leaked a token or key:\n%s", out)
 	}
 	if !strings.Contains(out, "<redacted len=") {
 		t.Errorf("expected redaction marker, got:\n%s", out)

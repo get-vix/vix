@@ -132,36 +132,21 @@ func TestListAnthropicModelsOAuthHeaders(t *testing.T) {
 	}
 }
 
-func TestListCopilotModels(t *testing.T) {
-	var gotIntegration string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotIntegration = r.Header.Get("Copilot-Integration-Id")
-		_, _ = w.Write([]byte(`{"data":[
-			{"id":"gpt-4o","name":"GPT-4o","model_picker_enabled":true,"capabilities":{"type":"chat"}},
-			{"id":"text-embedding-3","capabilities":{"type":"embeddings"}},
-			{"id":"disabled","model_picker_enabled":false,"capabilities":{"type":"chat"}},
-			{"id":"claude-sonnet-4","name":"Claude Sonnet 4","capabilities":{"type":"chat"}}
-		]}`))
-	}))
-	defer srv.Close()
-
-	models, err := listCopilotModels(context.Background(), srv.URL, config.Credential{Value: "cop-tok"})
+func TestListCodexModels(t *testing.T) {
+	// Codex has no live model-list endpoint; the catalogue is curated in code.
+	models, err := listCodexModels()
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if gotIntegration != "vscode-chat" {
-		t.Errorf("Copilot-Integration-Id = %q", gotIntegration)
-	}
-	// embeddings + disabled excluded; gpt-4o + claude-sonnet-4 included.
 	got := map[string]string{}
 	for _, m := range models {
 		got[m.Spec] = m.DisplayName
-		if m.Provider != "github-copilot" {
-			t.Errorf("provider = %q", m.Provider)
+		if m.Provider != "openai-codex" {
+			t.Errorf("provider = %q, want openai-codex", m.Provider)
 		}
 	}
-	if len(got) != 2 || got["github-copilot/gpt-4o"] != "GPT-4o" || got["github-copilot/claude-sonnet-4"] == "" {
-		t.Errorf("copilot models = %+v", got)
+	if got["openai-codex/gpt-5-codex"] == "" || got["openai-codex/gpt-5"] == "" {
+		t.Errorf("codex models = %+v", got)
 	}
 }
 
@@ -177,16 +162,16 @@ func TestParseUnixOrRFC3339(t *testing.T) {
 	}
 }
 
-func TestParseModelCopilotRoute(t *testing.T) {
-	prov, model, err := ParseModel("github-copilot/claude-sonnet-4")
-	if err != nil || prov != ProviderCopilot || model != "claude-sonnet-4" {
-		t.Errorf("ParseModel copilot: prov=%v model=%q err=%v", prov, model, err)
+func TestParseModelCodexRoute(t *testing.T) {
+	prov, model, err := ParseModel("openai-codex/gpt-5-codex")
+	if err != nil || prov != ProviderCodex || model != "gpt-5-codex" {
+		t.Errorf("ParseModel codex: prov=%v model=%q err=%v", prov, model, err)
 	}
 }
 
 func TestProviderUsesOAuth(t *testing.T) {
-	if !ProviderAnthropic.UsesOAuth() || !ProviderCopilot.UsesOAuth() {
-		t.Error("anthropic and copilot should use OAuth")
+	if !ProviderAnthropic.UsesOAuth() || !ProviderCodex.UsesOAuth() {
+		t.Error("anthropic and codex should use OAuth")
 	}
 	if ProviderOpenAI.UsesOAuth() || ProviderOpenRouter.UsesOAuth() {
 		t.Error("openai/openrouter should not use OAuth")

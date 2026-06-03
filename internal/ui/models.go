@@ -7,7 +7,7 @@ import "strings"
 // session.set_model — the picker never sends a bare model name.
 type ModelInfo struct {
 	Spec        string // full prefixed identifier, e.g. "anthropic/claude-opus-4-8"
-	Provider    string // "anthropic" | "openai" | "openrouter" | "minimax" | "mimo"
+	Provider    string // "anthropic" | "openai" | "openai-codex" | "openrouter" | "minimax" | "mimo"
 	DisplayName string // human-readable label shown in the UI
 }
 
@@ -23,10 +23,10 @@ type ProviderInfo struct {
 var AvailableProviders = []ProviderInfo{
 	{Name: "anthropic", DisplayName: "Anthropic"},
 	{Name: "openai", DisplayName: "OpenAI"},
+	{Name: "openai-codex", DisplayName: "OpenAI Codex"},
 	{Name: "openrouter", DisplayName: "OpenRouter"},
 	{Name: "minimax", DisplayName: "MiniMax"},
 	{Name: "mimo", DisplayName: "Xiaomi MiMo"},
-	{Name: "github-copilot", DisplayName: "GitHub Copilot"},
 }
 
 // AvailableModels is the curated catalogue of selectable models. OpenRouter
@@ -51,6 +51,10 @@ var AvailableModels = []ModelInfo{
 	{Spec: "openai/o4-mini", Provider: "openai", DisplayName: "o4 Mini"},
 	{Spec: "openai/gpt-4o", Provider: "openai", DisplayName: "GPT-4o"},
 	{Spec: "openai/gpt-4o-mini", Provider: "openai", DisplayName: "GPT-4o Mini"},
+	// OpenAI Codex (ChatGPT subscription) — curated; the ChatGPT backend has no
+	// public model-list endpoint, so these mirror llm.codexModels.
+	{Spec: "openai-codex/gpt-5-codex", Provider: "openai-codex", DisplayName: "GPT-5 Codex"},
+	{Spec: "openai-codex/gpt-5", Provider: "openai-codex", DisplayName: "GPT-5"},
 	// OpenRouter — curated popular routes; arbitrary slugs go via agent frontmatter.
 	{Spec: "openrouter/anthropic/claude-opus-4-8", Provider: "openrouter", DisplayName: "Claude Opus 4.8 (via OpenRouter)"},
 	{Spec: "openrouter/anthropic/claude-sonnet-4-6", Provider: "openrouter", DisplayName: "Claude Sonnet 4.6 (via OpenRouter)"},
@@ -83,14 +87,14 @@ func providerAuthHint(provider string) []string {
 		return []string{"run: vix login anthropic", "or set ANTHROPIC_API_KEY"}
 	case "openai":
 		return []string{"set OPENAI_API_KEY"}
+	case "openai-codex":
+		return []string{"run: vix login openai-codex"}
 	case "openrouter":
 		return []string{"set OPENROUTER_API_KEY"}
 	case "minimax":
 		return []string{"set MINIMAX_API_KEY"}
 	case "mimo":
 		return []string{"set MIMO_API_KEY"}
-	case "github-copilot":
-		return []string{"run: vix login github-copilot"}
 	}
 	return []string{"no models available"}
 }

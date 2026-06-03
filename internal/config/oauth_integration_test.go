@@ -15,14 +15,14 @@ func init() {
 	auth.SetLogger(slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
-// storeAnthropicOAuth stores a non-expired anthropic OAuth login in the (mock)
-// keychain and registers cleanup.
-func storeAnthropicOAuth(t *testing.T, access string) {
+// storeAnthropicOAuth stores a completed anthropic login in the (mock)
+// keychain and registers cleanup. A real `vix login anthropic` mints a metered
+// API key (stored under Extra) and marks the credential non-expiring.
+func storeAnthropicOAuth(t *testing.T, apiKey string) {
 	t.Helper()
 	creds := auth.Credentials{
-		Access:  access,
-		Refresh: "refresh-token",
-		Expires: time.Now().Add(time.Hour).UnixMilli(),
+		Expires: time.Now().Add(100 * time.Hour).UnixMilli(),
+		Extra:   map[string]any{"apiKey": apiKey},
 	}
 	if err := auth.DefaultStorage().Set("anthropic", creds); err != nil {
 		t.Fatalf("store oauth: %v", err)
@@ -34,20 +34,21 @@ func TestResolveProviderKey_StoredOAuthLogin(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
 	DeleteProviderKey("anthropic")
-	storeAnthropicOAuth(t, "oauth-access-token")
+	storeAnthropicOAuth(t, "minted-api-key")
 
 	key, source := ResolveProviderKey("anthropic", true)
-	if key != "oauth-access-token" {
-		t.Errorf("key = %q, want oauth-access-token", key)
+	if key != "minted-api-key" {
+		t.Errorf("key = %q, want minted-api-key", key)
 	}
-	if source != KeySourceOAuthToken {
-		t.Errorf("source = %q, want %q", source, KeySourceOAuthToken)
+	// The minted key is sent as x-api-key, not a Bearer OAuth token.
+	if source != KeySourceOAuthAPIKey {
+		t.Errorf("source = %q, want %q", source, KeySourceOAuthAPIKey)
 	}
 }
 
 func TestResolveProviderKey_EnvWinsOverStoredOAuth(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "env-key")
-	storeAnthropicOAuth(t, "oauth-access-token")
+	storeAnthropicOAuth(t, "minted-api-key")
 
 	key, source := ResolveProviderKey("anthropic", true)
 	if key != "env-key" || source != KeySourceEnv {
@@ -59,7 +60,7 @@ func TestResolveProviderKey_StoredOAuthSkippedWhenDisallowed(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
 	DeleteProviderKey("anthropic")
-	storeAnthropicOAuth(t, "oauth-access-token")
+	storeAnthropicOAuth(t, "minted-api-key")
 
 	key, source := ResolveProviderKey("anthropic", false)
 	if key != "" || source != KeySourceNone {
@@ -71,18 +72,18 @@ func TestResolveProviderCredentialFresh_StoredOAuth(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
 	DeleteProviderKey("anthropic")
-	storeAnthropicOAuth(t, "oauth-access-token")
+	storeAnthropicOAuth(t, "minted-api-key")
 
-	// Token is valid (not expired) so no network refresh happens.
+	// Credential is valid (not expired) so no network refresh happens.
 	cred := ResolveProviderCredentialFresh(context.Background(), "anthropic", true)
-	if cred.Value != "oauth-access-token" || cred.Source != KeySourceOAuthToken {
+	if cred.Value != "minted-api-key" || cred.Source != KeySourceOAuthAPIKey {
 		t.Errorf("cred = %+v", cred)
 	}
 }
 
 func TestResolveProviderCredentialFresh_EnvKeyWins(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "env-key")
-	storeAnthropicOAuth(t, "oauth-access-token")
+	storeAnthropicOAuth(t, "minted-api-key")
 
 	cred := ResolveProviderCredentialFresh(context.Background(), "anthropic", true)
 	if cred.Value != "env-key" || cred.Source != KeySourceEnv {

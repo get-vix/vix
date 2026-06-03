@@ -25,7 +25,7 @@ const openaiCodexJWTClaimPath = "https://api.openai.com/auth"
 
 // openaiCodexProvider implements the ChatGPT (Codex subscription) OAuth flow,
 // offering both a browser (authorization code + PKCE) and a headless
-// device-code path. Ported from pi's openai-codex.ts.
+// device-code path.
 type openaiCodexProvider struct {
 	clientID              string
 	authorizeURL          string
@@ -317,7 +317,7 @@ func (p *openaiCodexProvider) pollDeviceAuth(ctx context.Context, device codexDe
 }
 
 // coerceInterval accepts a JSON number or numeric string and returns its
-// integer value. Mirrors pi accepting `interval` as number or string.
+// integer value (the device-auth `interval` field arrives as either).
 func coerceInterval(v any) (int, bool) {
 	switch x := v.(type) {
 	case float64:
@@ -367,6 +367,13 @@ func createState() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
+}
+
+// CodexAccountID extracts the chatgpt_account_id claim from a Codex OAuth
+// access token (a JWT), or "" if absent. Inference adapters send it as the
+// chatgpt-account-id header.
+func CodexAccountID(accessToken string) string {
+	return openaiCodexAccountID(accessToken)
 }
 
 // openaiCodexAccountID extracts the chatgpt_account_id claim from an access

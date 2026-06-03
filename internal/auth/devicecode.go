@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// Device-code polling messages and constants, ported from pi's device-code.ts.
+// Device-code polling messages and constants (RFC 8628).
 const (
 	deviceCancelMessage          = "Login cancelled"
 	deviceTimeoutMessage         = "Device flow timed out"
@@ -50,9 +50,8 @@ type devicePollOptions[T any] struct {
 }
 
 // pollDeviceCode drives an RFC 8628 device-authorization poll loop until the
-// flow completes, fails, times out, or ctx is cancelled. It mirrors pi's
-// pollOAuthDeviceCodeFlow, including slow_down handling and the WSL clock-drift
-// hint on timeout.
+// flow completes, fails, times out, or ctx is cancelled, including slow_down
+// handling and the WSL clock-drift hint on timeout.
 func pollDeviceCode[T any](ctx context.Context, opts devicePollOptions[T]) (T, error) {
 	var zero T
 

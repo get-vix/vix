@@ -3,13 +3,13 @@ package auth
 import "testing"
 
 func TestBuiltinProvidersRegistered(t *testing.T) {
-	for _, id := range []string{"anthropic", "github-copilot", "openai-codex"} {
+	for _, id := range []string{"anthropic", "openai-codex"} {
 		if _, ok := GetProvider(id); !ok {
 			t.Errorf("built-in provider %q not registered", id)
 		}
 	}
-	if got := len(GetProviders()); got != 3 {
-		t.Errorf("GetProviders len = %d, want 3", got)
+	if got := len(GetProviders()); got != 2 {
+		t.Errorf("GetProviders len = %d, want 2", got)
 	}
 }
 
@@ -22,16 +22,16 @@ func TestRegisterAndUnregisterCustomProvider(t *testing.T) {
 	if _, ok := GetProvider("custom"); !ok {
 		t.Fatal("custom provider not found after register")
 	}
-	if len(GetProviders()) != 4 {
-		t.Errorf("expected 4 providers after register")
+	if len(GetProviders()) != 3 {
+		t.Errorf("expected 3 providers after register")
 	}
 
 	UnregisterProvider("custom")
 	if _, ok := GetProvider("custom"); ok {
 		t.Error("custom provider still present after unregister")
 	}
-	if len(GetProviders()) != 3 {
-		t.Errorf("expected 3 providers after unregister")
+	if len(GetProviders()) != 2 {
+		t.Errorf("expected 2 providers after unregister")
 	}
 }
 
@@ -57,7 +57,7 @@ func TestResetProviders(t *testing.T) {
 	if _, ok := GetProvider("temp"); ok {
 		t.Error("ResetProviders did not drop custom provider")
 	}
-	if len(GetProviders()) != 3 {
-		t.Errorf("expected 3 providers after reset")
+	if len(GetProviders()) != 2 {
+		t.Errorf("expected 2 providers after reset")
 	}
 }
