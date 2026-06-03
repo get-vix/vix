@@ -118,12 +118,7 @@ func Track(event string, properties map[string]interface{}) {
 		return
 	}
 
-	props := posthog.NewProperties()
-	// Common properties
-	props.Set("version", version)
-	props.Set("os", runtime.GOOS)
-	props.Set("arch", runtime.GOARCH)
-	props.Set("mode", mode)
+	props := commonProps()
 
 	// Merge caller properties
 	for k, v := range properties {
@@ -137,16 +132,55 @@ func Track(event string, properties map[string]interface{}) {
 	})
 }
 
+// commonProps returns the build/runtime properties attached to every event.
+func commonProps() posthog.Properties {
+	return posthog.NewProperties().
+		Set("version", version).
+		Set("os", runtime.GOOS).
+		Set("arch", runtime.GOARCH).
+		Set("mode", mode)
+}
+
 // CaptureException reports an error or panic to PostHog error tracking.
 // typ is the title shown in the UI (e.g. "panic"); value is the description.
-// NewDefaultException auto-generates the stack trace at the call site, so this
-// is best invoked directly from a recover() block. Safe to call when telemetry
+// extra carries additional context properties (e.g. the raw goroutine stack)
+// that surface in the exception's Properties tab. Safe to call when telemetry
 // is disabled (no-op).
-func CaptureException(typ, value string) {
+//
+// We build the $exception event by hand via posthog.Capture rather than
+// posthog.NewDefaultException: the SDK's Exception type exposes no arbitrary
+// properties map, so common/extra context could not otherwise reach the
+// Properties tab. PostHog's error tracking ingests any event named "$exception"
+// that carries an "$exception_list" property, so this is equivalent to what
+// Exception.APIfy() emits, plus our extra properties.
+func CaptureException(typ, value string, extra map[string]interface{}) {
 	if !enabled {
 		return
 	}
-	client.Enqueue(posthog.NewDefaultException(time.Now(), deviceID, typ, value))
+
+	// GetStackTrace's skip is measured from the live stack at this point.
+	// Call chain is runtime.Callers(0) -> GetStackTrace(1) -> CaptureException(2)
+	// -> TrackPanic(3) -> the recover site(4), so skip=4 drops the telemetry
+	// plumbing and starts at application code. This is faithful to the current
+	// sole caller (TrackPanic); the raw debug.Stack() passed via extra remains
+	// the authoritative trace regardless.
+	stack := posthog.DefaultStackTraceExtractor{InAppDecider: posthog.SimpleInAppDecider}.GetStackTrace(4)
+
+	props := commonProps()
+	props.Set("$exception_list", []posthog.ExceptionItem{{
+		Type:       typ,
+		Value:      value,
+		Stacktrace: stack,
+	}})
+	for k, v := range extra {
+		props.Set(k, v)
+	}
+
+	client.Enqueue(posthog.Capture{
+		DistinctId: deviceID,
+		Event:      "$exception",
+		Properties: props,
+	})
 }
 
 // HashWorkflowName returns a truncated SHA256 hex digest of the workflow name.
