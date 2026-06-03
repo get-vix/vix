@@ -1,6 +1,6 @@
 <div align="center">
 
-![vix logo](assets/logo.svg)
+<img src="assets/logo.svg" alt="vix logo" width="200" />
 
 Sleek, Fast and Token Efficient AI Coding Agent
 
