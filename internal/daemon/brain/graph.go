@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/kirby88/vix/internal/daemon/brain/lsp"
+	"github.com/get-vix/vix/internal/daemon/brain/lsp"
 )
 
 var (

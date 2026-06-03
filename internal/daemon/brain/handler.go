@@ -6,8 +6,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/kirby88/vix/internal/config"
-	"github.com/kirby88/vix/internal/daemon/brain/lsp"
+	"github.com/get-vix/vix/internal/config"
+	"github.com/get-vix/vix/internal/daemon/brain/lsp"
 )
 
 var daemonCtx context.Context

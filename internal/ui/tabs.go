@@ -7,7 +7,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 
-	"github.com/kirby88/vix/internal/config"
+	"github.com/get-vix/vix/internal/config"
 )
 
 // TabKind identifies the type of a tab.

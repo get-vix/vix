@@ -6,7 +6,7 @@ import (
 	"log"
 	"strings"
 
-	"github.com/kirby88/vix/internal/daemon/llm"
+	"github.com/get-vix/vix/internal/daemon/llm"
 )
 
 // toolEntry pairs a qualified tool name with the server that owns it.

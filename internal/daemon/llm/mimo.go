@@ -9,7 +9,7 @@ import (
 	"github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/packages/param"
 
-	"github.com/kirby88/vix/internal/config"
+	"github.com/get-vix/vix/internal/config"
 )
 
 // mimoClient is the Xiaomi MiMo adapter. MiMo exposes an OpenAI-compatible

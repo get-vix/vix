@@ -6,7 +6,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 
-	"github.com/kirby88/vix/internal/protocol"
+	"github.com/get-vix/vix/internal/protocol"
 )
 
 // workflowGraphStep holds per-step state for the workflow graph panel.

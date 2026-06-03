@@ -15,13 +15,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kirby88/vix/internal/agent"
-	"github.com/kirby88/vix/internal/config"
-	"github.com/kirby88/vix/internal/daemon/llm"
-	"github.com/kirby88/vix/internal/daemon/mcp"
-	"github.com/kirby88/vix/internal/daemon/prompt"
-	"github.com/kirby88/vix/internal/protocol"
-	"github.com/kirby88/vix/internal/telemetry"
+	"github.com/get-vix/vix/internal/agent"
+	"github.com/get-vix/vix/internal/config"
+	"github.com/get-vix/vix/internal/daemon/llm"
+	"github.com/get-vix/vix/internal/daemon/mcp"
+	"github.com/get-vix/vix/internal/daemon/prompt"
+	"github.com/get-vix/vix/internal/protocol"
+	"github.com/get-vix/vix/internal/telemetry"
 )
 
 // Session manages a single agent session over a persistent socket connection.

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kirby88/vix/internal/daemon/llm"
+	"github.com/get-vix/vix/internal/daemon/llm"
 )
 
 // resolveToolTimeout enforces the configurable tool timeout rule:

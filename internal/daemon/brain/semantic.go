@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/kirby88/vix/internal/config"
+	"github.com/get-vix/vix/internal/config"
 )
 
 const (

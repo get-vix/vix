@@ -7,7 +7,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/lucasb-eyer/go-colorful"
 
-	"github.com/kirby88/vix/internal/config"
+	"github.com/get-vix/vix/internal/config"
 )
 
 // lighten blends a hex color toward white by the given factor (0.0 = unchanged, 1.0 = white).

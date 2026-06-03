@@ -4,8 +4,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/kirby88/vix/internal/daemon/brain"
-	"github.com/kirby88/vix/internal/daemon/brain/lsp"
+	"github.com/get-vix/vix/internal/daemon/brain"
+	"github.com/get-vix/vix/internal/daemon/brain/lsp"
 )
 
 func TestMain(m *testing.M) {

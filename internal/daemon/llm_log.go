@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kirby88/vix/internal/daemon/llm"
+	"github.com/get-vix/vix/internal/daemon/llm"
 )
 
 // llmLogDir is the directory for LLM call logs, set during server init.

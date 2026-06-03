@@ -116,7 +116,7 @@ VIX_POSTHOG_API_KEY=""
 if [[ -f "$ROOT_DIR/.env" ]]; then
   VIX_POSTHOG_API_KEY="$(grep '^VIX_POSTHOG_API_KEY=' "$ROOT_DIR/.env" | head -n1 | cut -d= -f2-)"
 fi
-TELEMETRY_PKG="github.com/kirby88/vix/internal/telemetry"
+TELEMETRY_PKG="github.com/get-vix/vix/internal/telemetry"
 KEY_LDFLAG=""
 if [[ -n "$VIX_POSTHOG_API_KEY" ]]; then
   KEY_LDFLAG="-X ${TELEMETRY_PKG}.embeddedAPIKey=${VIX_POSTHOG_API_KEY}"

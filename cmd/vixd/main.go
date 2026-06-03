@@ -14,10 +14,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/kirby88/vix/internal/config"
-	"github.com/kirby88/vix/internal/daemon"
-	"github.com/kirby88/vix/internal/daemon/brain"
-	"github.com/kirby88/vix/internal/telemetry"
+	"github.com/get-vix/vix/internal/config"
+	"github.com/get-vix/vix/internal/daemon"
+	"github.com/get-vix/vix/internal/daemon/brain"
+	"github.com/get-vix/vix/internal/telemetry"
 )
 
 var Version = "dev"

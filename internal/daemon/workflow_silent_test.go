@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kirby88/vix/internal/protocol"
+	"github.com/get-vix/vix/internal/protocol"
 )
 
 // newMinimalSession builds a Session wired just enough to exercise the

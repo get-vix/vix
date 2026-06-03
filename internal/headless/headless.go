@@ -11,8 +11,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/kirby88/vix/internal/daemon"
-	"github.com/kirby88/vix/internal/protocol"
+	"github.com/get-vix/vix/internal/daemon"
+	"github.com/get-vix/vix/internal/protocol"
 )
 
 // OutputFormat controls how the headless result is printed.

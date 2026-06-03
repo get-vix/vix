@@ -17,11 +17,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kirby88/vix/internal/config"
-	"github.com/kirby88/vix/internal/daemon/llm"
-	"github.com/kirby88/vix/internal/daemon/mcp"
-	promptloader "github.com/kirby88/vix/internal/daemon/prompt"
-	"github.com/kirby88/vix/internal/protocol"
+	"github.com/get-vix/vix/internal/config"
+	"github.com/get-vix/vix/internal/daemon/llm"
+	"github.com/get-vix/vix/internal/daemon/mcp"
+	promptloader "github.com/get-vix/vix/internal/daemon/prompt"
+	"github.com/get-vix/vix/internal/protocol"
 )
 
 // ErrMaxTokens is returned when the LLM response was truncated due to the output token limit.

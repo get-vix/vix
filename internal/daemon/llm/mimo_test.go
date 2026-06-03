@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kirby88/vix/internal/config"
+	"github.com/get-vix/vix/internal/config"
 )
 
 const mimoMinimalChunk = `{"id":"x","object":"chat.completion.chunk","created":1,"model":"x","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":0}}}`

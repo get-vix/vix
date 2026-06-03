@@ -15,7 +15,7 @@ import (
 	"github.com/openai/openai-go/responses"
 	"github.com/openai/openai-go/shared"
 
-	"github.com/kirby88/vix/internal/config"
+	"github.com/get-vix/vix/internal/config"
 )
 
 // openaiClient is the OpenAI Responses API adapter. Stateless mode — we

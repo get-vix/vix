@@ -7,7 +7,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/kirby88/vix/internal/protocol"
+	"github.com/get-vix/vix/internal/protocol"
 )
 
 const maxImageSize = 20 * 1024 * 1024 // 20MB

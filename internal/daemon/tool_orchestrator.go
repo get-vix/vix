@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/kirby88/vix/internal/protocol"
+	"github.com/get-vix/vix/internal/protocol"
 )
 
 // orchestratorAllowedTools is the whitelist of tools callable from tool_orchestrator.

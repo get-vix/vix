@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/kirby88/vix/internal/daemon/llm"
+	"github.com/get-vix/vix/internal/daemon/llm"
 )
 
 // Tool-input validation.

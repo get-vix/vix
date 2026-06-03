@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kirby88/vix/internal/config"
+	"github.com/get-vix/vix/internal/config"
 )
 
 // Config is the shared input set every adapter constructor takes.

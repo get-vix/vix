@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kirby88/vix/internal/config"
+	"github.com/get-vix/vix/internal/config"
 	"golang.org/x/net/websocket"
 )
 
