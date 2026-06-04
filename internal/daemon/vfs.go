@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/kirby88/vix/internal/daemon/brain/lsp"
+	"github.com/get-vix/vix/internal/daemon/brain/lsp"
 )
 
 // errVFSUnsupported is returned when the file cannot be minified by Tree-sitter.

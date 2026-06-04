@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/kirby88/vix/internal/daemon/brain"
+	"github.com/get-vix/vix/internal/daemon/brain"
 
 	_ "modernc.org/sqlite"
 )

@@ -1,4 +1,4 @@
-module github.com/kirby88/vix
+module github.com/get-vix/vix
 
 go 1.26.0
 

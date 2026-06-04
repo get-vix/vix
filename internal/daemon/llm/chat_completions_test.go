@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kirby88/vix/internal/config"
+	"github.com/get-vix/vix/internal/config"
 )
 
 // --- Pure translation tests (no network) ---

@@ -12,10 +12,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	vixconfig "github.com/kirby88/vix/internal/config"
-	"github.com/kirby88/vix/internal/daemon/llm"
-	promptloader "github.com/kirby88/vix/internal/daemon/prompt"
-	"github.com/kirby88/vix/internal/protocol"
+	vixconfig "github.com/get-vix/vix/internal/config"
+	"github.com/get-vix/vix/internal/daemon/llm"
+	promptloader "github.com/get-vix/vix/internal/daemon/prompt"
+	"github.com/get-vix/vix/internal/protocol"
 )
 
 // SubagentConfig defines how a subagent behaves.

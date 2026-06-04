@@ -3,7 +3,7 @@ package brain
 import (
 	"path/filepath"
 
-	"github.com/kirby88/vix/internal/daemon/brain/lsp"
+	"github.com/get-vix/vix/internal/daemon/brain/lsp"
 )
 
 // ParseFile extracts symbols from a single file via LSP.

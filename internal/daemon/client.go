@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kirby88/vix/internal/protocol"
+	"github.com/get-vix/vix/internal/protocol"
 )
 
 // ToolResult holds the result of a tool execution from the daemon.

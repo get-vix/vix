@@ -3,7 +3,7 @@ package daemon
 import (
 	"testing"
 
-	"github.com/kirby88/vix/internal/daemon/llm"
+	"github.com/get-vix/vix/internal/daemon/llm"
 )
 
 // makeMsg is a helper that builds a minimal user MessageParam with the given text.

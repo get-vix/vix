@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/kirby88/vix/internal/daemon/llm"
+	"github.com/get-vix/vix/internal/daemon/llm"
 )
 
 // buildToolUseMessage builds a neutral *llm.Message containing N tool_use

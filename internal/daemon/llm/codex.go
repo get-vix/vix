@@ -6,7 +6,7 @@ import (
 
 	"github.com/openai/openai-go/option"
 
-	"github.com/kirby88/vix/internal/auth"
+	"github.com/get-vix/vix/internal/auth"
 )
 
 // codexBaseURL is the ChatGPT backend's Codex Responses endpoint root. The SDK

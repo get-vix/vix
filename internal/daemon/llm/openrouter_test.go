@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kirby88/vix/internal/config"
+	"github.com/get-vix/vix/internal/config"
 )
 
 // orMinimalSSE emits a single chat.completion.chunk with finish_reason

@@ -4,9 +4,9 @@ import (
 	"time"
 
 	"charm.land/bubbles/v2/textarea"
-	"github.com/kirby88/vix/internal/config"
-	"github.com/kirby88/vix/internal/daemon"
-	"github.com/kirby88/vix/internal/protocol"
+	"github.com/get-vix/vix/internal/config"
+	"github.com/get-vix/vix/internal/daemon"
+	"github.com/get-vix/vix/internal/protocol"
 )
 
 // SessionState holds all accumulated UI state for a single agent session.

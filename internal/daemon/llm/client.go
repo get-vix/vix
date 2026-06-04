@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/kirby88/vix/internal/config"
+	"github.com/get-vix/vix/internal/config"
 )
 
 // Client is the provider-neutral LLM interface. One Client is bound to a

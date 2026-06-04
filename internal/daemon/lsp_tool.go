@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kirby88/vix/internal/daemon/brain"
-	"github.com/kirby88/vix/internal/daemon/brain/lsp"
+	"github.com/get-vix/vix/internal/daemon/brain"
+	"github.com/get-vix/vix/internal/daemon/brain/lsp"
 )
 
 // lspQueryImpl implements the lsp_query tool.

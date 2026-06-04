@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kirby88/vix/internal/auth"
+	"github.com/get-vix/vix/internal/auth"
 )
 
 // Keep auth-flow logs out of the real ~/.vix/logs/auth.log during config tests.

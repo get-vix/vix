@@ -18,9 +18,9 @@ import (
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/ultraviolet/screen"
 
-	"github.com/kirby88/vix/internal/config"
-	"github.com/kirby88/vix/internal/daemon"
-	"github.com/kirby88/vix/internal/protocol"
+	"github.com/get-vix/vix/internal/config"
+	"github.com/get-vix/vix/internal/daemon"
+	"github.com/get-vix/vix/internal/protocol"
 )
 
 // teaProgram holds the Bubble Tea program reference for event injection via Send().

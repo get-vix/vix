@@ -26,7 +26,7 @@ import (
 	tree_sitter_rust "github.com/tree-sitter/tree-sitter-rust/bindings/go"
 	tree_sitter_typescript "github.com/tree-sitter/tree-sitter-typescript/bindings/go"
 
-	"github.com/kirby88/vix/internal/daemon/brain"
+	"github.com/get-vix/vix/internal/daemon/brain"
 )
 
 // treeSitterLanguages maps language names (as defined in settings.json) to Tree-sitter

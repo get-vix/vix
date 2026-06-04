@@ -15,7 +15,7 @@ import (
 
 	"github.com/openai/openai-go/responses"
 
-	"github.com/kirby88/vix/internal/config"
+	"github.com/get-vix/vix/internal/config"
 )
 
 // responsesResponseStatusForTest is a tiny helper so table tests don't

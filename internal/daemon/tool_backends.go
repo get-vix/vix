@@ -14,7 +14,7 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 
-	"github.com/kirby88/vix/internal/config"
+	"github.com/get-vix/vix/internal/config"
 )
 
 // --- Interfaces ---

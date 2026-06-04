@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go/option"
-	"github.com/kirby88/vix/internal/auth"
+	"github.com/get-vix/vix/internal/auth"
 	"github.com/zalando/go-keyring"
 )
 

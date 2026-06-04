@@ -10,7 +10,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 
-	"github.com/kirby88/vix/internal/protocol"
+	"github.com/get-vix/vix/internal/protocol"
 )
 
 // capitalizeFirst returns s with its first letter uppercased.

@@ -12,9 +12,9 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
-	"github.com/kirby88/vix/internal/config"
-	"github.com/kirby88/vix/internal/daemon/llm"
-	"github.com/kirby88/vix/internal/protocol"
+	"github.com/get-vix/vix/internal/config"
+	"github.com/get-vix/vix/internal/daemon/llm"
+	"github.com/get-vix/vix/internal/protocol"
 )
 
 // HandlerFunc is the type for daemon request handlers.

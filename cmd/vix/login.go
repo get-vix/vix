@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/kirby88/vix/internal/auth"
+	"github.com/get-vix/vix/internal/auth"
 )
 
 // runLogin implements `vix login [provider]`: it runs an OAuth login flow and

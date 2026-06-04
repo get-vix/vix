@@ -9,7 +9,7 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 
-	"github.com/kirby88/vix/internal/daemon/brain/lsp"
+	"github.com/get-vix/vix/internal/daemon/brain/lsp"
 )
 
 var skipDirs = map[string]bool{

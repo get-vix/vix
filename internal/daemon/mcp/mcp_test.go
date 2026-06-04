@@ -8,7 +8,7 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/kirby88/vix/internal/daemon/mcp"
+	"github.com/get-vix/vix/internal/daemon/mcp"
 )
 
 // buildMockServer compiles the mock MCP server binary into a temp dir and

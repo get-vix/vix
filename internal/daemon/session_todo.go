@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/kirby88/vix/internal/protocol"
+	"github.com/get-vix/vix/internal/protocol"
 )
 
 func (s *Session) handleTodoWrite(ctx context.Context, input map[string]any) (string, bool) {

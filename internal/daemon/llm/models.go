@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kirby88/vix/internal/config"
+	"github.com/get-vix/vix/internal/config"
 )
 
 // ModelListing is one model discovered from a provider's model-list endpoint.

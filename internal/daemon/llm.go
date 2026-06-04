@@ -4,8 +4,8 @@ import (
 	"log"
 	"strings"
 
-	"github.com/kirby88/vix/internal/config"
-	"github.com/kirby88/vix/internal/daemon/llm"
+	"github.com/get-vix/vix/internal/config"
+	"github.com/get-vix/vix/internal/daemon/llm"
 )
 
 // LLM is the daemon-side alias for llm.Client. All callers use this type;

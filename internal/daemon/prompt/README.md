@@ -16,7 +16,7 @@ This package provides a simple template engine for loading and processing prompt
 ### Basic Loading
 
 ```go
-import "github.com/kirby88/vix/internal/daemon/prompt"
+import "github.com/get-vix/vix/internal/daemon/prompt"
 
 loader := prompt.GetLoader()
 content := loader.Load("prompt/chat/system.md", nil, "")
