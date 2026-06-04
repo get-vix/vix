@@ -10,15 +10,9 @@ import (
 )
 
 // modelListProviders is the set of providers the daemon attempts to list models
-// for. Providers without a usable credential are skipped automatically.
-var modelListProviders = []llm.ProviderID{
-	llm.ProviderAnthropic,
-	llm.ProviderOpenAI,
-	llm.ProviderOpenRouter,
-	llm.ProviderMiniMax,
-	llm.ProviderMiMo,
-	llm.ProviderCodex,
-}
+// for — every registered provider. Those without a usable credential are
+// skipped automatically.
+var modelListProviders = llm.Providers()
 
 // RegisterModelsHandler registers the "list_models" RPC, which fetches the live
 // model catalogue from every provider the user has credentials for. The result

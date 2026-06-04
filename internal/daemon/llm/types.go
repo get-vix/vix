@@ -23,9 +23,10 @@ func (p ProviderID) CredentialName() string {
 
 // UsesOAuth reports whether this provider's credential comes from an
 // interactive OAuth login (see internal/auth) rather than an API key.
-// Credential resolution allows OAuth tokens for these providers.
+// Credential resolution allows OAuth tokens for these providers. Driven by the
+// providerSpecs registry (see factory.go).
 func (p ProviderID) UsesOAuth() bool {
-	return p == ProviderAnthropic || p == ProviderCodex
+	return providerSpecByID[p].usesOAuth
 }
 
 // Role identifies the author of a message.

@@ -70,67 +70,97 @@ type MiMoOptions struct {
 	BaseURL string
 }
 
-// ParseModel maps a vix-style model spec (with mandatory provider prefix)
-// to (provider, bare model name).
-//
-// Routing rules — first match wins:
-//
-//	"openrouter/<rest>"  → (OpenRouter, <rest>)
-//	"minimax/<m>"        → (MiniMax, <m>)
-//	"mimo/<m>"           → (MiMo, <m>)
-//	"openai/<m>"         → (OpenAI, <m>)
-//	"anthropic/<m>"      → (Anthropic, <m>)
-//	anything else        → error
-//
-// Bare unprefixed names (e.g. "claude-sonnet-4-6") error explicitly — the
-// previous silent fallback could silently route to the wrong provider.
-func ParseModel(spec string) (ProviderID, string, error) {
-	switch {
-	case strings.HasPrefix(spec, "openrouter/"):
-		return ProviderOpenRouter, strings.TrimPrefix(spec, "openrouter/"), nil
-	case strings.HasPrefix(spec, "minimax/"):
-		return ProviderMiniMax, strings.TrimPrefix(spec, "minimax/"), nil
-	case strings.HasPrefix(spec, "mimo/"):
-		return ProviderMiMo, strings.TrimPrefix(spec, "mimo/"), nil
-	case strings.HasPrefix(spec, "openai/"):
-		return ProviderOpenAI, strings.TrimPrefix(spec, "openai/"), nil
-	case strings.HasPrefix(spec, "anthropic/"):
-		return ProviderAnthropic, strings.TrimPrefix(spec, "anthropic/"), nil
-	case strings.HasPrefix(spec, "openai-codex/"):
-		return ProviderCodex, strings.TrimPrefix(spec, "openai-codex/"), nil
-	case spec == "":
-		return "", "", fmt.Errorf("model spec is empty")
-	default:
-		return "", "", fmt.Errorf("model spec %q must start with anthropic/, openai/, openai-codex/, openrouter/, minimax/, or mimo/", spec)
+// providerSpec is the single registration record for a model provider. Adding
+// a provider means adding one entry to providerSpecs below: ParseModel,
+// EnvVarFor, DefaultEffortFromSpec, NewFromModel, ListModels, UsesOAuth and the
+// daemon's model-list set all derive from this table.
+type providerSpec struct {
+	id        ProviderID
+	prefix    string // model-spec prefix, including the trailing slash
+	envVar    string // credential env var; "" means OAuth-only (vix login)
+	usesOAuth bool
+	// effort returns the default reasoning effort for a bare model name.
+	effort func(model string) string
+	// newClient constructs the inference adapter.
+	newClient func(cfg Config) (Client, error)
+	// listModels fetches the provider's available models for cred.
+	listModels func(ctx context.Context, cred config.Credential) ([]ModelListing, error)
+}
+
+// adaptiveEffort and openAIStyleEffort are the two default-effort policies.
+func adaptiveEffort(string) string { return "adaptive" }
+func openAIStyleEffort(model string) string {
+	if isReasoningOpenAIModel(model) {
+		return "medium"
 	}
+	return ""
+}
+
+// providerSpecs is the ordered registry of supported providers. Order is
+// user-facing (model-list grouping and the ParseModel error hint).
+var providerSpecs = []providerSpec{
+	{id: ProviderAnthropic, prefix: "anthropic/", envVar: "ANTHROPIC_API_KEY", usesOAuth: true, effort: adaptiveEffort, newClient: NewAnthropic, listModels: listAnthropicCatalog},
+	{id: ProviderOpenAI, prefix: "openai/", envVar: "OPENAI_API_KEY", effort: openAIStyleEffort, newClient: NewOpenAI, listModels: listOpenAICatalog},
+	{id: ProviderCodex, prefix: "openai-codex/", usesOAuth: true, effort: openAIStyleEffort, newClient: NewCodex, listModels: listCodexCatalog},
+	{id: ProviderOpenRouter, prefix: "openrouter/", envVar: "OPENROUTER_API_KEY", effort: openAIStyleEffort, newClient: NewOpenRouter, listModels: listOpenRouterCatalog},
+	{id: ProviderMiniMax, prefix: "minimax/", envVar: "MINIMAX_API_KEY", effort: adaptiveEffort, newClient: NewMiniMax, listModels: listMiniMaxCatalog},
+	{id: ProviderMiMo, prefix: "mimo/", envVar: "MIMO_API_KEY", effort: openAIStyleEffort, newClient: NewMiMo, listModels: listMiMoCatalog},
+}
+
+// providerSpecByID indexes providerSpecs for O(1) lookup.
+var providerSpecByID = func() map[ProviderID]providerSpec {
+	m := make(map[ProviderID]providerSpec, len(providerSpecs))
+	for _, s := range providerSpecs {
+		m[s.id] = s
+	}
+	return m
+}()
+
+// Providers returns every supported provider id, in registry order.
+func Providers() []ProviderID {
+	out := make([]ProviderID, len(providerSpecs))
+	for i, s := range providerSpecs {
+		out[i] = s.id
+	}
+	return out
+}
+
+// ParseModel maps a vix-style model spec (with mandatory provider prefix) to
+// (provider, bare model name) via the providerSpecs registry — the first
+// matching prefix wins. Bare unprefixed names (e.g. "claude-sonnet-4-6") error
+// explicitly rather than silently routing to the wrong provider.
+func ParseModel(spec string) (ProviderID, string, error) {
+	if spec == "" {
+		return "", "", fmt.Errorf("model spec is empty")
+	}
+	for _, s := range providerSpecs {
+		if strings.HasPrefix(spec, s.prefix) {
+			return s.id, strings.TrimPrefix(spec, s.prefix), nil
+		}
+	}
+	return "", "", fmt.Errorf("model spec %q must start with one of: %s", spec, strings.Join(providerPrefixes(), ", "))
+}
+
+// providerPrefixes returns the registered model-spec prefixes, in order.
+func providerPrefixes() []string {
+	out := make([]string, len(providerSpecs))
+	for i, s := range providerSpecs {
+		out[i] = s.prefix
+	}
+	return out
 }
 
 // DefaultEffortFromSpec returns the default reasoning effort for the given
-// model spec. Anthropic and MiniMax default to "adaptive". OpenAI and
-// OpenRouter default to "medium" when the model is reasoning-capable and
-// to "" otherwise.
+// model spec, per the provider's effort policy (see providerSpecs). Anthropic
+// and MiniMax default to "adaptive"; the OpenAI-style providers default to
+// "medium" for reasoning-capable models and "" otherwise.
 func DefaultEffortFromSpec(spec string) string {
 	prov, model, err := ParseModel(spec)
 	if err != nil {
 		return ""
 	}
-	switch prov {
-	case ProviderAnthropic:
-		return "adaptive"
-	case ProviderMiniMax:
-		return "adaptive"
-	case ProviderMiMo:
-		// MiMo's reasoning-capable models accept the OpenAI reasoning_effort
-		// knob; default to medium there and off otherwise.
-		if isReasoningOpenAIModel(model) {
-			return "medium"
-		}
-		return ""
-	case ProviderOpenAI, ProviderOpenRouter, ProviderCodex:
-		if isReasoningOpenAIModel(model) {
-			return "medium"
-		}
-		return ""
+	if s, ok := providerSpecByID[prov]; ok && s.effort != nil {
+		return s.effort(model)
 	}
 	return ""
 }
@@ -155,24 +185,11 @@ func Spec(c Client) string {
 	return string(c.Provider()) + "/" + c.Model()
 }
 
-// EnvVarFor returns the canonical credential env var name for a provider.
-// Used for error messages when a required credential is missing.
+// EnvVarFor returns the canonical credential env var name for a provider, or
+// "" for OAuth-only providers (and unknown ids). Used for error messages when
+// a required credential is missing.
 func EnvVarFor(p ProviderID) string {
-	switch p {
-	case ProviderAnthropic:
-		return "ANTHROPIC_API_KEY"
-	case ProviderOpenAI:
-		return "OPENAI_API_KEY"
-	case ProviderOpenRouter:
-		return "OPENROUTER_API_KEY"
-	case ProviderMiniMax:
-		return "MINIMAX_API_KEY"
-	case ProviderMiMo:
-		return "MIMO_API_KEY"
-	case ProviderCodex:
-		return "" // OAuth-only: `vix login openai-codex`
-	}
-	return ""
+	return providerSpecByID[p].envVar
 }
 
 // NewFromModel parses a vix-style model spec, resolves the right
@@ -205,21 +222,11 @@ func NewFromModel(spec string, plugin PluginConfig, effort string, maxTokens int
 		MiniMax:    miniMaxOptsFromEnv(),
 		MiMo:       miMoOptsFromEnv(),
 	}
-	switch prov {
-	case ProviderAnthropic:
-		return NewAnthropic(cfg)
-	case ProviderOpenAI:
-		return NewOpenAI(cfg)
-	case ProviderOpenRouter:
-		return NewOpenRouter(cfg)
-	case ProviderMiniMax:
-		return NewMiniMax(cfg)
-	case ProviderMiMo:
-		return NewMiMo(cfg)
-	case ProviderCodex:
-		return NewCodex(cfg)
+	ps, ok := providerSpecByID[prov]
+	if !ok || ps.newClient == nil {
+		return nil, fmt.Errorf("unsupported provider: %s", prov)
 	}
-	return nil, fmt.Errorf("unsupported provider: %s", prov)
+	return ps.newClient(cfg)
 }
 
 func openRouterOptsFromEnv() OpenRouterOptions {

@@ -31,21 +31,36 @@ var modelsHTTPClient = &http.Client{Timeout: 20 * time.Second}
 // ListModels fetches the available models for one provider using cred. The
 // returned list is sorted newest-first so the latest models surface at the top.
 func ListModels(ctx context.Context, provider ProviderID, cred config.Credential) ([]ModelListing, error) {
-	switch provider {
-	case ProviderAnthropic:
-		return listAnthropicModels(ctx, "https://api.anthropic.com/v1", cred)
-	case ProviderOpenAI:
-		return listOpenAICompatibleModels(ctx, "https://api.openai.com/v1", "openai", cred, nil, keepOpenAIChatModel)
-	case ProviderOpenRouter:
-		return listOpenAICompatibleModels(ctx, "https://openrouter.ai/api/v1", "openrouter", cred, nil, nil)
-	case ProviderMiniMax:
-		return listOpenAICompatibleModels(ctx, miniMaxBaseURLFromEnv(), "minimax", cred, nil, nil)
-	case ProviderMiMo:
-		return listOpenAICompatibleModels(ctx, miMoBaseURLFromEnv(), "mimo", cred, nil, nil)
-	case ProviderCodex:
-		return listCodexModels()
+	if s, ok := providerSpecByID[provider]; ok && s.listModels != nil {
+		return s.listModels(ctx, cred)
 	}
 	return nil, fmt.Errorf("model listing not supported for provider %q", provider)
+}
+
+// The list*Catalog wrappers adapt each provider's model-list call to the
+// uniform (ctx, cred) signature stored in providerSpecs.
+func listAnthropicCatalog(ctx context.Context, cred config.Credential) ([]ModelListing, error) {
+	return listAnthropicModels(ctx, "https://api.anthropic.com/v1", cred)
+}
+
+func listOpenAICatalog(ctx context.Context, cred config.Credential) ([]ModelListing, error) {
+	return listOpenAICompatibleModels(ctx, "https://api.openai.com/v1", "openai", cred, nil, keepOpenAIChatModel)
+}
+
+func listOpenRouterCatalog(ctx context.Context, cred config.Credential) ([]ModelListing, error) {
+	return listOpenAICompatibleModels(ctx, "https://openrouter.ai/api/v1", "openrouter", cred, nil, nil)
+}
+
+func listMiniMaxCatalog(ctx context.Context, cred config.Credential) ([]ModelListing, error) {
+	return listOpenAICompatibleModels(ctx, miniMaxBaseURLFromEnv(), "minimax", cred, nil, nil)
+}
+
+func listMiMoCatalog(ctx context.Context, cred config.Credential) ([]ModelListing, error) {
+	return listOpenAICompatibleModels(ctx, miMoBaseURLFromEnv(), "mimo", cred, nil, nil)
+}
+
+func listCodexCatalog(context.Context, config.Credential) ([]ModelListing, error) {
+	return listCodexModels()
 }
 
 // ListAllModels concurrently fetches models for every provider with a non-empty
