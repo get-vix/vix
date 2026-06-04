@@ -141,7 +141,13 @@ func (o *openaiClient) StreamMessageWith(
 	if instructions != "" {
 		params.Instructions = param.NewOpt(instructions)
 	}
-	if maxTokens > 0 {
+	// The ChatGPT/Codex backend speaks a restricted Responses surface: it
+	// rejects max_output_tokens (returns 400) and requires store=false on every
+	// request. The standard OpenAI Responses API instead accepts
+	// max_output_tokens and defaults store=true, so the two paths diverge here.
+	if o.provider == ProviderCodex {
+		params.Store = param.NewOpt(false)
+	} else if maxTokens > 0 {
 		params.MaxOutputTokens = param.NewOpt(maxTokens)
 	}
 
@@ -173,14 +179,19 @@ func (o *openaiClient) StreamMessageWith(
 		case "max":
 			level = "high"
 		}
+		// summary=auto asks for a reasoning summary to stream (surfaced as
+		// thinking deltas) and is what the Codex backend expects on every
+		// reasoning request.
+		reasoning := shared.ReasoningParam{Summary: shared.ReasoningSummaryAuto}
 		switch level {
 		case "low":
-			params.Reasoning = shared.ReasoningParam{Effort: shared.ReasoningEffortLow}
+			reasoning.Effort = shared.ReasoningEffortLow
 		case "medium":
-			params.Reasoning = shared.ReasoningParam{Effort: shared.ReasoningEffortMedium}
+			reasoning.Effort = shared.ReasoningEffortMedium
 		case "high":
-			params.Reasoning = shared.ReasoningParam{Effort: shared.ReasoningEffortHigh}
+			reasoning.Effort = shared.ReasoningEffortHigh
 		}
+		params.Reasoning = reasoning
 		// Ask the server to return the encrypted reasoning blob — required
 		// for stateless replay on subsequent turns. Without this, the model
 		// loses its chain of thought across turns.

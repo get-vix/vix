@@ -5,9 +5,32 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/get-vix/vix/internal/config"
 )
+
+func TestFilterRecentModels(t *testing.T) {
+	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	recent := now.Add(-24 * time.Hour).Unix()          // well within the window
+	old := now.Add(-modelMaxAge - 24*time.Hour).Unix() // just past the window
+	models := []ModelListing{
+		{Spec: "p/recent", Created: recent},
+		{Spec: "p/old", Created: old},
+		{Spec: "p/undated", Created: 0}, // unknown publish date — always kept
+	}
+	got := filterRecentModels(models, now)
+	keep := map[string]bool{}
+	for _, m := range got {
+		keep[m.Spec] = true
+	}
+	if !keep["p/recent"] || !keep["p/undated"] || keep["p/old"] {
+		t.Errorf("filterRecentModels kept the wrong set: %+v", got)
+	}
+	if len(got) != 2 {
+		t.Errorf("got %d models, want 2", len(got))
+	}
+}
 
 func TestListOpenAICompatibleModels(t *testing.T) {
 	var gotAuth string
@@ -145,7 +168,7 @@ func TestListCodexModels(t *testing.T) {
 			t.Errorf("provider = %q, want openai-codex", m.Provider)
 		}
 	}
-	if got["openai-codex/gpt-5-codex"] == "" || got["openai-codex/gpt-5"] == "" {
+	if got["openai-codex/gpt-5.5"] == "" || got["openai-codex/gpt-5.4"] == "" {
 		t.Errorf("codex models = %+v", got)
 	}
 }
@@ -163,8 +186,8 @@ func TestParseUnixOrRFC3339(t *testing.T) {
 }
 
 func TestParseModelCodexRoute(t *testing.T) {
-	prov, model, err := ParseModel("openai-codex/gpt-5-codex")
-	if err != nil || prov != ProviderCodex || model != "gpt-5-codex" {
+	prov, model, err := ParseModel("openai-codex/gpt-5.5")
+	if err != nil || prov != ProviderCodex || model != "gpt-5.5" {
 		t.Errorf("ParseModel codex: prov=%v model=%q err=%v", prov, model, err)
 	}
 }

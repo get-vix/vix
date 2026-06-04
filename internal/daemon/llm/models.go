@@ -29,12 +29,37 @@ type ModelListing struct {
 var modelsHTTPClient = &http.Client{Timeout: 20 * time.Second}
 
 // ListModels fetches the available models for one provider using cred. The
-// returned list is sorted newest-first so the latest models surface at the top.
+// returned list is sorted newest-first and has obsolete (long-superseded)
+// models filtered out — see filterRecentModels.
 func ListModels(ctx context.Context, provider ProviderID, cred config.Credential) ([]ModelListing, error) {
-	if s, ok := providerSpecByID[provider]; ok && s.listModels != nil {
-		return s.listModels(ctx, cred)
+	s, ok := providerSpecByID[provider]
+	if !ok || s.listModels == nil {
+		return nil, fmt.Errorf("model listing not supported for provider %q", provider)
 	}
-	return nil, fmt.Errorf("model listing not supported for provider %q", provider)
+	models, err := s.listModels(ctx, cred)
+	if err != nil {
+		return nil, err
+	}
+	return filterRecentModels(models, time.Now()), nil
+}
+
+// modelMaxAge bounds how recently a model must have been published to still
+// appear in listings; anything older is treated as obsolete and hidden. We rely
+// on the publish date each provider reports rather than a hardcoded model list.
+const modelMaxAge = 6 * 30 * 24 * time.Hour // ~6 months
+
+// filterRecentModels drops models published more than modelMaxAge before now.
+// Models with an unknown publish date (Created == 0) are always kept, since
+// some providers (e.g. MiniMax, MiMo, Codex) don't report one.
+func filterRecentModels(models []ModelListing, now time.Time) []ModelListing {
+	cutoff := now.Add(-modelMaxAge).Unix()
+	out := make([]ModelListing, 0, len(models))
+	for _, m := range models {
+		if m.Created == 0 || m.Created >= cutoff {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // The list*Catalog wrappers adapt each provider's model-list call to the
@@ -221,10 +246,14 @@ func listOpenAICompatibleModels(ctx context.Context, baseURL, prefix string, cre
 
 // codexModels is the curated set of models reachable through a ChatGPT/Codex
 // subscription. The ChatGPT backend has no public model-list endpoint, so —
-// unlike the other providers — this list is static. Keep it short and current.
+// unlike the other providers — this list is static and must be kept current by
+// hand. These are the models OpenAI offers to ChatGPT subscribers via Codex as
+// of mid-2026 (gpt-5.5 is the default frontier model; the gpt-5.x-codex line,
+// e.g. gpt-5.2/5.3-codex, was sunset for subscriptions and would 400 here).
 var codexModels = []ModelListing{
-	{Spec: "openai-codex/gpt-5-codex", Provider: "openai-codex", DisplayName: "GPT-5 Codex"},
-	{Spec: "openai-codex/gpt-5", Provider: "openai-codex", DisplayName: "GPT-5"},
+	{Spec: "openai-codex/gpt-5.5", Provider: "openai-codex", DisplayName: "GPT-5.5"},
+	{Spec: "openai-codex/gpt-5.4", Provider: "openai-codex", DisplayName: "GPT-5.4"},
+	{Spec: "openai-codex/gpt-5.4-mini", Provider: "openai-codex", DisplayName: "GPT-5.4 mini"},
 }
 
 // listCodexModels returns the curated Codex catalogue. It takes no credential

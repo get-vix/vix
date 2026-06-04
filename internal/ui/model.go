@@ -148,29 +148,23 @@ func loadModelsCmd(socketPath, authToken string) tea.Cmd {
 	}
 }
 
-// modelsForProvider returns the model list to show for a provider. Priority:
-// live models > curated fallback (only when the provider is authenticated but
-// returned nothing, for resilience) > nil (unauthenticated — the caller shows
-// an auth hint instead).
+// modelsForProvider returns the live model list to show for a provider, or nil
+// when the catalogue hasn't loaded yet (the caller shows a loading line) or the
+// provider returned nothing (the caller shows an auth/empty hint). Models are
+// always fetched live — there is no hardcoded fallback.
 func (m Model) modelsForProvider(provider string) []ModelInfo {
-	if m.modelsLoaded {
-		if cat, ok := m.dynModels[provider]; ok {
-			if len(cat.models) > 0 {
-				return cat.models
-			}
-			if !cat.authenticated {
-				return nil
-			}
-			// Authenticated but no live models (fetch failed/empty): fall
-			// through to the curated list so the picker still works.
-		}
+	if !m.modelsLoaded {
+		return nil
 	}
-	return ModelsForProvider(provider)
+	return m.dynModels[provider].models
 }
 
 // providerEmptyHint returns the lines to show when a provider's model column is
-// empty: how to authenticate (when no credential) or a neutral note otherwise.
+// empty: a load error, how to authenticate (no credential), or a neutral note.
 func (m Model) providerEmptyHint(provider string) []string {
+	if m.modelsErr != nil {
+		return []string{"couldn't load models", "reopen to retry"}
+	}
 	authed := false
 	if m.modelsLoaded {
 		if cat, ok := m.dynModels[provider]; ok {
@@ -300,7 +294,7 @@ type Model struct {
 	// Settings tab UI
 	settingsActiveSection    int    // 0=model section, 1=keys section, 2=display
 	settingsProviderSel      int    // row in AvailableProviders (Model section, column 0)
-	settingsModelSel         int    // row in ModelsForProvider(AvailableProviders[settingsProviderSel].Name) (Model section, column 1)
+	settingsModelSel         int    // row in modelsForProvider(AvailableProviders[settingsProviderSel].Name) (Model section, column 1)
 	settingsModelColumn      int    // 0 = provider column focused, 1 = model column focused
 	settingsModelPending     string // model spec awaiting an API key
 	settingsKeySel           int
@@ -1389,7 +1383,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.modelsLoading = false
 		if msg.err != nil {
 			m.modelsErr = msg.err
-			// Keep the curated fallback list; surface the failure briefly.
+			// No hardcoded fallback — the picker shows an error hint; surface
+			// the failure as a status message too.
 			return m, m.emitStatusMsg("Could not load live model list: "+msg.err.Error(), StatusMsgInfo)
 		}
 		m.modelsErr = nil

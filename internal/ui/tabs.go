@@ -231,14 +231,13 @@ func renderSettingsView(width, height int, s Styles, activeSection, providerSel,
 	if providerSel >= 0 && providerSel < len(AvailableProviders) {
 		providerForModels = AvailableProviders[providerSel].Name
 	}
-	var models []ModelInfo
+	models := modelsFor(providerForModels)
 	var modelLines []string
 	customFooter := ""
-	if modelsLoading {
-		// Fetch in flight — show a spinner-less waiting line in the model column.
+	if modelsLoading && len(models) == 0 {
+		// First fetch in flight (nothing cached yet) — show a waiting line.
 		modelLines = append(modelLines, dimStyle.Italic(true).Width(modelColWidth).Render("  Loading available models…"))
 	} else {
-		models = modelsFor(providerForModels)
 		for i, m := range models {
 			isCursor := sectionActive && modelColumn == 1 && i == modelSel
 			isActive := m.Spec == activeModel

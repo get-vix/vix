@@ -286,6 +286,76 @@ func TestOpenAI_StreamMessage_RequestsIncludeForReasoning(t *testing.T) {
 	if !found {
 		t.Errorf("expected include to contain reasoning.encrypted_content; body=%v", bodies[0])
 	}
+	// The standard OpenAI path (unlike Codex) still sends max_output_tokens and
+	// leaves store at the server default.
+	if _, present := bodies[0]["max_output_tokens"]; !present {
+		t.Errorf("expected max_output_tokens on the standard OpenAI path; body=%v", bodies[0])
+	}
+	if _, present := bodies[0]["store"]; present {
+		t.Errorf("standard OpenAI path should not force store; body=%v", bodies[0])
+	}
+}
+
+// TestCodex_StreamMessage_RequestContract verifies the ChatGPT/Codex backend
+// adapter emits the restricted Responses payload that backend requires:
+// store=false, NO max_output_tokens, and reasoning.summary=auto. Getting any of
+// these wrong makes the backend reject the request with a 400.
+func TestCodex_StreamMessage_RequestContract(t *testing.T) {
+	var (
+		mu   sync.Mutex
+		body map[string]any
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var parsed map[string]any
+		_ = json.Unmarshal(raw, &parsed)
+		mu.Lock()
+		body = parsed
+		mu.Unlock()
+
+		sseHeader(w)
+		sseSend(w, "response.completed", `{"type":"response.completed","sequence_number":1,"response":{"id":"r","object":"response","created_at":1,"status":"completed","model":"gpt-5.5","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2,"input_tokens_details":{"cached_tokens":0},"output_tokens_details":{"reasoning_tokens":0}},"parallel_tool_calls":false,"tool_choice":"auto","tools":[]}}`)
+	}))
+	defer srv.Close()
+
+	client, err := NewCodex(Config{
+		Credential: config.Credential{Value: "codex-token"},
+		Model:      "gpt-5.5",
+		Effort:     "medium",
+		MaxTokens:  1024,
+		BaseURL:    srv.URL,
+		StreamIdle: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewCodex: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if _, _, err := client.StreamMessage(ctx, nil, []MessageParam{
+		NewUserMessage(NewTextBlock("hi")),
+	}, nil, nil, nil); err != nil {
+		t.Fatalf("StreamMessage: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if body == nil {
+		t.Fatal("no request body captured")
+	}
+	if store, ok := body["store"]; !ok {
+		t.Errorf("store missing; the Codex backend requires store=false; body=%v", body)
+	} else if store != false {
+		t.Errorf("store = %v, want false", store)
+	}
+	if _, present := body["max_output_tokens"]; present {
+		t.Errorf("max_output_tokens must not be sent to the Codex backend; body=%v", body)
+	}
+	reasoning, _ := body["reasoning"].(map[string]any)
+	if reasoning == nil || reasoning["summary"] != "auto" {
+		t.Errorf("reasoning.summary = %v, want auto; body=%v", reasoning, body)
+	}
 }
 
 // TestOpenAI_StreamMessage_IdleTimeout verifies the watchdog fires when

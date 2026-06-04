@@ -1,42 +1,6 @@
 package ui
 
-import (
-	"strings"
-	"testing"
-)
-
-// TestAvailableModels_AllPrefixed asserts every catalogue entry's Spec
-// starts with its declared Provider name plus a slash. The settings UI
-// dispatches Spec verbatim to session.set_model; if a row leaks a bare
-// name through, ParseModel rejects it and the model picker breaks.
-func TestAvailableModels_AllPrefixed(t *testing.T) {
-	for _, m := range AvailableModels {
-		wantPrefix := m.Provider + "/"
-		if !strings.HasPrefix(m.Spec, wantPrefix) {
-			t.Errorf("model %q has Provider=%q but Spec doesn't start with %q", m.DisplayName, m.Provider, wantPrefix)
-		}
-	}
-}
-
-// TestModelsForProvider_GroupsCorrectly asserts the filter returns models
-// whose Provider matches AND covers every provider in AvailableProviders.
-func TestModelsForProvider_GroupsCorrectly(t *testing.T) {
-	// Every provider currently ships at least one curated entry. If a future
-	// provider is dynamic-only (fetched live with no curated rows), list it
-	// here so this check doesn't flag it.
-	dynamicOnly := map[string]bool{}
-	for _, p := range AvailableProviders {
-		models := ModelsForProvider(p.Name)
-		if len(models) == 0 && !dynamicOnly[p.Name] {
-			t.Errorf("provider %q has no models in AvailableModels", p.Name)
-		}
-		for _, m := range models {
-			if m.Provider != p.Name {
-				t.Errorf("ModelsForProvider(%q) returned a model whose Provider=%q", p.Name, m.Provider)
-			}
-		}
-	}
-}
+import "testing"
 
 // TestProviderOf covers the prefix extraction including the OpenRouter
 // nested-route case (we want the provider WE talk to, not the upstream).
@@ -61,31 +25,23 @@ func TestProviderOf(t *testing.T) {
 	}
 }
 
-// TestLocateActiveModel covers the cursor-positioning logic the Settings
-// tab uses when it opens with a model already selected.
+// TestLocateActiveModel covers the provider-column resolution the Settings tab
+// uses when it opens. Models are fetched live, so only the provider column is
+// resolved (from the spec prefix); the model row always starts at 0.
 func TestLocateActiveModel(t *testing.T) {
-	// Exact match: Opus 4.8 is the first Anthropic row.
-	if pi, mi := locateActiveModel("anthropic/claude-opus-4-8"); pi != 0 || mi != 0 {
-		t.Errorf("Opus 4.8: got (%d,%d), want (0,0)", pi, mi)
+	pi, mi := locateActiveModel("anthropic/claude-opus-4-8")
+	if AvailableProviders[pi].Name != "anthropic" || mi != 0 {
+		t.Errorf("anthropic spec: got (%d,%d) provider=%q", pi, mi, AvailableProviders[pi].Name)
 	}
-	// Exact match from a different provider — verify pi advances.
-	pi, mi := locateActiveModel("openai/o3")
-	if AvailableProviders[pi].Name != "openai" {
-		t.Errorf("o3: provider row resolved to %q, want openai", AvailableProviders[pi].Name)
+	pi, mi = locateActiveModel("openai/o3")
+	if AvailableProviders[pi].Name != "openai" || mi != 0 {
+		t.Errorf("openai spec: provider=%q mi=%d", AvailableProviders[pi].Name, mi)
 	}
-	if ModelsForProvider("openai")[mi].Spec != "openai/o3" {
-		t.Errorf("o3: model row resolved to %+v", ModelsForProvider("openai")[mi])
+	// An OpenRouter nested route resolves to the openrouter column.
+	if pi, _ := locateActiveModel("openrouter/anthropic/claude-opus-4-8"); AvailableProviders[pi].Name != "openrouter" {
+		t.Errorf("openrouter spec: provider=%q", AvailableProviders[pi].Name)
 	}
-	// Prefix-only match (not in curated list) — cursor on the right
-	// provider column, model row 0.
-	pi, mi = locateActiveModel("minimax/MiniMax-some-future-model")
-	if AvailableProviders[pi].Name != "minimax" {
-		t.Errorf("future minimax: provider row resolved to %q, want minimax", AvailableProviders[pi].Name)
-	}
-	if mi != 0 {
-		t.Errorf("future minimax: expected model row 0 (no exact match), got %d", mi)
-	}
-	// Total fallback when prefix doesn't match any known provider.
+	// Unknown provider falls back to (0, 0).
 	if pi, mi := locateActiveModel("weirdco/nope"); pi != 0 || mi != 0 {
 		t.Errorf("unknown provider: got (%d,%d), want (0,0)", pi, mi)
 	}
