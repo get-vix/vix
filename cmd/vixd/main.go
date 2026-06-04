@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -127,6 +128,18 @@ func main() {
 	}
 	telemetry.Init(telemetry.Config{Version: Version, Mode: "daemon", Enabled: config.TelemetryEnabled()})
 	defer telemetry.Shutdown()
+	// Top-level crash handler: capture the panic as a PostHog exception and
+	// flush synchronously (Shutdown is bounded by ShutdownTimeout) before the
+	// process dies, then re-panic to preserve Go's crash output and exit code.
+	// Registered after the Shutdown defer so it runs first on unwind; the
+	// later Shutdown is a no-op (closeOnce). Only catches main-goroutine panics.
+	defer func() {
+		if r := recover(); r != nil {
+			telemetry.TrackPanic("vixd.main", r, debug.Stack())
+			telemetry.Shutdown()
+			panic(r)
+		}
+	}()
 
 	sessionID := uuid.New().String()
 

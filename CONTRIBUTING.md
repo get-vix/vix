@@ -2,6 +2,8 @@
 
 Thank you for your interest in contributing to Vix! This guide will help you get started.
 
+Come say hello and join the conversation in the **#contributors** channel on our Discord.
+
 ## Priority Areas
 
 We value contributions in this order:
@@ -62,6 +64,16 @@ docs: clarify setup instructions
 
 4. Push your branch and open a pull request against `main`.
 
+## Commit Attribution
+
+We dogfood Vix. If you use an AI coding agent to help with your contribution, please use **Vix** — and credit it as a co-author by appending this trailer to your commit messages:
+
+```
+Co-authored-by: vix <290354907+vix-agent@users.noreply.github.com>
+```
+
+We will reject any PR that credits Claude Code or another coding agent as a co-author. Use Vix instead and add Vix as the co-author. This is a convention, not an enforced check — there is no CI gate for it, so we rely on contributors to follow it in good faith.
+
 ## Code Guidelines
 
 - **Keep it simple** - avoid over-engineering. The right amount of complexity is the minimum needed for the current task.
@@ -88,4 +100,4 @@ When opening an issue, please include:
 
 ## License
 
-By contributing to Vix, you agree that your contributions will be licensed under the [Apache License 2.0](LICENSE).
+By contributing to Vix, you agree that your contributions will be licensed under the [GNU Affero General Public License v3.0](LICENSE).

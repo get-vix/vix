@@ -61,8 +61,8 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+/lib/
+/lib64/
 parts/
 sdist/
 # dist/ is ignored globally above (Go + Python sections), but we commit web/dist:

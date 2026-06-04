@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   echo "Usage: $0 <version> --tap <owner/homebrew-repo>"
-  echo "  e.g. $0 v0.1.0 --tap kirby88/homebrew-vix"
+  echo "  e.g. $0 v0.1.0 --tap get-vix/homebrew-vix"
   exit 1
 }
 

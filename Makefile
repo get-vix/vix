@@ -145,4 +145,4 @@ release:
 		git add internal/daemon/web/dist && \
 		git commit -m "chore: rebuild web dist for $(VERSION)"; \
 	fi
-	./script/release.sh $(VERSION) --repo kirby88/vix-releases
+	./script/release.sh $(VERSION) --repo get-vix/vix

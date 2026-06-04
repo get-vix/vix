@@ -1,10 +1,15 @@
 <div align="center">
 
-![vix logo](assets/logo.svg)
+<img src="assets/logo.svg" alt="vix logo" width="200" />
 
 Sleek, Fast and Token Efficient AI Coding Agent
 
-[![GitHub Release](https://img.shields.io/github/v/release/kirby88/vix-releases?color=green)](https://github.com/get-vix/vix-releases/releases) - [vix website](https://getvix.dev) - [![Discord](https://img.shields.io/badge/Discord-5865F2?logo=discord&logoColor=white)](https://discord.gg/3NzDtdFF7C)
+<p align="center">
+  <a href="https://github.com/get-vix/vix/releases"><img src="https://img.shields.io/github/v/release/get-vix/vix?style=for-the-badge&color=green" alt="Latest release" /></a>
+  <a href="https://github.com/get-vix/vix/releases"><img src="https://img.shields.io/github/downloads/get-vix/vix/total?style=for-the-badge" alt="Total downloads" /></a>
+  <a href="https://github.com/get-vix/vix"><img src="https://img.shields.io/badge/website-getvix.dev-blue?style=for-the-badge" alt="Website" /></a>
+  <a href="https://discord.gg/3NzDtdFF7C"><img src="https://img.shields.io/badge/Discord-5865F2?logo=discord&logoColor=white&style=for-the-badge" alt="Discord" /></a>
+</p>
 </div>
 
 <div align="center">
@@ -68,7 +73,7 @@ curl -fsSL https://getvix.dev/install.sh | bash
 You will need to define `ANTHROPIC_API_KEY` in your environment variables.
 
 ```bash
-brew tap kirby88/vix
+brew tap get-vix/vix
 brew install vix
 ```
 

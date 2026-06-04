@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -19,9 +20,9 @@ import (
 
 	"github.com/get-vix/vix/internal/config"
 	"github.com/get-vix/vix/internal/daemon"
-	"github.com/get-vix/vix/internal/telemetry"
 	"github.com/get-vix/vix/internal/daemon/brain"
 	"github.com/get-vix/vix/internal/headless"
+	"github.com/get-vix/vix/internal/telemetry"
 
 	"github.com/get-vix/vix/internal/ui"
 	"github.com/mattn/go-isatty"
@@ -229,6 +230,18 @@ func main() {
 	}
 	telemetry.Init(telemetry.Config{Version: Version, Mode: appMode, Enabled: config.TelemetryEnabled()})
 	defer telemetry.Shutdown()
+	// Top-level crash handler: capture the panic as a PostHog exception and
+	// flush synchronously (Shutdown is bounded by ShutdownTimeout) before the
+	// process dies, then re-panic to preserve Go's crash output and exit code.
+	// Registered after the Shutdown defer so it runs first on unwind; the
+	// later Shutdown is a no-op (closeOnce). Only catches main-goroutine panics.
+	defer func() {
+		if r := recover(); r != nil {
+			telemetry.TrackPanic("vix.main", r, debug.Stack())
+			telemetry.Shutdown()
+			panic(r)
+		}
+	}()
 	telemetry.TrackTUIStarted(appMode, Version)
 	ui.Version = Version
 

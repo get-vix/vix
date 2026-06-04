@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   echo "Usage: $0 <version> --repo <owner/repo> [--force] [--changelog <path>]"
-  echo "  e.g. $0 v0.1.0 --repo kirby88/vix-releases"
+  echo "  e.g. $0 v0.1.0 --repo get-vix/vix"
   echo ""
   echo "  --force              Delete existing release before creating a new one"
   echo "  --changelog <path>   Use contents of this file as the changelog"
@@ -125,7 +125,7 @@ class Vix < Formula
   desc "AI coding agent"
   homepage "https://github.com/${REPO}"
   version "${VERSION#v}"
-  license :cannot_represent
+  license "AGPL-3.0-or-later"
 
   on_macos do
     on_arm do
@@ -168,7 +168,7 @@ class Vix < Formula
   desc "AI coding agent"
   homepage "https://github.com/${REPO}"
   version "${VERSION#v}"
-  license :cannot_represent
+  license "AGPL-3.0-or-later"
 
   on_macos do
     on_arm do
@@ -260,7 +260,7 @@ gpg --armor --detach-sign --yes \
 
 # Create release and upload tarballs + checksums + signature. Notes come
 # from our own git-derived changelog (vix commits), not `gh --generate-notes`
-# which would read from $REPO (vix-releases) where there is no source history.
+# which would read from $REPO (vix) where there is no source history.
 GH_NOTES="## What's Changed
 
 ${CHANGELOG}"

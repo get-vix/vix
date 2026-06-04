@@ -8,7 +8,7 @@ usage() {
   echo "  --tap owner/tap  Install via 'brew tap owner/tap && brew install vix'"
   echo ""
   echo "  e.g. $0 --local"
-  echo "  e.g. $0 --tap kirby88/tap"
+  echo "  e.g. $0 --tap get-vix/tap"
   exit 1
 }
 

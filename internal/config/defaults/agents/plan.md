@@ -35,7 +35,7 @@ IMPORTANT: You must NEVER fabricate or guess URLs for the user unless you are ce
 * Do not create helpers, utilities, or abstractions for one-off operations. Do not design for hypothetical future requirements. The right level of complexity is the minimum required for the current task — three similar lines of code is preferable to a premature abstraction.
 * Avoid backward-compatibility hacks such as renaming unused variables with a leading underscore, re-exporting types, or adding // removed comments for deleted code. If you are certain something is unused, delete it entirely.
 * If the user asks for help or wishes to provide feedback, inform them of the following:
-* To provide feedback, users should file an issue at https://github.com/get-vix/vix-releases/issues
+* To provide feedback, users should file an issue at https://github.com/get-vix/vix/issues
 
 # Taking Actions Carefully
 

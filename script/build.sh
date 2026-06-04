@@ -106,6 +106,28 @@ fi
 
 mkdir -p "$OUT_DIR"
 
+# ── PostHog analytics key (embedded at build time) ────────────────────────────
+# Nothing loads .env at runtime, so the key must be baked into the binary via
+# -ldflags -X. Read it exclusively from .env. Without it, analytics is inert
+# (telemetry.Init bails when the embedded key is empty). Release builds (a
+# --version was passed) MUST have the key — bail loudly. Dev builds (version=dev)
+# are allowed to ship without analytics.
+VIX_POSTHOG_API_KEY=""
+if [[ -f "$ROOT_DIR/.env" ]]; then
+  VIX_POSTHOG_API_KEY="$(grep '^VIX_POSTHOG_API_KEY=' "$ROOT_DIR/.env" | head -n1 | cut -d= -f2-)"
+fi
+TELEMETRY_PKG="github.com/get-vix/vix/internal/telemetry"
+KEY_LDFLAG=""
+if [[ -n "$VIX_POSTHOG_API_KEY" ]]; then
+  KEY_LDFLAG="-X ${TELEMETRY_PKG}.embeddedAPIKey=${VIX_POSTHOG_API_KEY}"
+elif [[ "$VERSION" != "dev" ]]; then
+  echo "${C_RED}✗${C_RESET} VIX_POSTHOG_API_KEY not found in $ROOT_DIR/.env — refusing to build release ${VERSION} without analytics." >&2
+  exit 1
+else
+  echo "${C_YELLOW}warning:${C_RESET} VIX_POSTHOG_API_KEY not in .env — dev build will emit no analytics." >&2
+fi
+export KEY_LDFLAG
+
 echo "${C_BLUE}==>${C_RESET} ${C_BOLD}Building vix${C_RESET} (darwin-arm64 + linux-amd64 + linux-arm64), version ${C_BOLD}${VERSION}${C_RESET}, commit ${C_BOLD}${CURRENT_COMMIT:0:12}${C_RESET}"
 
 # ── Launch all three builds in parallel ──────────────────────────────────────
@@ -124,11 +146,11 @@ arm64_log="$(mktemp)"
 (
   CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
     go build -C "$ROOT_DIR" -trimpath \
-      -ldflags="-s -w -X main.Version=${VERSION}" \
+      -ldflags="-s -w -X main.Version=${VERSION} ${KEY_LDFLAG}" \
       -o "$OUT_DIR/vix-darwin-arm64" ./cmd/vix \
   && CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
     go build -C "$ROOT_DIR" -trimpath \
-      -ldflags="-s -w -X main.Version=${VERSION}" \
+      -ldflags="-s -w -X main.Version=${VERSION} ${KEY_LDFLAG}" \
       -o "$OUT_DIR/vixd-darwin-arm64" ./cmd/vixd
 ) >"$darwin_log" 2>&1 &
 darwin_pid=$!
@@ -150,10 +172,10 @@ RUN go mod download \
 COPY . .
 RUN mkdir -p /out \
     && go build -trimpath -tags 'netgo osusergo' \
-         -ldflags="-s -w -linkmode external -extldflags '-static' -X main.Version=${VERSION}" \
+         -ldflags="-s -w -linkmode external -extldflags '-static' -X main.Version=${VERSION} ${KEY_LDFLAG}" \
          -o /out/vix ./cmd/vix \
     && go build -trimpath -tags 'netgo osusergo' \
-         -ldflags="-s -w -linkmode external -extldflags '-static' -X main.Version=${VERSION}" \
+         -ldflags="-s -w -linkmode external -extldflags '-static' -X main.Version=${VERSION} ${KEY_LDFLAG}" \
          -o /out/vixd ./cmd/vixd
 DOCKERFILE
   docker create --name "$create_name" "$tag" true >>"$logfile" 2>&1

@@ -366,6 +366,16 @@ func (qp *QuestionPanel) currentTabRef() *questionTab {
 	return nil
 }
 
+// activeQuestionLines returns the question text lines to display: the current
+// tab's lines (populated for single- and multi-question batches), falling back
+// to the panel-level lines used by rich-option and confirm modes.
+func (qp *QuestionPanel) activeQuestionLines() []string {
+	if tab := qp.currentTabRef(); tab != nil && len(tab.questionLines) > 0 {
+		return tab.questionLines
+	}
+	return qp.questionLines
+}
+
 // isOnTextOption returns true if the cursor is on a text-input option.
 // For rich options: checks has_user_input on the selected option.
 // For simple options: checks if cursor is on the last option ("Type something.").
@@ -425,7 +435,7 @@ func (qp *QuestionPanel) HandleKey(msg tea.KeyPressMsg) (QuestionPanelResult, st
 
 	case "pgdown":
 		qp.questionOffset += maxQuestionLines
-		maxOff := len(qp.questionLines) - maxQuestionLines
+		maxOff := len(qp.activeQuestionLines()) - maxQuestionLines
 		if maxOff < 0 {
 			maxOff = 0
 		}
@@ -575,11 +585,10 @@ func (qp *QuestionPanel) Height() int {
 		h++ // tab bar line
 	}
 
-	// Question text lines
-	activeLines := qp.questionLines
-	if qp.isMultiTab() {
-		activeLines = tab.questionLines
-	}
+	// Question text lines: prefer the current tab's lines (populated for
+	// single- and multi-question batches), falling back to the panel-level
+	// lines used by rich-option and confirm modes.
+	activeLines := qp.activeQuestionLines()
 	qLines := len(activeLines)
 	if qLines > 0 {
 		shown := qLines
@@ -634,11 +643,10 @@ func (qp *QuestionPanel) Render(s Styles, focused bool, md *MarkdownRenderer) st
 	}
 	borderStyle := lipgloss.NewStyle().Foreground(borderColor)
 
-	// Determine which question lines to display for the current tab
-	activeQuestionLines := qp.questionLines
-	if qp.isMultiTab() {
-		activeQuestionLines = tab.questionLines
-	}
+	// Determine which question lines to display for the current tab: prefer the
+	// current tab's lines (populated for single- and multi-question batches),
+	// falling back to the panel-level lines used by rich-option and confirm modes.
+	activeQuestionLines := qp.activeQuestionLines()
 
 	// Top border with category or tab bar
 	scrollable := len(activeQuestionLines) > maxQuestionLines

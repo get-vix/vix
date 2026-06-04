@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   echo "Usage: $0 <version> --repo <owner/repo> [--tap <owner/tap>] [--force] [--changelog <path>]"
-  echo "  e.g. $0 v0.1.0 --repo kirby88/vix-releases"
+  echo "  e.g. $0 v0.1.0 --repo get-vix/vix"
   echo ""
   echo "  --tap <owner/tap>    Homebrew tap repo (default: derives owner/homebrew-vix from --repo)"
   echo "  --force              Replace an existing release"

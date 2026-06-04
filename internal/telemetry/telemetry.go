@@ -28,6 +28,13 @@ type Config struct {
 	Enabled bool   // false disables all telemetry (from settings.json feature flag)
 }
 
+// embeddedAPIKey is the PostHog project key injected at build time via
+// -ldflags "-X .../telemetry.embeddedAPIKey=<key>" (see script/build.sh, which
+// reads VIX_POSTHOG_API_KEY from the environment or .env). It is empty in plain
+// `go build` / dev builds, which keeps telemetry inert there. There is no
+// runtime env var or .env fallback — the key lives only in the binary.
+var embeddedAPIKey string
+
 var (
 	client    posthog.Client
 	deviceID  string
@@ -57,8 +64,9 @@ func Init(cfg Config) {
 			return
 		}
 
-		posthogAPIKey := os.Getenv("VIX_POSTHOG_API_KEY")
-		if posthogAPIKey == "" {
+		// The analytics key is embedded at build time (see script/build.sh).
+		// It is empty in plain dev builds, which keeps telemetry inert there.
+		if embeddedAPIKey == "" {
 			return
 		}
 
@@ -70,10 +78,14 @@ func Init(cfg Config) {
 		}
 		deviceID = id
 
-		c, err := posthog.NewWithConfig(posthogAPIKey, posthog.Config{
+		c, err := posthog.NewWithConfig(embeddedAPIKey, posthog.Config{
 			Endpoint:  posthogHost,
 			BatchSize: 20,
 			Interval:  30 * time.Second,
+			// Bound Close() so a flush-on-crash can't hang the dying
+			// process indefinitely on a dead network (Close waits forever
+			// when ShutdownTimeout is unset).
+			ShutdownTimeout: 3 * time.Second,
 		})
 		if err != nil {
 			logDebug("[telemetry] failed to create PostHog client: %v", err)
@@ -106,12 +118,7 @@ func Track(event string, properties map[string]interface{}) {
 		return
 	}
 
-	props := posthog.NewProperties()
-	// Common properties
-	props.Set("version", version)
-	props.Set("os", runtime.GOOS)
-	props.Set("arch", runtime.GOARCH)
-	props.Set("mode", mode)
+	props := commonProps()
 
 	// Merge caller properties
 	for k, v := range properties {
@@ -121,6 +128,57 @@ func Track(event string, properties map[string]interface{}) {
 	client.Enqueue(posthog.Capture{
 		DistinctId: deviceID,
 		Event:      event,
+		Properties: props,
+	})
+}
+
+// commonProps returns the build/runtime properties attached to every event.
+func commonProps() posthog.Properties {
+	return posthog.NewProperties().
+		Set("version", version).
+		Set("os", runtime.GOOS).
+		Set("arch", runtime.GOARCH).
+		Set("mode", mode)
+}
+
+// CaptureException reports an error or panic to PostHog error tracking.
+// typ is the title shown in the UI (e.g. "panic"); value is the description.
+// extra carries additional context properties (e.g. the raw goroutine stack)
+// that surface in the exception's Properties tab. Safe to call when telemetry
+// is disabled (no-op).
+//
+// We build the $exception event by hand via posthog.Capture rather than
+// posthog.NewDefaultException: the SDK's Exception type exposes no arbitrary
+// properties map, so common/extra context could not otherwise reach the
+// Properties tab. PostHog's error tracking ingests any event named "$exception"
+// that carries an "$exception_list" property, so this is equivalent to what
+// Exception.APIfy() emits, plus our extra properties.
+func CaptureException(typ, value string, extra map[string]interface{}) {
+	if !enabled {
+		return
+	}
+
+	// GetStackTrace's skip is measured from the live stack at this point.
+	// Call chain is runtime.Callers(0) -> GetStackTrace(1) -> CaptureException(2)
+	// -> TrackPanic(3) -> the recover site(4), so skip=4 drops the telemetry
+	// plumbing and starts at application code. This is faithful to the current
+	// sole caller (TrackPanic); the raw debug.Stack() passed via extra remains
+	// the authoritative trace regardless.
+	stack := posthog.DefaultStackTraceExtractor{InAppDecider: posthog.SimpleInAppDecider}.GetStackTrace(4)
+
+	props := commonProps()
+	props.Set("$exception_list", []posthog.ExceptionItem{{
+		Type:       typ,
+		Value:      value,
+		Stacktrace: stack,
+	}})
+	for k, v := range extra {
+		props.Set(k, v)
+	}
+
+	client.Enqueue(posthog.Capture{
+		DistinctId: deviceID,
+		Event:      "$exception",
 		Properties: props,
 	})
 }

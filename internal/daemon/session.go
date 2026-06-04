@@ -21,35 +21,36 @@ import (
 	"github.com/get-vix/vix/internal/daemon/mcp"
 	"github.com/get-vix/vix/internal/daemon/prompt"
 	"github.com/get-vix/vix/internal/protocol"
+	"github.com/get-vix/vix/internal/telemetry"
 )
 
 // Session manages a single agent session over a persistent socket connection.
 type Session struct {
-	id          string
-	parentID    string // non-empty if this session was forked; set once at creation
-	forkTurnIdx int    // which turn it was forked at (0-based); meaningful only when parentID != ""
-	server      *Server
-	llm                             LLM
-	model                           string
-	cwd                             string
-	paths                           config.VixPaths
-	forceInit                       bool
+	id                             string
+	parentID                       string // non-empty if this session was forked; set once at creation
+	forkTurnIdx                    int    // which turn it was forked at (0-based); meaningful only when parentID != ""
+	server                         *Server
+	llm                            LLM
+	model                          string
+	cwd                            string
+	paths                          config.VixPaths
+	forceInit                      bool
 	enableAutomaticWritePermission bool
 	enableAutomaticDirectoryAccess bool
-	headless                        bool
-	eventChan                       chan protocol.SessionEvent
-	commandChan                     chan protocol.SessionCommand
-	ctx                             context.Context
-	cancel                          context.CancelFunc
+	headless                       bool
+	eventChan                      chan protocol.SessionEvent
+	commandChan                    chan protocol.SessionCommand
+	ctx                            context.Context
+	cancel                         context.CancelFunc
 
 	// Agent state
-	messages        []llm.MessageParam
-	tools           []llm.ToolParam
+	messages []llm.MessageParam
+	tools    []llm.ToolParam
 
 	// Fork snapshots: a copy of messages after each completed normal turn,
 	// protected by mu. Used by snapshotMessagesForFork to seed forked sessions.
-	mu            sync.Mutex
-	turnSnapshots [][]llm.MessageParam
+	mu              sync.Mutex
+	turnSnapshots   [][]llm.MessageParam
 	activePlan      *protocol.Plan
 	backgroundTasks BackgroundTaskRegistry
 	bashJobs        BashJobRegistry
@@ -127,25 +128,25 @@ type Session struct {
 func NewSession(id string, server *Server, llmClient LLM, model, cwd, configDir string, forceInit bool, enableAutomaticWritePermission bool, enableAutomaticDirectoryAccess bool, headless bool, parentCtx context.Context) *Session {
 	ctx, cancel := context.WithCancel(parentCtx)
 	return &Session{
-		id:                              id,
-		server:                          server,
-		llm:                             llmClient,
-		model:                           model,
-		cwd:                             cwd,
-		paths:                           config.NewVixPaths(configDir, server.homeVixDir, cwd),
-		forceInit:                       forceInit,
+		id:                             id,
+		server:                         server,
+		llm:                            llmClient,
+		model:                          model,
+		cwd:                            cwd,
+		paths:                          config.NewVixPaths(configDir, server.homeVixDir, cwd),
+		forceInit:                      forceInit,
 		enableAutomaticWritePermission: enableAutomaticWritePermission,
 		enableAutomaticDirectoryAccess: enableAutomaticDirectoryAccess,
-		headless:                        headless,
-		eventChan:                       make(chan protocol.SessionEvent, 256),
-		commandChan:                     make(chan protocol.SessionCommand, 16),
-		workflowMsgChan:                 make(chan string, 1),
-		ctx:                             ctx,
-		cancel:                          cancel,
-		tools:                           ToolSchemas(),
-		todoList:                        make([]protocol.TodoItem, 0),
-		startTime:                       time.Now(),
-		sessionMode:                     "chat",
+		headless:                       headless,
+		eventChan:                      make(chan protocol.SessionEvent, 256),
+		commandChan:                    make(chan protocol.SessionCommand, 16),
+		workflowMsgChan:                make(chan string, 1),
+		ctx:                            ctx,
+		cancel:                         cancel,
+		tools:                          ToolSchemas(),
+		todoList:                       make([]protocol.TodoItem, 0),
+		startTime:                      time.Now(),
+		sessionMode:                    "chat",
 	}
 }
 
@@ -502,7 +503,9 @@ func (s *Session) waitForCommand(ctx context.Context, types ...string) (protocol
 func (s *Session) Run() {
 	defer func() {
 		if r := recover(); r != nil {
-			LogError("Session %s panic: %v\n%s", s.id, r, debug.Stack())
+			stack := debug.Stack()
+			LogError("Session %s panic: %v\n%s", s.id, r, stack)
+			telemetry.TrackPanic("session.Run", r, stack)
 			s.emit("event.error", protocol.EventError{Message: fmt.Sprintf("session panic: %v", r)})
 		}
 		s.cancel()
@@ -1039,6 +1042,13 @@ func (s *Session) executeToolDirect(ctx context.Context, name string, params map
 		return blocked
 	}
 
+	// Schema validation: reject malformed tool calls (missing required field,
+	// wrong-typed field) before any handler runs, so the model gets a clear
+	// error instead of a handler silently proceeding with a zero value.
+	if err := validateToolInput(name, params); err != nil {
+		return &ToolResult{Output: err.Error(), IsError: true}
+	}
+
 	// If the session has automatic write permission disabled, intercept write-class
 	// tools and request user confirmation before executing them.
 	if !s.enableAutomaticWritePermission && writeClassTools[name] {
@@ -1226,6 +1236,13 @@ func (s *Session) executeToolConfirmed(ctx context.Context, name string, params 
 	// editing it (either directly, or inheriting from the parent's reads).
 	if blocked := s.enforceReadGate(name, params); blocked != nil {
 		return blocked
+	}
+
+	// Schema validation: same gate as executeToolDirect, covering the
+	// subagent/workflow entry point. MCP tools have no local schema and are
+	// passed through (validateToolInput returns nil for them).
+	if err := validateToolInput(name, params); err != nil {
+		return &ToolResult{Output: err.Error(), IsError: true}
 	}
 
 	if dirs := s.detectOutsideDirs(name, params); len(dirs) > 0 && !s.enableAutomaticDirectoryAccess {
@@ -1509,7 +1526,7 @@ func (s *Session) handleInput(text string, attachments []protocol.Attachment) {
 			return
 		}
 	}
-	
+
 	s.AddUserMessage(text, attachments...)
 
 	// Inner loop: agent turns
@@ -1587,8 +1604,6 @@ func (s *Session) handleInput(text string, attachments []protocol.Attachment) {
 	s.emit("event.agent_done", nil)
 }
 
-
-
 // interactiveTools are tools that require sequential execution (user interaction, blocking waits).
 var interactiveTools = map[string]bool{
 	"ask_question_to_user": true,
@@ -1610,18 +1625,18 @@ var writeTools = map[string]bool{
 
 // toolTask holds parsed info for a single tool call in a batch.
 type toolTask struct {
-	toolUse     llm.ToolCall
-	input       map[string]any
-	summary     string
-	reason      string
+	toolUse llm.ToolCall
+	input   map[string]any
+	summary string
+	reason  string
 	// Bash-specific alternative-tool justifications (empty or "N/A" → omitted).
 	bashReasonNotReadFile       string
 	bashReasonNotEditFile       string
 	bashReasonNotGlobFiles      string
 	bashReasonToIncreaseTimeout string
-	interactive            bool
-	result                 *ToolResult
-	apiResult              llm.ContentBlock
+	interactive                 bool
+	result                      *ToolResult
+	apiResult                   llm.ContentBlock
 }
 
 // dispatchOptions configures the unified tool dispatcher.
@@ -1715,15 +1730,15 @@ func dispatchToolCalls(ctx context.Context, msg *llm.Message, opts dispatchOptio
 		summary := SummarizeToolInput(toolUse.Name, input)
 
 		t := &toolTask{
-			toolUse:                toolUse,
-			input:                  input,
-			summary:                summary,
-			reason:                 reason,
-			bashReasonNotReadFile:        bashReasonNotReadFile,
-			bashReasonNotEditFile:        bashReasonNotEditFile,
-			bashReasonNotGlobFiles:       bashReasonNotGlobFiles,
+			toolUse:                     toolUse,
+			input:                       input,
+			summary:                     summary,
+			reason:                      reason,
+			bashReasonNotReadFile:       bashReasonNotReadFile,
+			bashReasonNotEditFile:       bashReasonNotEditFile,
+			bashReasonNotGlobFiles:      bashReasonNotGlobFiles,
 			bashReasonToIncreaseTimeout: bashReasonToIncreaseTimeout,
-			interactive:            interactiveTools[toolUse.Name] && opts.handleSpecial != nil,
+			interactive:                 interactiveTools[toolUse.Name] && opts.handleSpecial != nil,
 		}
 
 		if t.interactive {
@@ -2023,7 +2038,6 @@ func providerFor(model string) string {
 	}
 	return "openai"
 }
-
 
 // handleWorkflowCommand handles a session.workflow command by looking up and executing
 // the workflow matching the given name.
