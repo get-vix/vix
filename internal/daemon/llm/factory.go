@@ -216,9 +216,6 @@ func NewFromModel(spec string, plugin PluginConfig, effort string, maxTokens int
 	if err != nil {
 		return nil, err
 	}
-	if globalRPM > 0 {
-		return &rateLimitedClient{inner: client}, nil
-	}
 	return client, nil
 }
 
