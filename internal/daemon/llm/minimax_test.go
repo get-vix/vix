@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/get-vix/vix/internal/config"
+	"github.com/get-vix/vix/internal/providers"
 )
 
 const mmMinimalChunk = `{"id":"x","object":"chat.completion.chunk","created":1,"model":"x","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":0}}}`
@@ -22,23 +23,39 @@ func mmHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// newMiniMaxTestClient builds the generic chat client parameterized the way the
+// MiniMax provider spec does: a GroupId query param (when non-empty) and the
+// reasoning_split effort style.
+func newMiniMaxTestClient(t *testing.T, cfg Config, groupID string) Client {
+	t.Helper()
+	var qp map[string]string
+	if groupID != "" {
+		qp = map[string]string{"GroupId": groupID}
+	}
+	c, err := newChatCompletionsClient(cfg, chatParams{
+		provider:    ProviderMiniMax,
+		queryParams: qp,
+		effortStyle: providers.EffortStyleReasoningSplit,
+	})
+	if err != nil {
+		t.Fatalf("newChatCompletionsClient: %v", err)
+	}
+	return c
+}
+
 // TestMiniMax_GroupIDOnEveryRequest verifies that the configured GroupID
 // shows up as ?GroupId=<id> on every outbound URL. Critical: some MiniMax
 // workspaces fail every request without this query param.
 func TestMiniMax_GroupIDOnEveryRequest(t *testing.T) {
 	srv, log := recordingServer(t, mmHandler)
 
-	client, err := NewMiniMax(Config{
+	client := newMiniMaxTestClient(t, Config{
 		Credential: config.Credential{Value: "test-key"},
 		Model:      "MiniMax-M2.7",
 		MaxTokens:  1024,
 		BaseURL:    srv.URL,
 		StreamIdle: 5 * time.Second,
-		MiniMax:    MiniMaxOptions{GroupID: "grp_abc"},
-	})
-	if err != nil {
-		t.Fatalf("NewMiniMax: %v", err)
-	}
+	}, "grp_abc")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -63,21 +80,16 @@ func TestMiniMax_GroupIDOnEveryRequest(t *testing.T) {
 
 // TestMiniMax_GroupIDMissing_NoQueryParam verifies an empty GroupID still
 // builds a working client (no panic) and produces no GroupId query param.
-// The warning log line is best-effort observability, not tested here.
 func TestMiniMax_GroupIDMissing_NoQueryParam(t *testing.T) {
 	srv, log := recordingServer(t, mmHandler)
 
-	client, err := NewMiniMax(Config{
+	client := newMiniMaxTestClient(t, Config{
 		Credential: config.Credential{Value: "test-key"},
 		Model:      "MiniMax-M2.7",
 		MaxTokens:  1024,
 		BaseURL:    srv.URL,
 		StreamIdle: 5 * time.Second,
-		MiniMax:    MiniMaxOptions{}, // GroupID empty
-	})
-	if err != nil {
-		t.Fatalf("NewMiniMax: %v", err)
-	}
+	}, "")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -87,7 +99,7 @@ func TestMiniMax_GroupIDMissing_NoQueryParam(t *testing.T) {
 
 	url := log.Last(t).URL
 	if strings.Contains(url, "GroupId=") {
-		t.Errorf("expected NO GroupId query param when MiniMaxOptions.GroupID is empty; got URL %q", url)
+		t.Errorf("expected NO GroupId query param when GroupID is empty; got URL %q", url)
 	}
 }
 
@@ -109,15 +121,14 @@ func TestMiniMax_ReasoningSplitWhenEffortSet(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			srv, log := recordingServer(t, mmHandler)
 
-			client, _ := NewMiniMax(Config{
+			client := newMiniMaxTestClient(t, Config{
 				Credential: config.Credential{Value: "test-key"},
 				Model:      "MiniMax-M2.7",
 				Effort:     c.effort,
 				MaxTokens:  1024,
 				BaseURL:    srv.URL,
 				StreamIdle: 5 * time.Second,
-				MiniMax:    MiniMaxOptions{GroupID: "grp"},
-			})
+			}, "grp")
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			_, _, _ = client.StreamMessage(ctx, nil, []MessageParam{NewUserMessage(NewTextBlock("hi"))}, nil, nil, nil)
@@ -134,26 +145,19 @@ func TestMiniMax_ReasoningSplitWhenEffortSet(t *testing.T) {
 	}
 }
 
-// TestMiniMax_BaseURLOverrideWinsOverRegion verifies the resolution chain:
-// Config.BaseURL > MiniMaxOptions.BaseURL > MiniMaxOptions.Region defaults.
-// We can't actually verify the URL the SDK chose without intercepting before
-// the request, so we just confirm the request reaches our test server (i.e.
-// Config.BaseURL was honored).
-func TestMiniMax_BaseURLOverrideWinsOverRegion(t *testing.T) {
+// TestMiniMax_BaseURLRouting verifies Config.BaseURL routes the request to our
+// test server (the region/base-url resolution now lives in providers.json env
+// interpolation; the client just honors the resolved base URL).
+func TestMiniMax_BaseURLRouting(t *testing.T) {
 	srv, log := recordingServer(t, mmHandler)
 
-	client, _ := NewMiniMax(Config{
+	client := newMiniMaxTestClient(t, Config{
 		Credential: config.Credential{Value: "test-key"},
 		Model:      "MiniMax-M2.7",
 		MaxTokens:  1024,
-		BaseURL:    srv.URL, // top-level override
+		BaseURL:    srv.URL,
 		StreamIdle: 5 * time.Second,
-		MiniMax: MiniMaxOptions{
-			Region:  "cn",                            // would normally pick api.minimaxi.com
-			BaseURL: "https://other.invalid/v1",      // would normally win over Region
-			GroupID: "grp_x",
-		},
-	})
+	}, "grp_x")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if _, _, err := client.StreamMessage(ctx, nil, []MessageParam{NewUserMessage(NewTextBlock("hi"))}, nil, nil, nil); err != nil {
@@ -171,14 +175,13 @@ func TestMiniMax_BaseURLOverrideWinsOverRegion(t *testing.T) {
 func TestMiniMax_AuthHeaderUsesBearer(t *testing.T) {
 	srv, log := recordingServer(t, mmHandler)
 
-	client, _ := NewMiniMax(Config{
+	client := newMiniMaxTestClient(t, Config{
 		Credential: config.Credential{Value: "mm-test-key"},
 		Model:      "MiniMax-M2.7",
 		MaxTokens:  1024,
 		BaseURL:    srv.URL,
 		StreamIdle: 5 * time.Second,
-		MiniMax:    MiniMaxOptions{GroupID: "grp"},
-	})
+	}, "grp")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_, _, _ = client.StreamMessage(ctx, nil, []MessageParam{NewUserMessage(NewTextBlock("hi"))}, nil, nil, nil)

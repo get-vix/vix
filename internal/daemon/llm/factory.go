@@ -1,16 +1,16 @@
 package llm
 
 import (
+	"context"
 	"fmt"
 	"net/http"
-	"os"
-	"strings"
 	"time"
 
 	"github.com/get-vix/vix/internal/config"
+	"github.com/get-vix/vix/internal/providers"
 )
 
-// Config is the shared input set every adapter constructor takes.
+// Config is the shared input set every wire builder takes.
 type Config struct {
 	Credential config.Credential
 	Model      string // bare model name (no provider prefix)
@@ -20,129 +20,51 @@ type Config struct {
 	HTTPClient *http.Client // optional override; nil = use NewPluginHTTPClient(PluginCfg)
 
 	// BaseURL overrides the adapter's default API endpoint. Empty means
-	// use the provider's default. Primarily intended for tests redirecting
-	// to httptest servers.
+	// use the provider's default. Set from a credential's endpoint override
+	// (e.g. the Codex backend) or by tests redirecting to httptest servers.
 	BaseURL string
-
-	// Per-provider options. Zero values are fine when the target provider
-	// doesn't need them.
-	OpenRouter OpenRouterOptions
-	MiniMax    MiniMaxOptions
-	MiMo       MiMoOptions
 
 	StreamIdle    time.Duration // 0 = read from env or use DefaultStreamIdleTimeout
 	ThinkingStall time.Duration // 0 = read from env or use DefaultThinkingStallTimeout
 }
 
-// OpenRouterOptions configures the OpenRouter adapter.
-type OpenRouterOptions struct {
-	// HTTPReferer is sent as the HTTP-Referer header for app attribution.
-	// OpenRouter uses this for rankings and (optionally) free-credit
-	// attribution.
-	HTTPReferer string
-	// XTitle is sent as the X-Title header — display name in OpenRouter
-	// dashboards. Defaults to "vix" when empty.
-	XTitle string
-	// Routing, when non-empty, is sent as the `provider` block on each
-	// request to control routing across upstream providers.
-	Routing map[string]any
-}
-
-// MiniMaxOptions configures the MiniMax adapter.
-type MiniMaxOptions struct {
-	// BaseURL overrides the default region-derived base URL when non-empty.
-	BaseURL string
-	// Region selects the regional endpoint when BaseURL is unset.
-	// "intl" → https://api.minimax.io/v1 (default).
-	// "cn"   → https://api.minimaxi.com/v1.
-	Region string
-	// GroupID is sent as a ?GroupId query parameter on every request.
-	// Required for some workspaces; empty is allowed but a startup warning
-	// is logged.
-	GroupID string
-}
-
-// MiMoOptions configures the Xiaomi MiMo adapter.
-type MiMoOptions struct {
-	// BaseURL overrides the default MiMo endpoint when non-empty.
-	// Empty → https://api.xiaomimimo.com/v1.
-	BaseURL string
-}
-
-// ParseModel maps a vix-style model spec (with mandatory provider prefix)
-// to (provider, bare model name).
-//
-// Routing rules — first match wins:
-//
-//	"openrouter/<rest>"  → (OpenRouter, <rest>)
-//	"minimax/<m>"        → (MiniMax, <m>)
-//	"mimo/<m>"           → (MiMo, <m>)
-//	"openai/<m>"         → (OpenAI, <m>)
-//	"anthropic/<m>"      → (Anthropic, <m>)
-//	anything else        → error
-//
-// Bare unprefixed names (e.g. "claude-sonnet-4-6") error explicitly — the
-// previous silent fallback could silently route to the wrong provider.
+// ParseModel maps a vix-style model spec (with mandatory provider prefix) to
+// (provider id, bare model name) via the providers registry — the first
+// matching prefix wins. Bare unprefixed names error explicitly. Thin wrapper
+// over providers.Default().ParseModel so existing callers keep the ProviderID
+// return type.
 func ParseModel(spec string) (ProviderID, string, error) {
-	switch {
-	case strings.HasPrefix(spec, "openrouter/"):
-		return ProviderOpenRouter, strings.TrimPrefix(spec, "openrouter/"), nil
-	case strings.HasPrefix(spec, "minimax/"):
-		return ProviderMiniMax, strings.TrimPrefix(spec, "minimax/"), nil
-	case strings.HasPrefix(spec, "mimo/"):
-		return ProviderMiMo, strings.TrimPrefix(spec, "mimo/"), nil
-	case strings.HasPrefix(spec, "openai/"):
-		return ProviderOpenAI, strings.TrimPrefix(spec, "openai/"), nil
-	case strings.HasPrefix(spec, "anthropic/"):
-		return ProviderAnthropic, strings.TrimPrefix(spec, "anthropic/"), nil
-	case spec == "":
-		return "", "", fmt.Errorf("model spec is empty")
-	default:
-		return "", "", fmt.Errorf("model spec %q must start with anthropic/, openai/, openrouter/, minimax/, or mimo/", spec)
+	p, model, err := providers.Default().ParseModel(spec)
+	if err != nil {
+		return "", "", err
 	}
+	return ProviderID(p.ID), model, nil
 }
 
-// DefaultEffortFromSpec returns the default reasoning effort for the given
-// model spec. Anthropic and MiniMax default to "adaptive". OpenAI and
-// OpenRouter default to "medium" when the model is reasoning-capable and
-// to "" otherwise.
+// DefaultEffortFromSpec returns the default reasoning effort for the given model
+// spec, per the provider's effort policy. Anthropic and MiniMax default to
+// "adaptive"; the OpenAI-style providers default to "medium" for
+// reasoning-capable models and "" otherwise.
 func DefaultEffortFromSpec(spec string) string {
-	prov, model, err := ParseModel(spec)
+	p, model, err := providers.Default().ParseModel(spec)
 	if err != nil {
 		return ""
 	}
-	switch prov {
-	case ProviderAnthropic:
-		return "adaptive"
-	case ProviderMiniMax:
-		return "adaptive"
-	case ProviderMiMo:
-		// MiMo's reasoning-capable models accept the OpenAI reasoning_effort
-		// knob; default to medium there and off otherwise.
-		if isReasoningOpenAIModel(model) {
-			return "medium"
-		}
-		return ""
-	case ProviderOpenAI, ProviderOpenRouter:
-		if isReasoningOpenAIModel(model) {
-			return "medium"
-		}
-		return ""
+	return p.DefaultEffort(model)
+}
+
+// Providers returns every supported provider id, in registry order.
+func Providers() []ProviderID {
+	ids := providers.Default().IDs()
+	out := make([]ProviderID, len(ids))
+	for i, id := range ids {
+		out[i] = ProviderID(id)
 	}
-	return ""
+	return out
 }
 
 func isReasoningOpenAIModel(model string) bool {
-	m := strings.ToLower(model)
-	// OpenRouter prefixes upstream models with "openai/" etc.
-	if i := strings.LastIndex(m, "/"); i >= 0 {
-		m = m[i+1:]
-	}
-	return strings.HasPrefix(m, "o1") ||
-		strings.HasPrefix(m, "o3") ||
-		strings.HasPrefix(m, "o4") ||
-		strings.HasPrefix(m, "gpt-5") ||
-		strings.Contains(m, "-thinking")
+	return providers.IsReasoningModel(model)
 }
 
 // Spec returns the full prefixed model spec for a Client (e.g.
@@ -152,86 +74,79 @@ func Spec(c Client) string {
 	return string(c.Provider()) + "/" + c.Model()
 }
 
-// EnvVarFor returns the canonical credential env var name for a provider.
-// Used for error messages when a required credential is missing.
-func EnvVarFor(p ProviderID) string {
-	switch p {
-	case ProviderAnthropic:
-		return "ANTHROPIC_API_KEY"
-	case ProviderOpenAI:
-		return "OPENAI_API_KEY"
-	case ProviderOpenRouter:
-		return "OPENROUTER_API_KEY"
-	case ProviderMiniMax:
-		return "MINIMAX_API_KEY"
-	case ProviderMiMo:
-		return "MIMO_API_KEY"
-	}
-	return ""
-}
-
-// NewFromModel parses a vix-style model spec, resolves the right
-// credential via config.ResolveProviderCredential, populates per-provider
-// options from the environment, and constructs the matching adapter.
+// NewFromModel parses a vix-style model spec, resolves the right credential via
+// config.ResolveProviderCredentialFresh, and constructs the matching adapter by
+// dispatching on the provider's wire_format. All endpoint/header/query data
+// comes from the providers registry (providers.json).
 func NewFromModel(spec string, plugin PluginConfig, effort string, maxTokens int64) (Client, error) {
-	prov, model, err := ParseModel(spec)
+	p, model, err := providers.Default().ParseModel(spec)
 	if err != nil {
 		return nil, err
 	}
-	cred := config.ResolveProviderCredential(prov.CredentialName(), prov == ProviderAnthropic)
+	// Resolve the credential, refreshing an expired stored OAuth token if
+	// needed. The timeout bounds a possible token-refresh round-trip.
+	refreshCtx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+	defer cancel()
+	cred := config.ResolveProviderCredentialFresh(refreshCtx, p.ID)
 	if cred.Value == "" {
-		return nil, fmt.Errorf("no credential for %s (set %s)", prov, EnvVarFor(prov))
+		if env := config.PrimaryEnvVar(p.ID); env != "" {
+			return nil, fmt.Errorf("no credential for %s (set %s)", p.ID, env)
+		}
+		return nil, fmt.Errorf("no credential for %s", p.ID)
 	}
+
+	inf := p.Inference.Resolve()
 	cfg := Config{
 		Credential: cred,
 		Model:      model,
 		Effort:     effort,
 		MaxTokens:  maxTokens,
 		PluginCfg:  plugin,
-		OpenRouter: openRouterOptsFromEnv(),
-		MiniMax:    miniMaxOptsFromEnv(),
-		MiMo:       miMoOptsFromEnv(),
 	}
-	switch prov {
-	case ProviderAnthropic:
-		return NewAnthropic(cfg)
-	case ProviderOpenAI:
-		return NewOpenAI(cfg)
-	case ProviderOpenRouter:
-		return NewOpenRouter(cfg)
-	case ProviderMiniMax:
-		return NewMiniMax(cfg)
-	case ProviderMiMo:
-		return NewMiMo(cfg)
+	// An auth method may carry an endpoint override (e.g. the Codex backend).
+	if cred.BaseURL != "" {
+		cfg.BaseURL = cred.BaseURL
 	}
-	return nil, fmt.Errorf("unsupported provider: %s", prov)
+
+	switch p.WireFormat {
+	case providers.WireMessages:
+		return buildMessages(p, inf, cfg)
+	case providers.WireResponses:
+		return buildResponses(p, inf, cfg)
+	case providers.WireChatCompletions:
+		return buildChatCompletions(p, inf, cfg)
+	}
+	return nil, fmt.Errorf("unsupported wire_format %q for provider %s", p.WireFormat, p.ID)
 }
 
-func openRouterOptsFromEnv() OpenRouterOptions {
-	x := os.Getenv("OPENROUTER_X_TITLE")
-	if x == "" {
-		x = "vix"
-	}
-	return OpenRouterOptions{
-		HTTPReferer: os.Getenv("OPENROUTER_HTTP_REFERER"),
-		XTitle:      x,
-	}
+// buildMessages constructs the Anthropic Messages adapter. The Anthropic SDK
+// owns its base URL + path (/v1/messages); injecting the spec base_url would
+// double the path, so we let the SDK default stand and honor only an explicit
+// cfg.BaseURL override (credential endpoint or test server).
+func buildMessages(_ providers.ProviderSpec, _ providers.InferenceSpec, cfg Config) (Client, error) {
+	return NewAnthropic(cfg)
 }
 
-func miniMaxOptsFromEnv() MiniMaxOptions {
-	region := os.Getenv("MINIMAX_REGION")
-	if region != "cn" {
-		region = "intl"
-	}
-	return MiniMaxOptions{
-		BaseURL: os.Getenv("MINIMAX_BASE_URL"),
-		Region:  region,
-		GroupID: os.Getenv("MINIMAX_GROUP_ID"),
-	}
+// buildResponses constructs the OpenAI Responses adapter (also used by the
+// ChatGPT/Codex backend, whose endpoint arrives via cred.BaseURL → cfg.BaseURL).
+// Like Messages, the SDK owns its base path (/responses).
+func buildResponses(_ providers.ProviderSpec, _ providers.InferenceSpec, cfg Config) (Client, error) {
+	return NewOpenAI(cfg)
 }
 
-func miMoOptsFromEnv() MiMoOptions {
-	return MiMoOptions{
-		BaseURL: os.Getenv("MIMO_BASE_URL"),
+// buildChatCompletions constructs the generic OpenAI-compatible Chat
+// Completions adapter, fully parameterized by the resolved inference spec
+// (base URL, static headers, query params, json_set, effort_style). This single
+// builder serves OpenRouter, MiniMax, MiMo, and any other compatible vendor.
+func buildChatCompletions(p providers.ProviderSpec, inf providers.InferenceSpec, cfg Config) (Client, error) {
+	if cfg.BaseURL == "" {
+		cfg.BaseURL = inf.BaseURL
 	}
+	return newChatCompletionsClient(cfg, chatParams{
+		provider:    ProviderID(p.ID),
+		headers:     inf.Headers,
+		queryParams: inf.QueryParams,
+		jsonSet:     inf.JSONSet,
+		effortStyle: inf.EffortStyle,
+	})
 }

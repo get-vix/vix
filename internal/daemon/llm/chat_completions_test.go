@@ -9,8 +9,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/get-vix/vix/internal/config"
 )
 
 // --- Pure translation tests (no network) ---
@@ -168,7 +166,7 @@ func TestChatCompletions_BuildTools(t *testing.T) {
 			Name:        "bash",
 			Description: "run a command",
 			InputSchema: map[string]any{
-				"type":     "object",
+				"type":       "object",
 				"properties": map[string]any{"command": map[string]any{"type": "string"}},
 				"required":   []string{"command"},
 			},
@@ -228,7 +226,7 @@ func TestChatCompletions_StopReasonMapping(t *testing.T) {
 	}
 }
 
-// --- Stream/wire tests via the OpenRouter adapter (uses the shared wire) ---
+// --- Stream/wire tests via the generic chat client (shared wire) ---
 
 // TestChatCompletions_StreamReassembly_SingleTool verifies that argument
 // fragments split across three chunks reassemble into the correct map.
@@ -245,16 +243,7 @@ func TestChatCompletions_StreamReassembly_SingleTool(t *testing.T) {
 		}
 	})
 
-	client, err := NewOpenRouter(Config{
-		Credential: config.Credential{Value: "test-key"},
-		Model:      "anthropic/claude",
-		MaxTokens:  1024,
-		BaseURL:    srv.URL,
-		StreamIdle: 5 * time.Second,
-	})
-	if err != nil {
-		t.Fatalf("NewOpenRouter: %v", err)
-	}
+	client := newChatTestClient(t, srv.URL, "anthropic/claude", "", 5*time.Second)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -302,13 +291,7 @@ func TestChatCompletions_StreamReassembly_ParallelTools(t *testing.T) {
 		}
 	})
 
-	client, _ := NewOpenRouter(Config{
-		Credential: config.Credential{Value: "test-key"},
-		Model:      "anthropic/claude",
-		MaxTokens:  1024,
-		BaseURL:    srv.URL,
-		StreamIdle: 5 * time.Second,
-	})
+	client := newChatTestClient(t, srv.URL, "anthropic/claude", "", 5*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -346,13 +329,7 @@ func TestChatCompletions_StreamReassembly_BadJSON(t *testing.T) {
 		}
 	})
 
-	client, _ := NewOpenRouter(Config{
-		Credential: config.Credential{Value: "test-key"},
-		Model:      "anthropic/claude",
-		MaxTokens:  1024,
-		BaseURL:    srv.URL,
-		StreamIdle: 5 * time.Second,
-	})
+	client := newChatTestClient(t, srv.URL, "anthropic/claude", "", 5*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -383,13 +360,7 @@ func TestChatCompletions_Usage(t *testing.T) {
 		}
 	})
 
-	client, _ := NewOpenRouter(Config{
-		Credential: config.Credential{Value: "test-key"},
-		Model:      "anthropic/claude",
-		MaxTokens:  1024,
-		BaseURL:    srv.URL,
-		StreamIdle: 5 * time.Second,
-	})
+	client := newChatTestClient(t, srv.URL, "anthropic/claude", "", 5*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -429,13 +400,7 @@ func TestChatCompletions_IdleTimeout(t *testing.T) {
 		<-r.Context().Done()
 	})
 
-	client, _ := NewOpenRouter(Config{
-		Credential: config.Credential{Value: "test-key"},
-		Model:      "anthropic/claude",
-		MaxTokens:  1024,
-		BaseURL:    srv.URL,
-		StreamIdle: 2 * time.Second,
-	})
+	client := newChatTestClient(t, srv.URL, "anthropic/claude", "", 2*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 

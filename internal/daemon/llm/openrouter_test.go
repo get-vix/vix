@@ -8,9 +8,10 @@ import (
 	"time"
 
 	"github.com/get-vix/vix/internal/config"
+	"github.com/get-vix/vix/internal/providers"
 )
 
-// orMinimalSSE emits a single chat.completion.chunk with finish_reason
+// orMinimalChunk emits a single chat.completion.chunk with finish_reason
 // and usage so the request can complete without us caring about content.
 const orMinimalChunk = `{"id":"x","object":"chat.completion.chunk","created":1,"model":"x","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":0}}}`
 
@@ -23,25 +24,43 @@ func orHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// newOpenRouterTestClient builds the generic chat client parameterized the way
+// the OpenRouter provider spec does: attribution headers, the usage.include
+// body injection (plus any extra jsonSet such as provider routing), and the
+// reasoning_effort style.
+func newOpenRouterTestClient(t *testing.T, cfg Config, headers map[string]string, extraJSON map[string]any) Client {
+	t.Helper()
+	jsonSet := map[string]any{"usage.include": true}
+	for k, v := range extraJSON {
+		jsonSet[k] = v
+	}
+	c, err := newChatCompletionsClient(cfg, chatParams{
+		provider:    ProviderOpenRouter,
+		headers:     headers,
+		jsonSet:     jsonSet,
+		effortStyle: providers.EffortStyleReasoningEffort,
+	})
+	if err != nil {
+		t.Fatalf("newChatCompletionsClient: %v", err)
+	}
+	return c
+}
+
 // TestOpenRouter_AttributionHeaders verifies HTTP-Referer and X-Title are
 // sent when configured. OpenRouter uses these for ranking/attribution.
 func TestOpenRouter_AttributionHeaders(t *testing.T) {
 	srv, log := recordingServer(t, orHandler)
 
-	client, err := NewOpenRouter(Config{
+	client := newOpenRouterTestClient(t, Config{
 		Credential: config.Credential{Value: "test-key"},
 		Model:      "anthropic/claude",
 		MaxTokens:  1024,
 		BaseURL:    srv.URL,
 		StreamIdle: 5 * time.Second,
-		OpenRouter: OpenRouterOptions{
-			HTTPReferer: "https://example.test",
-			XTitle:      "vix-test",
-		},
-	})
-	if err != nil {
-		t.Fatalf("NewOpenRouter: %v", err)
-	}
+	}, map[string]string{
+		"HTTP-Referer": "https://example.test",
+		"X-Title":      "vix-test",
+	}, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -64,13 +83,13 @@ func TestOpenRouter_AttributionHeaders(t *testing.T) {
 func TestOpenRouter_UsageIncludeRequested(t *testing.T) {
 	srv, log := recordingServer(t, orHandler)
 
-	client, _ := NewOpenRouter(Config{
+	client := newOpenRouterTestClient(t, Config{
 		Credential: config.Credential{Value: "test-key"},
 		Model:      "anthropic/claude",
 		MaxTokens:  1024,
 		BaseURL:    srv.URL,
 		StreamIdle: 5 * time.Second,
-	})
+	}, nil, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_, _, _ = client.StreamMessage(ctx, nil, []MessageParam{NewUserMessage(NewTextBlock("hi"))}, nil, nil, nil)
@@ -82,22 +101,21 @@ func TestOpenRouter_UsageIncludeRequested(t *testing.T) {
 	}
 }
 
-// TestOpenRouter_RoutingBlock verifies an OpenRouterOptions.Routing map
-// gets serialized as a `provider` field on the request body.
+// TestOpenRouter_RoutingBlock verifies a provider routing map injected via
+// json_set gets serialized as a `provider` field on the request body.
 func TestOpenRouter_RoutingBlock(t *testing.T) {
 	srv, log := recordingServer(t, orHandler)
 
-	client, _ := NewOpenRouter(Config{
+	client := newOpenRouterTestClient(t, Config{
 		Credential: config.Credential{Value: "test-key"},
 		Model:      "anthropic/claude",
 		MaxTokens:  1024,
 		BaseURL:    srv.URL,
 		StreamIdle: 5 * time.Second,
-		OpenRouter: OpenRouterOptions{
-			Routing: map[string]any{
-				"order":           []string{"anthropic"},
-				"allow_fallbacks": false,
-			},
+	}, nil, map[string]any{
+		"provider": map[string]any{
+			"order":           []string{"anthropic"},
+			"allow_fallbacks": false,
 		},
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -122,10 +140,10 @@ func TestOpenRouter_RoutingBlock(t *testing.T) {
 // is sent for reasoning-capable model identifiers and omitted otherwise.
 func TestOpenRouter_ReasoningEffortForReasoningModel(t *testing.T) {
 	cases := []struct {
-		model        string
-		effort       string
-		wantPresent  bool
-		wantEffort   string
+		model       string
+		effort      string
+		wantPresent bool
+		wantEffort  string
 	}{
 		{"openai/o3", "high", true, "high"},
 		{"openai/gpt-5-thinking", "medium", true, "medium"},
@@ -137,14 +155,14 @@ func TestOpenRouter_ReasoningEffortForReasoningModel(t *testing.T) {
 		t.Run(c.model+"_"+c.effort, func(t *testing.T) {
 			srv, log := recordingServer(t, orHandler)
 
-			client, _ := NewOpenRouter(Config{
+			client := newOpenRouterTestClient(t, Config{
 				Credential: config.Credential{Value: "test-key"},
 				Model:      c.model,
 				Effort:     c.effort,
 				MaxTokens:  1024,
 				BaseURL:    srv.URL,
 				StreamIdle: 5 * time.Second,
-			})
+			}, nil, nil)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			_, _, _ = client.StreamMessage(ctx, nil, []MessageParam{NewUserMessage(NewTextBlock("hi"))}, nil, nil, nil)
@@ -171,13 +189,13 @@ func TestOpenRouter_ReasoningEffortForReasoningModel(t *testing.T) {
 func TestOpenRouter_AuthHeaderUsesBearer(t *testing.T) {
 	srv, log := recordingServer(t, orHandler)
 
-	client, _ := NewOpenRouter(Config{
+	client := newOpenRouterTestClient(t, Config{
 		Credential: config.Credential{Value: "sk-or-test"},
 		Model:      "anthropic/claude",
 		MaxTokens:  1024,
 		BaseURL:    srv.URL,
 		StreamIdle: 5 * time.Second,
-	})
+	}, nil, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_, _, _ = client.StreamMessage(ctx, nil, []MessageParam{NewUserMessage(NewTextBlock("hi"))}, nil, nil, nil)

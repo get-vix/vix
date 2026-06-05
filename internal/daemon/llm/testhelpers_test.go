@@ -8,7 +8,33 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/get-vix/vix/internal/config"
+	"github.com/get-vix/vix/internal/providers"
 )
+
+// newChatTestClient builds the generic Chat Completions client pointed at a
+// test server, with the reasoning_effort style (the common case for the shared
+// wire/stream tests). Provider identity is OpenRouter for logging only.
+func newChatTestClient(t *testing.T, baseURL, model, effort string, idle time.Duration) Client {
+	t.Helper()
+	c, err := newChatCompletionsClient(Config{
+		Credential: config.Credential{Value: "test-key"},
+		Model:      model,
+		Effort:     effort,
+		MaxTokens:  1024,
+		BaseURL:    baseURL,
+		StreamIdle: idle,
+	}, chatParams{
+		provider:    ProviderOpenRouter,
+		effortStyle: providers.EffortStyleReasoningEffort,
+	})
+	if err != nil {
+		t.Fatalf("newChatCompletionsClient: %v", err)
+	}
+	return c
+}
 
 // recordedRequest is one captured outbound HTTP request from a test.
 type recordedRequest struct {

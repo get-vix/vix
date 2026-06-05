@@ -35,10 +35,8 @@ type openaiClient struct {
 
 // NewOpenAI constructs the OpenAI Responses adapter.
 func NewOpenAI(cfg Config) (Client, error) {
-	opts := []option.RequestOption{
-		option.WithMaxRetries(0),
-		option.WithAPIKey(cfg.Credential.Value),
-	}
+	opts := []option.RequestOption{option.WithMaxRetries(0)}
+	opts = append(opts, openaiAuthOptions(cfg.Credential)...)
 
 	httpClient := cfg.HTTPClient
 	if httpClient == nil {

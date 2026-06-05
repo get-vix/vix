@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/get-vix/vix/internal/config"
+	"github.com/get-vix/vix/internal/providers"
 )
 
 const mimoMinimalChunk = `{"id":"x","object":"chat.completion.chunk","created":1,"model":"x","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":0}}}`
@@ -21,21 +22,33 @@ func mimoHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// newMiMoTestClient builds the generic chat client parameterized the way the
+// MiMo provider spec does: a plain bearer key and the reasoning_effort style,
+// no headers or query params.
+func newMiMoTestClient(t *testing.T, cfg Config) Client {
+	t.Helper()
+	c, err := newChatCompletionsClient(cfg, chatParams{
+		provider:    ProviderMiMo,
+		effortStyle: providers.EffortStyleReasoningEffort,
+	})
+	if err != nil {
+		t.Fatalf("newChatCompletionsClient: %v", err)
+	}
+	return c
+}
+
 // TestMiMo_StreamRoundTrip verifies a basic streaming completion is parsed
 // into a neutral *Message with the expected text and end_turn stop reason.
 func TestMiMo_StreamRoundTrip(t *testing.T) {
 	srv, _ := recordingServer(t, mimoHandler)
 
-	client, err := NewMiMo(Config{
+	client := newMiMoTestClient(t, Config{
 		Credential: config.Credential{Value: "test-key"},
 		Model:      "mimo-v2.5-pro",
 		MaxTokens:  1024,
 		BaseURL:    srv.URL,
 		StreamIdle: 5 * time.Second,
 	})
-	if err != nil {
-		t.Fatalf("NewMiMo: %v", err)
-	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -58,7 +71,7 @@ func TestMiMo_StreamRoundTrip(t *testing.T) {
 func TestMiMo_AuthHeaderUsesBearer(t *testing.T) {
 	srv, log := recordingServer(t, mimoHandler)
 
-	client, _ := NewMiMo(Config{
+	client := newMiMoTestClient(t, Config{
 		Credential: config.Credential{Value: "mimo-test-key"},
 		Model:      "mimo-v2.5-pro",
 		MaxTokens:  1024,
@@ -75,18 +88,17 @@ func TestMiMo_AuthHeaderUsesBearer(t *testing.T) {
 	}
 }
 
-// TestMiMo_BaseURLOverride verifies Config.BaseURL beats MiMoOptions.BaseURL
-// and the built-in default, routing the request to our test server.
-func TestMiMo_BaseURLOverride(t *testing.T) {
+// TestMiMo_BaseURLRouting verifies Config.BaseURL routes the request to our
+// test server.
+func TestMiMo_BaseURLRouting(t *testing.T) {
 	srv, log := recordingServer(t, mimoHandler)
 
-	client, _ := NewMiMo(Config{
+	client := newMiMoTestClient(t, Config{
 		Credential: config.Credential{Value: "test-key"},
 		Model:      "mimo-v2.5-pro",
 		MaxTokens:  1024,
-		BaseURL:    srv.URL, // top-level override
+		BaseURL:    srv.URL,
 		StreamIdle: 5 * time.Second,
-		MiMo:       MiMoOptions{BaseURL: "https://other.invalid/v1"},
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -101,13 +113,10 @@ func TestMiMo_BaseURLOverride(t *testing.T) {
 
 // TestMiMo_ProviderAndModel verifies the adapter reports its identity.
 func TestMiMo_ProviderAndModel(t *testing.T) {
-	client, err := NewMiMo(Config{
+	client := newMiMoTestClient(t, Config{
 		Credential: config.Credential{Value: "k"},
 		Model:      "mimo-v2.5-pro",
 	})
-	if err != nil {
-		t.Fatalf("NewMiMo: %v", err)
-	}
 	if client.Provider() != ProviderMiMo {
 		t.Errorf("Provider = %q, want %q", client.Provider(), ProviderMiMo)
 	}
