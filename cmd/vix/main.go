@@ -165,19 +165,27 @@ func main() {
 	// for the selected model is surfaced as an error in the UI by the daemon.
 	// Users must set their provider's env var (ANTHROPIC_API_KEY /
 	// CLAUDE_CODE_OAUTH_TOKEN / OPENAI_API_KEY / OPENROUTER_API_KEY /
-	// MINIMAX_API_KEY / MIMO_API_KEY) themselves.
+	// MINIMAX_API_KEY / MIMO_API_KEY) themselves, or have an OAuth login
+	// for GitHub Copilot, OpenAI Codex, or Anthropic OAuth.
 	var apiKey string
 	apiKey, _ = config.ResolveProviderKey("anthropic") // includes CLAUDE_CODE_OAUTH_TOKEN fallback
 	hasNonAnthropicKey := func() bool {
+		// Check static API keys for non-Anthropic providers.
 		for _, p := range []string{"openai", "openrouter", "minimax", "mimo"} {
 			if k, _ := config.ResolveProviderKey(p); k != "" {
+				return true
+			}
+		}
+		// Check OAuth-stored credentials (e.g. GitHub Copilot).
+		for _, loginID := range []string{"github-copilot", "openai-codex", "anthropic"} {
+			if config.HasOAuthLogin(loginID) {
 				return true
 			}
 		}
 		return false
 	}
 	if apiKey == "" && !hasNonAnthropicKey() && *prompt != "" {
-		fmt.Fprintf(os.Stderr, "Error: no API key found. Set ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN, OPENAI_API_KEY, OPENROUTER_API_KEY, MINIMAX_API_KEY, or MIMO_API_KEY.\n")
+		fmt.Fprintf(os.Stderr, "Error: no API key found. Set ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN, OPENAI_API_KEY, OPENROUTER_API_KEY, MINIMAX_API_KEY, or MIMO_API_KEY, or log in with GitHub Copilot / ChatGPT in the TUI.\n")
 		os.Exit(1)
 	}
 

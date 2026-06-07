@@ -52,6 +52,15 @@ var pricingByProvider = map[string][]modelPricing{
 		{"mimo-v2.5", 0.14, 0.28, 0, 0},
 		{"mimo-v2-flash", 0.07, 0.14, 0, 0},
 	},
+	"github-copilot": {
+		{"claude-opus-4", 5.00, 25.00, 6.25, 0.50},
+		{"claude-sonnet-4", 3.00, 15.00, 3.75, 0.30},
+		{"claude-haiku-4", 1.00, 5.00, 1.25, 0.10},
+		{"gpt-5.5", 5.00, 30.00, 0, 0.50},
+		{"gpt-5.4", 2.50, 15.00, 0, 0.25},
+		{"gpt-5", 2.50, 10.00, 0, 0.25},
+		{"gemini-2.5-pro", 1.25, 10.00, 0, 0.125},
+	},
 	// "openrouter" intentionally absent — its CostUSD is server-reported
 	// and short-circuits in the caller (see daemon/session.go costFor).
 }

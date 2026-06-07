@@ -80,7 +80,8 @@ const (
 	// FlowOAuthCodex is the ChatGPT/Codex browser + device-code flow.
 	FlowOAuthCodex = "oauth_codex"
 	// FlowOAuthPKCEMint is PKCE → minted user API key (OpenRouter).
-	FlowOAuthPKCEMint = "oauth_pkce_mint"
+	FlowOAuthPKCEMint  = "oauth_pkce_mint"
+	FlowOAuthGHCopilot = "oauth_gh_copilot"
 )
 
 // ExtraHeaders producer names: compiled functions that derive extra request

@@ -15,6 +15,7 @@ var (
 func init() {
 	builtins := []Provider{
 		newAnthropicProvider(),
+		newGithubCopilotProvider(),
 		newOpenAICodexProvider(),
 		newOpenRouterProvider(),
 	}

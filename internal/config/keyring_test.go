@@ -157,8 +157,8 @@ func TestListStoredProviderKeys(t *testing.T) {
 	defer DeleteProviderKey("anthropic")
 
 	keys := ListStoredProviderKeys()
-	if len(keys) != 5 {
-		t.Fatalf("expected 5 provider entries, got %d", len(keys))
+	if len(keys) != 6 {
+		t.Fatalf("expected 6 provider entries, got %d", len(keys))
 	}
 
 	anthropicFound := false

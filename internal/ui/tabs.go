@@ -442,13 +442,16 @@ func renderModelsView(width, height int, s Styles,
 		return "    " + strings.Join(cells, "  ")
 	}
 
-	// API key row.
-	keyVal := "(empty)"
-	if st.APIKeyStored {
-		keyVal = st.APIKeyPrefix + "..."
+	// API key row — hidden when the provider has no API key auth method
+	// (e.g. OAuth-only providers like GitHub Copilot).
+	if provider == "" || config.ProviderHasAPIKeyAuth(provider) {
+		keyVal := "(empty)"
+		if st.APIKeyStored {
+			keyVal = st.APIKeyPrefix + "..."
+		}
+		rightLines = append(rightLines, "API Key: "+keyVal+defaultTag(st.Default == config.AuthDefaultAPIKey))
+		rightLines = append(rightLines, renderButtons(authRowAPIKey))
 	}
-	rightLines = append(rightLines, "API Key: "+keyVal+defaultTag(st.Default == config.AuthDefaultAPIKey))
-	rightLines = append(rightLines, renderButtons(authRowAPIKey))
 
 	// OAuth row.
 	if st.OAuthSupported {

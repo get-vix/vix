@@ -115,6 +115,23 @@ func AuthMethodsFor(provider string) []AuthMethod {
 	return out
 }
 
+// ProviderHasAPIKeyAuth reports whether a provider has at least one API key
+// credential method (i.e. non-OAuth). OAuth-only providers should hide the
+// API Key row in the UI to avoid confusing "Create key" buttons.
+func ProviderHasAPIKeyAuth(provider string) bool {
+	for _, m := range AuthMethodsFor(provider) {
+		if m.Kind == APIKeyAuth {
+			return true
+		}
+	}
+	return false
+}
+
+// HasOAuthLogin reports whether an OAuth login is stored for the given login id.
+func HasOAuthLogin(loginID string) bool {
+	return auth.DefaultStorage().HasLogin(loginID)
+}
+
 // OAuthLoginID returns the internal/auth login id for a provider's OAuth method,
 // or "" when the provider has no OAuth login. Single source of truth for the
 // provider→loginID mapping, shared by the UI and credential-status helpers.
