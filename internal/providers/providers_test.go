@@ -14,7 +14,7 @@ func TestEmbeddedLoadsAndValidates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadEmbedded: %v", err)
 	}
-	wantIDs := []string{"anthropic", "openai", "openrouter", "minimax", "mimo"}
+	wantIDs := []string{"anthropic", "openai", "openrouter", "minimax", "mimo", "github-copilot"}
 	if got := reg.IDs(); len(got) != len(wantIDs) {
 		t.Fatalf("IDs = %v, want %v", got, wantIDs)
 	}
@@ -42,6 +42,7 @@ func TestGoldenProviderData(t *testing.T) {
 		effortStyle string
 	}{
 		{"anthropic", "anthropic", WireMessages, EffortAdaptive, AuthSchemeXAPIKey, "https://api.anthropic.com/v1", EffortStyleNone},
+		{"github-copilot", "github-copilot", WireChatCompletions, EffortOpenAIReasoning, AuthSchemeBearer, "https://api.individual.githubcopilot.com", EffortStyleNone},
 		{"openai", "openai", WireResponses, EffortOpenAIReasoning, AuthSchemeBearer, "https://api.openai.com/v1", EffortStyleNone},
 		{"openrouter", "openrouter", WireChatCompletions, EffortOpenAIReasoning, AuthSchemeBearer, "https://openrouter.ai/api/v1", EffortStyleReasoningEffort},
 		{"minimax", "minimax", WireChatCompletions, EffortAdaptive, AuthSchemeBearer, "https://api.minimax.io/v1", EffortStyleReasoningSplit},
@@ -106,6 +107,14 @@ func TestGoldenCredentialMethods(t *testing.T) {
 	if or.Credential[1].Kind != CredOAuthMintKey || or.Credential[1].LoginID != "openrouter" {
 		t.Errorf("openrouter mint method = %+v", or.Credential[1])
 	}
+
+	copilot, _ := reg.Lookup("github-copilot")
+	if len(copilot.Credential) != 1 {
+		t.Fatalf("github-copilot credential methods = %d, want 1", len(copilot.Credential))
+	}
+	if copilot.Credential[0].Kind != CredOAuthToken || copilot.Credential[0].LoginID != "github-copilot" {
+		t.Errorf("github-copilot method = %+v", copilot.Credential[0])
+	}
 }
 
 // TestParseModel mirrors the old llm.factory_test cases.
@@ -120,6 +129,8 @@ func TestParseModel(t *testing.T) {
 		{"anthropic/claude-opus-4-8", "anthropic", "claude-opus-4-8", false},
 		{"openai/gpt-5.1", "openai", "gpt-5.1", false},
 		{"openrouter/openai/gpt-5.1", "openrouter", "openai/gpt-5.1", false},
+		{"github-copilot/gpt-5.4", "github-copilot", "gpt-5.4", false},
+		{"github-copilot/claude-sonnet-4.6", "github-copilot", "claude-sonnet-4.6", false},
 		{"minimax/MiniMax-M2.7", "minimax", "MiniMax-M2.7", false},
 		{"mimo/mimo-v2.5-pro", "mimo", "mimo-v2.5-pro", false},
 		{"", "", "", true},
@@ -175,6 +186,8 @@ func TestDefaultEffort(t *testing.T) {
 	}{
 		{"anthropic/claude-opus-4-8", "adaptive"},
 		{"minimax/MiniMax-M2.7", "adaptive"},
+		{"github-copilot/gpt-5.4", "medium"},
+		{"github-copilot/claude-sonnet-4.6", ""},
 		{"openai/gpt-5.1", "medium"},
 		{"openai/gpt-4o", ""},
 		{"openrouter/openai/o3", "medium"},
@@ -235,6 +248,11 @@ func TestAuthLogins(t *testing.T) {
 	or, ok := reg.AuthLogin("openrouter")
 	if !ok || or.Flow != FlowOAuthPKCEMint || or.CallbackPort != 53781 {
 		t.Errorf("openrouter login = %+v", or)
+	}
+
+	ghc, ok := reg.AuthLogin("github-copilot")
+	if !ok || ghc.Flow != FlowOAuthGHCopilot || ghc.Device == nil || ghc.Device.TimeoutSeconds != 900 {
+		t.Errorf("github-copilot login = %+v", ghc)
 	}
 }
 

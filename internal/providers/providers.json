@@ -542,6 +542,37 @@
         { "spec": "mimo/mimo-v2.5-tts-voiceclone", "display_name": "Mimo v2.5 Tts Voiceclone" },
         { "spec": "mimo/mimo-v2.5-tts-voicedesign", "display_name": "Mimo v2.5 Tts Voicedesign" }
       ]
+    },
+    {
+      "id": "github-copilot",
+      "display_name": "GitHub Copilot",
+      "model_prefix": "github-copilot",
+      "wire_format": "chat_completions",
+      "effort_policy": "openai_reasoning",
+      "inference": {
+        "base_url": "https://api.individual.githubcopilot.com",
+        "auth_scheme": "bearer",
+        "headers": {
+          "Openai-Intent": "copilot_intent",
+          "Editor-Version": "vscode/1.96.0",
+          "Editor-Plugin-Version": "copilot-chat/0.23.0",
+          "Copilot-Integration-Id": "vscode-chat",
+          "X-Initiator": "agent"
+        }
+      },
+      "credential_methods": [
+        { "kind": "oauth_token", "login_id": "github-copilot", "header_style": "bearer" }
+      ],
+      "models": [
+        { "spec": "github-copilot/gpt-5-mini", "display_name": "GPT 5 Mini", "context_window": 131072 },
+        { "spec": "github-copilot/gpt-5.4", "display_name": "GPT 5.4", "context_window": 400000 },
+        { "spec": "github-copilot/gpt-5.4-mini", "display_name": "GPT 5.4 Mini", "context_window": 400000 },
+        { "spec": "github-copilot/gpt-5.5", "display_name": "GPT 5.5", "context_window": 400000 },
+        { "spec": "github-copilot/claude-sonnet-4.6", "display_name": "Claude Sonnet 4.6", "context_window": 1000000 },
+        { "spec": "github-copilot/claude-opus-4.7", "display_name": "Claude Opus 4.7", "context_window": 1000000 },
+        { "spec": "github-copilot/claude-haiku-4.5", "display_name": "Claude Haiku 4.5", "context_window": 200000 },
+        { "spec": "github-copilot/gemini-2.5-pro", "display_name": "Gemini 2.5 Pro", "context_window": 1048576 }
+      ]
     }
   ],
   "auth_logins": [
@@ -581,6 +612,18 @@
       "keys_url": "https://openrouter.ai/api/v1/auth/keys",
       "callback_port": 53781,
       "callback_path": "/callback"
+    },
+    {
+      "id": "github-copilot",
+      "flow": "oauth_gh_copilot",
+      "client_id_b64": "SXYxLmI1MDdhMDhjODdlY2ZlOTg=",
+      "scope": "read:user",
+      "device": {
+        "user_code_url": "https://github.com/login/device/code",
+        "token_url": "https://github.com/login/oauth/access_token",
+        "verification_uri": "https://github.com/login/device",
+        "timeout_seconds": 900
+      }
     }
   ]
 }

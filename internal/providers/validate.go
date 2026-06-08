@@ -16,6 +16,8 @@ var allowedAuthHosts = map[string]bool{
 	"api.anthropic.com":   true,
 	"auth.openai.com":     true,
 	"openrouter.ai":       true,
+	"github.com":          true,
+	"api.github.com":      true,
 }
 
 // validWireFormats / validAuthSchemes / validCredKinds / validFlows /
@@ -26,7 +28,7 @@ var (
 	validWireFormats  = map[WireFormat]bool{WireMessages: true, WireResponses: true, WireChatCompletions: true}
 	validAuthSchemes  = map[string]bool{AuthSchemeBearer: true, AuthSchemeXAPIKey: true}
 	validCredKinds    = map[string]bool{CredAPIKey: true, CredOAuthMintKey: true, CredOAuthToken: true}
-	validFlows        = map[string]bool{FlowOAuthPKCEToken: true, FlowOAuthCodex: true, FlowOAuthPKCEMint: true}
+	validFlows        = map[string]bool{FlowOAuthPKCEToken: true, FlowOAuthCodex: true, FlowOAuthPKCEMint: true, FlowOAuthGHCopilot: true}
 	validEffortStyles = map[string]bool{EffortStyleNone: true, EffortStyleReasoningEffort: true, EffortStyleReasoningSplit: true}
 	validEfforts      = map[string]bool{EffortAdaptive: true, EffortOpenAIReasoning: true, "": true}
 	validProducers    = map[string]bool{"": true, ProducerAnthropicOAuth: true, ProducerCodexOAuth: true}

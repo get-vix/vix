@@ -1134,6 +1134,11 @@ func (m Model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.modelsLoginStatus = "Login failed: " + msg.err.Error()
 			} else {
 				m.modelsLoginStatus = "Logged in to " + msg.provider + "."
+				// Apply pending model selection from selectModel.
+				if m.modelsModelPending != "" && ProviderOf(m.modelsModelPending) == msg.provider {
+					m.applyModelSelection(m.modelsModelPending)
+					m.modelsModelPending = ""
+				}
 			}
 		}
 		return m, nil
@@ -1355,7 +1360,7 @@ func (m *Model) switchTab(k TabKind) tea.Cmd {
 // model.
 func (m *Model) enterModelsTab() {
 	m.modelsFocus = modelsFocusProviders
-	m.modelsAuthRow = authRowAPIKey
+	m.modelsAuthRow = m.defaultAuthRow()
 	m.modelsAuthBtn = 0
 	m.modelsModelPending = ""
 	m.modelsInKeyInput = false
@@ -1368,6 +1373,16 @@ func (m *Model) enterModelsTab() {
 	m.modelsProviderSel = m.providerFlatIndex(prov)
 	m.modelsModelSel = modelIndexForActive(prov, active)
 	m.clampModelsScroll()
+}
+
+// defaultAuthRow returns the first auth row that should be focused for the
+// selected provider, skipping the API key row when unsupported.
+func (m *Model) defaultAuthRow() int {
+	provider := m.modelsSelectedProvider()
+	if provider != "" && !config.ProviderHasAPIKeyAuth(provider) {
+		return authRowOAuth
+	}
+	return authRowAPIKey
 }
 
 // refreshModelsProviders recomputes the logged-in / available provider split and
@@ -1531,7 +1546,7 @@ func (m Model) handleModelsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.modelsModelSel = 0
 				m.modelsModelScroll = 0
 				m.modelsFilter = ""
-				m.modelsAuthRow = authRowAPIKey
+				m.modelsAuthRow = m.defaultAuthRow()
 				m.modelsAuthBtn = 0
 				m.modelsLoginStatus = ""
 			}
@@ -1541,13 +1556,13 @@ func (m Model) handleModelsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.modelsModelSel = 0
 				m.modelsModelScroll = 0
 				m.modelsFilter = ""
-				m.modelsAuthRow = authRowAPIKey
+				m.modelsAuthRow = m.defaultAuthRow()
 				m.modelsAuthBtn = 0
 				m.modelsLoginStatus = ""
 			}
 		case "right", "l", "enter", "tab":
 			m.modelsFocus = modelsFocusAuth
-			m.modelsAuthRow = authRowAPIKey
+			m.modelsAuthRow = m.defaultAuthRow()
 			m.modelsAuthBtn = 0
 		}
 	case modelsFocusAuth:
@@ -1564,7 +1579,9 @@ func (m Model) handleModelsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.modelsAuthBtn++
 			}
 		case "up", "k":
-			if m.modelsAuthRow == authRowOAuth {
+			if m.modelsAuthRow == authRowAPIKey {
+				m.modelsFocus = modelsFocusProviders
+			} else if m.modelsAuthRow == authRowOAuth && config.ProviderHasAPIKeyAuth(m.modelsSelectedProvider()) {
 				m.modelsAuthRow = authRowAPIKey
 				m.modelsAuthBtn = 0
 			} else {
@@ -1574,6 +1591,9 @@ func (m Model) handleModelsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if m.modelsAuthRow == authRowAPIKey && len(authButtonsFor(st, authRowOAuth)) > 0 {
 				m.modelsAuthRow = authRowOAuth
 				m.modelsAuthBtn = 0
+			} else if m.modelsAuthRow == authRowOAuth {
+				m.modelsFocus = modelsFocusModels
+				m.modelsModelSel = 0
 			} else {
 				m.modelsFocus = modelsFocusModels
 				m.modelsModelSel = 0
@@ -1670,11 +1690,16 @@ func (m Model) modelsViewportHeight() int {
 // selectModel applies the chosen model when its provider has a resolvable
 // credential, otherwise opens the key popup and remembers the pending model.
 func (m Model) selectModel(mod ModelInfo) (tea.Model, tea.Cmd) {
-	if key, _ := config.ResolveProviderKey(mod.Provider); key != "" {
+	if cred := config.ResolveProviderCredential(mod.Provider); cred.Source != config.KeySourceNone {
 		m.applyModelSelection(mod.Spec)
 		return m, nil
 	}
 	m.modelsModelPending = mod.Spec
+	if ProviderSupportsLogin(mod.Provider) {
+		m.modelsLoginStatus = "Starting " + mod.Provider + " login…"
+		startProviderLogin(mod.Provider)
+		return m, nil
+	}
 	m.openModelsKeyInput(mod.Provider)
 	return m, nil
 }
