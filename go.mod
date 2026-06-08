@@ -11,6 +11,7 @@ require (
 	github.com/atotto/clipboard v0.1.4
 	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/charmbracelet/ultraviolet v0.0.0-20260205113103-524a6607adb8
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/google/uuid v1.6.0
 	github.com/gridlhq-dev/tree-sitter-swift v0.1.0
 	github.com/lucasb-eyer/go-colorful v1.3.0

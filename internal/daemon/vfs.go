@@ -15,18 +15,16 @@ import (
 // errVFSUnsupported is returned when the file cannot be minified by Tree-sitter.
 var errVFSUnsupported = errors.New("vfs: unsupported file type")
 
-// defaultSettingsPaths returns the canonical [home/settings.json, cwd/.vix/settings.json]
-// list used by stateless tool handlers that don't have a session-level VixPaths
-// available. Per-session overrides are handled at the session layer.
-func defaultSettingsPaths(homeVixDir, cwd string) []string {
-	var out []string
-	if homeVixDir != "" {
-		out = append(out, filepath.Join(homeVixDir, "settings.json"))
+// defaultLanguagesPaths returns the canonical [home/config/languages.json]
+// list used by stateless tool handlers that don't have a session-level
+// VixPaths available. Languages are home-only (not layered with the project),
+// so this is a single-element slice. Per-session config-dir overrides are
+// handled at the session layer.
+func defaultLanguagesPaths(homeVixDir string) []string {
+	if homeVixDir == "" {
+		return nil
 	}
-	if cwd != "" {
-		out = append(out, filepath.Join(cwd, ".vix", "settings.json"))
-	}
-	return out
+	return []string{filepath.Join(homeVixDir, "config", "languages.json")}
 }
 
 // fileLocks is a per-file mutex registry to ensure vfsEdit's read→minify→write
@@ -244,7 +242,7 @@ func VfsEdit(cwd string, allowedDirs []string, homeVixDir, path, oldString, newS
 	}
 
 	// Run formatter if configured.
-	extMap, formatters, _ := loadFormatterConfigs(defaultSettingsPaths(homeVixDir, cwd))
+	extMap, formatters, _ := loadFormatterConfigs(defaultLanguagesPaths(homeVixDir))
 	lang := extMap[strings.ToLower(filepath.Ext(path))]
 	msg := fmt.Sprintf("Edited %s (replaced 1 occurrence).", path)
 	if cfg, ok := formatters[lang]; ok {
@@ -285,7 +283,7 @@ func VfsWrite(cwd string, allowedDirs []string, homeVixDir, path, content string
 	}
 
 	// Run formatter if configured.
-	extMap, formatters, _ := loadFormatterConfigs(defaultSettingsPaths(homeVixDir, cwd))
+	extMap, formatters, _ := loadFormatterConfigs(defaultLanguagesPaths(homeVixDir))
 	lang := extMap[strings.ToLower(filepath.Ext(path))]
 	msg := fmt.Sprintf("Wrote %d bytes to %s", len(encoded), path)
 	if cfg, ok := formatters[lang]; ok {

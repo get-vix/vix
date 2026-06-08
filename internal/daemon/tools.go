@@ -1101,7 +1101,7 @@ func RegisterToolHandlers(s *Server) {
 		}
 		cwd, _ := params["cwd"].(string)
 		allowedDirs := extractAllowedDirs(params)
-		extMap, _, vfsConfigs := loadFormatterConfigs(defaultSettingsPaths(s.homeVixDir, cwd))
+		extMap, _, vfsConfigs := loadFormatterConfigs(defaultLanguagesPaths(s.homeVixDir))
 		keepComments := keepCommentsForPath(extMap, vfsConfigs, path)
 		var output string
 		var err error
@@ -1154,7 +1154,7 @@ func RegisterToolHandlers(s *Server) {
 		allowedDirs := extractAllowedDirs(params)
 		var output string
 		var err error
-		extMap, formatters, vfsConfigs := loadFormatterConfigs(defaultSettingsPaths(s.homeVixDir, cwd))
+		extMap, formatters, vfsConfigs := loadFormatterConfigs(defaultLanguagesPaths(s.homeVixDir))
 		if vfsEnabledForPath(extMap, formatters, vfsConfigs, path) {
 			output, err = VfsWrite(cwd, allowedDirs, s.homeVixDir, path, content)
 		} else {
@@ -1212,7 +1212,7 @@ func RegisterToolHandlers(s *Server) {
 		var output string
 		var lineOffset int
 		var err error
-		extMap, formatters, vfsConfigs := loadFormatterConfigs(defaultSettingsPaths(s.homeVixDir, cwd))
+		extMap, formatters, vfsConfigs := loadFormatterConfigs(defaultLanguagesPaths(s.homeVixDir))
 		keepComments := keepCommentsForPath(extMap, vfsConfigs, path)
 		if vfsEnabledForPath(extMap, formatters, vfsConfigs, path) {
 			output, lineOffset, err = VfsEdit(cwd, allowedDirs, s.homeVixDir, path, oldString, newString, keepComments)

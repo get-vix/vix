@@ -1,0 +1,194 @@
+{
+  "workflows": [
+    {
+      "entry_point": {
+        "id": "explore",
+        "params": {
+          "prompt": "$(workflow.prompt)"
+        }
+      },
+      "name": "Plan",
+      "steps": {
+        "execute": {
+          "agent": "general",
+          "effort": "adaptive",
+          "explanation": "Executing the approved plan",
+          "input_params": {
+            "plan": {
+              "description": "The LLM's plan for updating the code"
+            }
+          },
+          "prompt": "$(file:prompts/plan_workflow/execute.md)",
+          "stream": true,
+          "type": "agent"
+        },
+        "explore": {
+          "agent": "plan",
+          "effort": "adaptive",
+          "explanation": "Exploring the codebase to understand relevant files and patterns",
+          "input_params": {
+            "prompt": {
+              "description": "The user's plan description"
+            }
+          },
+          "next_steps": [
+            {
+              "id": "plan",
+              "params": {
+                "prompt": "$(step.explore.prompt)"
+              }
+            }
+          ],
+          "prompt": "$(file:prompts/plan_workflow/explore.md)",
+          "stream": true,
+          "type": "agent"
+        },
+        "plan": {
+          "effort": "adaptive",
+          "explanation": "Generating a draft implementation plan",
+          "fork_from": "explore",
+          "input_params": {
+            "prompt": {
+              "description": "The user's plan description"
+            }
+          },
+          "json_output": false,
+          "next_steps": [
+            {
+              "id": "review",
+              "params": {
+                "plan": "$(step.plan)"
+              }
+            }
+          ],
+          "prompt": "$(file:prompts/plan_workflow/plan.md)",
+          "stream": true,
+          "type": "agent"
+        },
+        "refine": {
+          "effort": "adaptive",
+          "explanation": "Refining the plan based on critique feedback",
+          "fork_from": "plan",
+          "input_params": {
+            "feedback": {
+              "description": "User feedback to refine the plan"
+            }
+          },
+          "json_output": false,
+          "next_steps": [
+            {
+              "id": "review",
+              "params": {
+                "plan": "$(step.refine)"
+              }
+            }
+          ],
+          "prompt": "$(file:prompts/plan_workflow/refine.md)",
+          "stream": true,
+          "type": "agent"
+        },
+        "generate_whiteboard": {
+          "type": "agent",
+          "fork_from": "plan",
+          "effort": "adaptive",
+          "explanation": "Generating whiteboard scenes for the plan",
+          "input_params": {
+            "plan": {
+              "description": "The plan to visualise"
+            }
+          },
+          "next_steps": [
+            {
+              "id": "open_whiteboard",
+              "params": {
+                "plan": "$(step.generate_whiteboard.plan)"
+              }
+            }
+          ],
+          "prompt": "$(file:prompts/plan_workflow/whiteboard.md)",
+          "output": ".vix/whiteboards/$(session.id).json",
+          "stream": false
+        },
+        "open_whiteboard": {
+          "type": "bash",
+          "explanation": "Opening whiteboard in your browser",
+          "input_params": {
+            "plan": {
+              "description": "The implementation plan to pass to the whiteboard"
+            }
+          },
+          "command": "SCENES=$(python3 -c \"import urllib.parse,sys; sys.stdout.write(urllib.parse.quote(open('.vix/whiteboards/$(session.id).json').read().strip()))\") && PLAN=$(python3 -c \"import urllib.parse,sys; sys.stdout.write(urllib.parse.quote(sys.argv[1]))\" \"$(plan)\") && if [ \"$(platform)\" = \"darwin\" ]; then open \"http://127.0.0.1:1337/session/$(session.id)/whiteboard?scenes=$SCENES&plan=$PLAN&agent_id=agent_1201krde0b6jebpvqth0zxpcdqss\"; else xdg-open \"http://127.0.0.1:1337/session/$(session.id)/whiteboard?scenes=$SCENES&plan=$PLAN&agent_id=agent_1201krde0b6jebpvqth0zxpcdqss\"; fi",
+          "silent": true,
+          "next_steps": [
+            {
+              "id": "review",
+              "params": {
+                "plan": "$(plan)"
+              }
+            }
+          ]
+        },
+        "review": {
+          "category": "Plan Review",
+          "explanation": "Reviewing the plan",
+          "input_params": {
+            "plan": {
+              "description": "The LLM's plan to address the user ask"
+            }
+          },
+          "options": [
+            {
+              "description": "Approve the plan and proceed to execution",
+              "steps": [
+                {
+                  "id": "execute",
+                  "params": {
+                    "plan": "$(plan)"
+                  }
+                }
+              ],
+              "title": "Accept"
+            },
+            {
+              "description": "Provide feedback to refine the plan",
+              "has_user_input": true,
+              "steps": [
+                {
+                  "id": "refine",
+                  "params": {
+                    "feedback": "The user reviewed the plan and gave you the following feedback you need to address: $(user_text)"
+                  }
+                }
+              ],
+              "title": "Modify"
+            },
+            {
+              "description": "Reject the plan and stop the workflow",
+              "steps": [
+                {
+                  "id": "stop"
+                }
+              ],
+              "title": "Reject"
+            },
+            {
+              "description": "Generate and open a visual whiteboard to walk through the plan",
+              "steps": [
+                {
+                  "id": "generate_whiteboard",
+                  "params": {
+                    "plan": "$(plan)"
+                  }
+                }
+              ],
+              "title": "Whiteboard"
+            }
+          ],
+          "question": "Review the plan above. What would you like to do?",
+          "tool": "ask_question_to_user",
+          "type": "tool"
+        }
+      }
+    }
+  ]
+}

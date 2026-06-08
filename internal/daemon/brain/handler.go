@@ -44,29 +44,30 @@ func doBrainInit(data map[string]any, cred config.Credential) (map[string]any, e
 	}
 	os.MkdirAll(brainDir, 0o755)
 
-	// Resolve the settings.json paths to consult, falling back to the legacy
-	// [home, project] layering if the caller did not supply them.
-	var settingsPaths []string
-	if raw, ok := params["settings_paths"].([]string); ok {
-		settingsPaths = raw
-	} else if raw, ok := params["settings_paths"].([]any); ok {
+	// Resolve the languages.json paths to consult for the ext→language map and
+	// LSP server configs, falling back to the home-level config/languages.json
+	// if the caller did not supply them. Languages are home-only (not layered
+	// with the project), so this is normally a single path.
+	var languagesPaths []string
+	if raw, ok := params["languages_paths"].([]string); ok {
+		languagesPaths = raw
+	} else if raw, ok := params["languages_paths"].([]any); ok {
 		for _, v := range raw {
 			if s, ok := v.(string); ok {
-				settingsPaths = append(settingsPaths, s)
+				languagesPaths = append(languagesPaths, s)
 			}
 		}
 	}
-	if len(settingsPaths) == 0 {
+	if len(languagesPaths) == 0 {
 		home := config.HomeVixDir()
 		if home != "" {
-			settingsPaths = append(settingsPaths, filepath.Join(home, "settings.json"))
+			languagesPaths = append(languagesPaths, filepath.Join(home, "config", "languages.json"))
 		}
-		settingsPaths = append(settingsPaths, filepath.Join(root, ".vix", "settings.json"))
 	}
 
 	// Load language→extension map and initialize LSP pool
-	InitLanguageMap(settingsPaths)
-	lsp.InitPool(daemonCtx, root, settingsPaths...)
+	InitLanguageMap(languagesPaths)
+	lsp.InitPool(daemonCtx, root, languagesPaths...)
 
 	LogInfo("Brain init complete for %s", root)
 

@@ -318,7 +318,7 @@ func (s *Session) emitReplay() {
 	// Workflow: if the saved workflow no longer exists, fall back to chat mode.
 	if s.sessionMode == "workflow" && s.activeWorkflow != "" {
 		found := false
-		for _, w := range s.workflows {
+		for _, w := range s.snapshotWorkflows() {
 			if w.Name == s.activeWorkflow {
 				found = true
 				break

@@ -368,15 +368,14 @@ func TestResolveParams(t *testing.T) {
 	}
 }
 
-// ── LoadWorkflows ──
+// ── LoadWorkflowsFile ──
 
 func TestLoadWorkflows(t *testing.T) {
 	t.Run("valid config", func(t *testing.T) {
 		dir := t.TempDir()
-		path := filepath.Join(dir, "settings.json")
+		path := filepath.Join(dir, "workflow.json")
 
-		cfg := configFile{
-			Version: CurrentConfigVersion,
+		cfg := workflowsFile{
 			Workflows: []WorkflowDef{
 				{
 					Name:       "My Plan",
@@ -390,7 +389,7 @@ func TestLoadWorkflows(t *testing.T) {
 		data, _ := json.Marshal(cfg)
 		os.WriteFile(path, data, 0644)
 
-		result := LoadWorkflows(path)
+		result := LoadWorkflowsFile(path)
 		if len(result) != 1 {
 			t.Fatalf("expected 1 workflow, got %d", len(result))
 		}
@@ -400,18 +399,24 @@ func TestLoadWorkflows(t *testing.T) {
 	})
 
 	t.Run("missing file returns empty", func(t *testing.T) {
-		result := LoadWorkflows("/nonexistent/path/settings.json")
+		result := LoadWorkflowsFile("/nonexistent/path/workflow.json")
 		if len(result) != 0 {
 			t.Errorf("expected empty result for missing file, got %d", len(result))
 		}
 	})
 
+	t.Run("empty path returns empty", func(t *testing.T) {
+		if result := LoadWorkflowsFile(""); len(result) != 0 {
+			t.Errorf("expected empty result for empty path, got %d", len(result))
+		}
+	})
+
 	t.Run("invalid JSON returns empty", func(t *testing.T) {
 		dir := t.TempDir()
-		path := filepath.Join(dir, "settings.json")
+		path := filepath.Join(dir, "workflow.json")
 		os.WriteFile(path, []byte("not json"), 0644)
 
-		result := LoadWorkflows(path)
+		result := LoadWorkflowsFile(path)
 		if len(result) != 0 {
 			t.Errorf("expected empty result for invalid JSON, got %d", len(result))
 		}
@@ -419,10 +424,9 @@ func TestLoadWorkflows(t *testing.T) {
 
 	t.Run("invalid workflow skipped", func(t *testing.T) {
 		dir := t.TempDir()
-		path := filepath.Join(dir, "settings.json")
+		path := filepath.Join(dir, "workflow.json")
 
-		cfg := configFile{
-			Version: CurrentConfigVersion,
+		cfg := workflowsFile{
 			Workflows: []WorkflowDef{
 				{
 					// Missing name → invalid
@@ -436,7 +440,7 @@ func TestLoadWorkflows(t *testing.T) {
 		data, _ := json.Marshal(cfg)
 		os.WriteFile(path, data, 0644)
 
-		result := LoadWorkflows(path)
+		result := LoadWorkflowsFile(path)
 		if len(result) != 0 {
 			t.Errorf("expected 0 workflows (invalid skipped), got %d", len(result))
 		}
@@ -444,10 +448,9 @@ func TestLoadWorkflows(t *testing.T) {
 
 	t.Run("preserves config order", func(t *testing.T) {
 		dir := t.TempDir()
-		path := filepath.Join(dir, "settings.json")
+		path := filepath.Join(dir, "workflow.json")
 
-		cfg := configFile{
-			Version: CurrentConfigVersion,
+		cfg := workflowsFile{
 			Workflows: []WorkflowDef{
 				{
 					Name:       "Workflow B",
@@ -468,7 +471,7 @@ func TestLoadWorkflows(t *testing.T) {
 		data, _ := json.Marshal(cfg)
 		os.WriteFile(path, data, 0644)
 
-		result := LoadWorkflows(path)
+		result := LoadWorkflowsFile(path)
 		if len(result) != 2 {
 			t.Fatalf("expected 2 workflows, got %d", len(result))
 		}
@@ -479,27 +482,48 @@ func TestLoadWorkflows(t *testing.T) {
 			t.Errorf("expected second workflow 'Workflow A', got %q", result[1].Name)
 		}
 	})
+
+	t.Run("duplicate names disambiguated", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "workflow.json")
+
+		cfg := workflowsFile{
+			Workflows: []WorkflowDef{
+				{
+					Name:       "Plan",
+					EntryPoint: StepRef{ID: "s1"},
+					Steps:      map[string]WorkflowStepDef{"s1": {Type: "agent", Agent: "a", Prompt: "x"}},
+				},
+				{
+					Name:       "Plan",
+					EntryPoint: StepRef{ID: "s1"},
+					Steps:      map[string]WorkflowStepDef{"s1": {Type: "agent", Agent: "a", Prompt: "x"}},
+				},
+			},
+		}
+		data, _ := json.Marshal(cfg)
+		os.WriteFile(path, data, 0644)
+
+		result := LoadWorkflowsFile(path)
+		if len(result) != 2 {
+			t.Fatalf("expected 2 workflows, got %d", len(result))
+		}
+		if result[0].Name == result[1].Name {
+			t.Errorf("expected disambiguated names, both are %q", result[0].Name)
+		}
+	})
 }
 
 // ── LoadProjectConfig ──
 
 func TestLoadProjectConfig(t *testing.T) {
-	t.Run("loads agent and workflows", func(t *testing.T) {
+	t.Run("loads agent", func(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "settings.json")
 
 		cfg := configFile{
 			Version: CurrentConfigVersion,
 			Agent:   "custom",
-			Workflows: []WorkflowDef{
-				{
-					Name:       "My Workflow",
-					EntryPoint: StepRef{ID: "s1"},
-					Steps: map[string]WorkflowStepDef{
-						"s1": {Type: "agent", Agent: "planner", Prompt: "plan it"},
-					},
-				},
-			},
 		}
 		data, _ := json.Marshal(cfg)
 		os.WriteFile(path, data, 0644)
@@ -508,9 +532,6 @@ func TestLoadProjectConfig(t *testing.T) {
 		if result.Agent != "custom" {
 			t.Errorf("expected agent 'custom', got %q", result.Agent)
 		}
-		if len(result.Workflows) != 1 {
-			t.Fatalf("expected 1 workflow, got %d", len(result.Workflows))
-		}
 	})
 
 	t.Run("defaults to general agent", func(t *testing.T) {
@@ -518,8 +539,7 @@ func TestLoadProjectConfig(t *testing.T) {
 		path := filepath.Join(dir, "settings.json")
 
 		cfg := configFile{
-			Version:   CurrentConfigVersion,
-			Workflows: []WorkflowDef{},
+			Version: CurrentConfigVersion,
 		}
 		data, _ := json.Marshal(cfg)
 		os.WriteFile(path, data, 0644)
@@ -535,9 +555,6 @@ func TestLoadProjectConfig(t *testing.T) {
 		if result.Agent != "general" {
 			t.Errorf("expected default agent 'general', got %q", result.Agent)
 		}
-		if len(result.Workflows) != 0 {
-			t.Errorf("expected empty workflows, got %d", len(result.Workflows))
-		}
 	})
 
 	t.Run("version mismatch skips config", func(t *testing.T) {
@@ -547,15 +564,6 @@ func TestLoadProjectConfig(t *testing.T) {
 		cfg := configFile{
 			Version: 999,
 			Agent:   "custom",
-			Workflows: []WorkflowDef{
-				{
-					Name:       "Skipped",
-					EntryPoint: StepRef{ID: "s1"},
-					Steps: map[string]WorkflowStepDef{
-						"s1": {Type: "agent", Agent: "planner", Prompt: "plan it"},
-					},
-				},
-			},
 		}
 		data, _ := json.Marshal(cfg)
 		os.WriteFile(path, data, 0644)
@@ -563,9 +571,6 @@ func TestLoadProjectConfig(t *testing.T) {
 		result := LoadProjectConfig(path)
 		if result.Agent != "general" {
 			t.Errorf("expected default agent 'general' (config skipped), got %q", result.Agent)
-		}
-		if len(result.Workflows) != 0 {
-			t.Errorf("expected 0 workflows (config skipped), got %d", len(result.Workflows))
 		}
 	})
 

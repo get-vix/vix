@@ -61,6 +61,38 @@ func (p VixPaths) Layers() []string {
 	return out
 }
 
+// ConfigDir returns the directory holding the split config files
+// (workflow.json, languages.json). Override mode: override/config. Normal
+// mode: home/config (home-only by design — these files are not layered with
+// the project directory). Empty when home is unavailable in normal mode.
+func (p VixPaths) ConfigDir() string {
+	if p.override != "" {
+		return filepath.Join(p.override, "config")
+	}
+	if p.home == "" {
+		return ""
+	}
+	return filepath.Join(p.home, "config")
+}
+
+// WorkflowsFile returns the path to workflow.json, or "" if unavailable.
+func (p VixPaths) WorkflowsFile() string {
+	dir := p.ConfigDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "workflow.json")
+}
+
+// LanguagesFile returns the path to languages.json, or "" if unavailable.
+func (p VixPaths) LanguagesFile() string {
+	dir := p.ConfigDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "languages.json")
+}
+
 // Settings returns the settings.json paths to merge, in load order.
 func (p VixPaths) Settings() []string {
 	layers := p.Layers()

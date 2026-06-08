@@ -232,6 +232,9 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 
 	LogInfo("Daemon listening on %s", s.sockPath)
 
+	// Hot-reload workflow.json / languages.json on save.
+	s.startConfigWatcher()
+
 	// Accept loop with context cancellation
 	go func() {
 		<-ctx.Done()

@@ -63,6 +63,13 @@ func InitPool(ctx context.Context, rootDir string, settingsPaths ...string) {
 	globalPoolMu.Lock()
 	defer globalPoolMu.Unlock()
 
+	// Shut down any previously-initialized pool before replacing it so we don't
+	// leak running LSP subprocesses (the prior pool's ctx-cancel goroutine only
+	// fires on daemon shutdown, not on re-init / hot reload).
+	if globalPool != nil {
+		globalPool.Shutdown()
+	}
+
 	var merged []LanguageConfig
 	for _, p := range settingsPaths {
 		if p == "" {
@@ -130,6 +137,21 @@ func GetPool() *Pool {
 	globalPoolMu.Lock()
 	defer globalPoolMu.Unlock()
 	return globalPool
+}
+
+// ReloadPool rebuilds the global pool from the given language config paths,
+// reusing the existing pool's context and root directory. It is a no-op if the
+// pool has not been initialized yet (a later brain.init will pick up the new
+// configs). Used by the daemon config watcher when config/languages.json
+// changes on disk.
+func ReloadPool(settingsPaths ...string) {
+	globalPoolMu.Lock()
+	prev := globalPool
+	globalPoolMu.Unlock()
+	if prev == nil {
+		return
+	}
+	InitPool(prev.ctx, prev.rootDir, settingsPaths...)
 }
 
 // LanguageForExt returns the language name for a file extension (e.g. ".go" → "go").

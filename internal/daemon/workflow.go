@@ -213,12 +213,17 @@ type Compaction struct {
 }
 
 // configFile represents the top-level settings.json structure.
+//
+// Note: workflows and languages are intentionally NOT parsed here. They live
+// in their own files (config/workflow.json, config/languages.json) loaded via
+// LoadWorkflowsFile and lsp.LoadLanguageConfigs respectively. A legacy
+// settings.json may still carry "workflows"/"languages" keys, but they are
+// ignored.
 type configFile struct {
 	Version            int                   `json:"version,omitempty"`
 	Agent              string                `json:"agent,omitempty"`
 	AllowedDirectories []string              `json:"allowed_directories,omitempty"`
 	DenyList           denyListField         `json:"deny_list,omitempty"`
-	Workflows          []WorkflowDef         `json:"workflows"`
 	Features           map[string]bool       `json:"features,omitempty"`
 	ToolTimeouts       *toolTimeoutsFile     `json:"tool_timeouts,omitempty"`
 	BashStepTimeouts   *bashStepTimeoutsFile `json:"bash_step_timeouts,omitempty"`
@@ -260,7 +265,6 @@ type ProjectConfig struct {
 	AllowedDirectories []string
 	DenyPaths          []string
 	DenyURLs           []string
-	Workflows          []*WorkflowDef
 	Features           map[string]bool
 	ToolTimeouts       ToolTimeouts
 	BashStepTimeouts   BashStepTimeouts
@@ -310,13 +314,6 @@ func LoadProjectConfig(configPaths ...string) ProjectConfig {
 			KeepRatio:      defaultCompactionKeepRatio,
 		},
 	}
-
-	// Track which config path each workflow came from for disambiguation.
-	type workflowOrigin struct {
-		wf   *WorkflowDef
-		path string
-	}
-	var allWorkflows []workflowOrigin
 
 	for _, configPath := range configPaths {
 		if configPath == "" {
@@ -503,30 +500,6 @@ func LoadProjectConfig(configPaths ...string) ProjectConfig {
 				result.MCPServers = append(result.MCPServers, srv)
 			}
 		}
-
-		for i := range cfg.Workflows {
-			pf := cfg.Workflows[i]
-			if err := validateWorkflow(&pf); err != nil {
-				LogError("[workflow] invalid workflow '%s': %v", pf.Name, err)
-				continue
-			}
-			allWorkflows = append(allWorkflows, workflowOrigin{wf: &pf, path: configPath})
-		}
-	}
-
-	// Disambiguate duplicate workflow names by appending the origin.
-	nameCount := make(map[string]int)
-	for _, wo := range allWorkflows {
-		nameCount[wo.wf.Name]++
-	}
-	for i := range allWorkflows {
-		if nameCount[allWorkflows[i].wf.Name] > 1 {
-			allWorkflows[i].wf.Name += " (" + configOriginLabel(allWorkflows[i].path) + ")"
-		}
-	}
-
-	for _, wo := range allWorkflows {
-		result.Workflows = append(result.Workflows, wo.wf)
 	}
 
 	return result
@@ -597,26 +570,53 @@ func PersistAllowedDirectory(configPath string, dirs []string) error {
 	return os.Rename(tmp.Name(), configPath)
 }
 
-// configOriginLabel returns a short label for a config path.
-// ~/.vix/settings.json becomes "~/.vix/settings.json".
-// /some/path/myproject/.vix/settings.json becomes "myproject/.vix/settings.json".
-func configOriginLabel(configPath string) string {
-	homeDir, _ := os.UserHomeDir()
-	if homeDir != "" && strings.HasPrefix(configPath, homeDir+string(filepath.Separator)) {
-		return "~" + configPath[len(homeDir):]
-	}
-	// Use parent-of-.vix as project name: .../project/.vix/settings.json → project/.vix/settings.json
-	dir := filepath.Dir(configPath)                // .../project/.vix
-	vixDir := filepath.Base(dir)                   // .vix
-	projectDir := filepath.Base(filepath.Dir(dir)) // project
-	return projectDir + "/" + vixDir + "/" + filepath.Base(configPath)
+// workflowsFile is the JSON shape of config/workflow.json: {"workflows": [...]}.
+type workflowsFile struct {
+	Workflows []WorkflowDef `json:"workflows"`
 }
 
-// LoadWorkflows reads settings.json and returns the workflow list.
-// Deprecated: Use LoadProjectConfig instead.
-func LoadWorkflows(configPath string) []*WorkflowDef {
-	cfg := LoadProjectConfig(configPath)
-	return cfg.Workflows
+// LoadWorkflowsFile reads a config/workflow.json file and returns its
+// validated workflow list, preserving file order. Returns nil on a missing
+// file or parse error; individually invalid workflows are skipped with a log
+// line. Duplicate names within the file are disambiguated by appending an
+// index so the UI can tell them apart.
+func LoadWorkflowsFile(path string) []*WorkflowDef {
+	if path == "" {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var cfg workflowsFile
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		LogError("[workflow] failed to parse %s: %v", path, err)
+		return nil
+	}
+
+	out := make([]*WorkflowDef, 0, len(cfg.Workflows))
+	for i := range cfg.Workflows {
+		wf := cfg.Workflows[i]
+		if err := validateWorkflow(&wf); err != nil {
+			LogError("[workflow] invalid workflow '%s': %v", wf.Name, err)
+			continue
+		}
+		out = append(out, &wf)
+	}
+
+	// Disambiguate duplicate names within the single file.
+	nameCount := make(map[string]int)
+	for _, wf := range out {
+		nameCount[wf.Name]++
+	}
+	seen := make(map[string]int)
+	for _, wf := range out {
+		if nameCount[wf.Name] > 1 {
+			seen[wf.Name]++
+			wf.Name = fmt.Sprintf("%s (%d)", wf.Name, seen[wf.Name])
+		}
+	}
+	return out
 }
 
 // validateWorkflow checks that a workflow definition is consistent.

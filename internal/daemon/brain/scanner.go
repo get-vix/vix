@@ -57,6 +57,17 @@ func InitLanguageMapFromConfigs(configs []lsp.LanguageConfig) {
 	}
 }
 
+// ReloadLanguageMap rebuilds the ext→language map from the given paths,
+// unconditionally replacing any previously-loaded map. Unlike InitLanguageMap
+// it is not one-shot — the daemon config watcher calls it when
+// config/languages.json changes on disk.
+func ReloadLanguageMap(languagesPaths []string) {
+	m := buildExtMap(languagesPaths)
+	extMapMu.Lock()
+	extMap = m
+	extMapMu.Unlock()
+}
+
 // buildExtMap merges language configs from the given settings.json paths
 // in order (later entries override earlier by language Name).
 func buildExtMap(settingsPaths []string) map[string]string {

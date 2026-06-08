@@ -63,8 +63,11 @@ type Session struct {
 	bashJobs        BashJobRegistry
 	customAgents    map[string]SubagentConfig
 
-	// Workflows loaded from config
-	workflows []*WorkflowDef
+	// Workflows loaded from config/workflow.json. Guarded by workflowsMu
+	// because the daemon's config watcher can swap the slice from a separate
+	// goroutine (hot reload) while the session loop reads it.
+	workflowsMu sync.RWMutex
+	workflows   []*WorkflowDef
 
 	// Skills registry
 	skills *agent.SkillRegistry
@@ -639,9 +642,9 @@ func (s *Session) initBrain() {
 	if handler != nil {
 		resp, err := handler(map[string]any{
 			"params": map[string]any{
-				"project_path":   s.cwd,
-				"brain_dir":      s.paths.Brain(),
-				"settings_paths": s.paths.Settings(),
+				"project_path":    s.cwd,
+				"brain_dir":       s.paths.Brain(),
+				"languages_paths": []string{s.paths.LanguagesFile()},
 			},
 		})
 		if err != nil || resp["status"] != "ok" {
@@ -675,7 +678,7 @@ func (s *Session) initBrain() {
 	projectConfig := LoadProjectConfig(s.paths.Settings()...)
 	s.projectConfig = projectConfig
 	s.chatAgent = projectConfig.Agent
-	s.workflows = projectConfig.Workflows
+	s.setWorkflows(LoadWorkflowsFile(s.paths.WorkflowsFile()))
 
 	// Rebuild the tool schema slice with the session-configured timeout
 	// bounds so the LLM reads the real floor/cap in the bash and glob_files
@@ -777,8 +780,8 @@ func (s *Session) initBrain() {
 		}
 	}
 
-	if len(s.workflows) > 0 {
-		log.Printf("[session] loaded %d workflow(s) from config", len(s.workflows))
+	if n := len(s.snapshotWorkflows()); n > 0 {
+		log.Printf("[session] loaded %d workflow(s) from config", n)
 	}
 
 	// Expose the `skill` tool only when skills are loaded. Appended after all
@@ -813,14 +816,41 @@ func (s *Session) skillInfoList() []protocol.SkillInfo {
 
 // workflowInfoList returns the list of WorkflowInfo in config order.
 func (s *Session) workflowInfoList() []protocol.WorkflowInfo {
-	if len(s.workflows) == 0 {
+	wfs := s.snapshotWorkflows()
+	if len(wfs) == 0 {
 		return nil
 	}
-	infos := make([]protocol.WorkflowInfo, len(s.workflows))
-	for i, wf := range s.workflows {
+	infos := make([]protocol.WorkflowInfo, len(wfs))
+	for i, wf := range wfs {
 		infos[i] = protocol.WorkflowInfo{Name: wf.Name}
 	}
 	return infos
+}
+
+// snapshotWorkflows returns the current workflow slice under the read lock.
+func (s *Session) snapshotWorkflows() []*WorkflowDef {
+	s.workflowsMu.RLock()
+	defer s.workflowsMu.RUnlock()
+	return s.workflows
+}
+
+// setWorkflows swaps the workflow slice under the write lock.
+func (s *Session) setWorkflows(wfs []*WorkflowDef) {
+	s.workflowsMu.Lock()
+	s.workflows = wfs
+	s.workflowsMu.Unlock()
+}
+
+// ReloadWorkflows swaps in a freshly-loaded workflow list and re-emits
+// event.workflows_available so the TUI refreshes its slash menu and Shift+Tab
+// cycle live. Called by the daemon config watcher when config/workflow.json
+// changes on disk. A workflow already mid-execution holds its own definition,
+// so this only affects the list of *available* workflows.
+func (s *Session) ReloadWorkflows(wfs []*WorkflowDef) {
+	s.setWorkflows(wfs)
+	s.emit("event.workflows_available", protocol.EventWorkflowsAvailable{
+		Workflows: s.workflowInfoList(),
+	})
 }
 
 // brainDir returns the path to the brain index directory.
@@ -2397,7 +2427,7 @@ func (s *Session) handleWorkflowCommand(name, text string) {
 	}
 
 	var wf *WorkflowDef
-	for _, w := range s.workflows {
+	for _, w := range s.snapshotWorkflows() {
 		if w.Name == name {
 			wf = w
 			break
