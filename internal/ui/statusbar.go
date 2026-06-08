@@ -61,7 +61,9 @@ func renderStatusBar(
 		}
 	case TabKindSettings:
 		defs = []shortcut{
+			{"↑↓", "navigate"},
 			{"Enter", "Toggle"},
+			{"←→", "Adjust"},
 		}
 	default: // TabKindChat (Workspace)
 		switch focus {

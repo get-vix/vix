@@ -115,46 +115,29 @@ func LoadDaemonConfig() (*DaemonConfig, error) {
 	}, nil
 }
 
-// TelemetryEnabled reads the telemetry feature flag from ~/.vix/settings.json.
-// Returns true if the flag is absent (opt-out model).
-func TelemetryEnabled() bool {
+// feature reads a boolean feature flag from ~/.vix/settings.json, returning
+// def when the file is missing, unparsable, or the flag is absent.
+func feature(name string, def bool) bool {
 	p := filepath.Join(HomeVixDir(), "settings.json")
 	data, err := os.ReadFile(p)
 	if err != nil {
-		return true // default: enabled
+		return def
 	}
 	var cfg struct {
 		Features map[string]bool `json:"features"`
 	}
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		return true
+		return def
 	}
-	if v, ok := cfg.Features["telemetry"]; ok {
+	if v, ok := cfg.Features[name]; ok {
 		return v
 	}
-	return true
+	return def
 }
 
-// ShowThinking reads the show_thinking feature flag from ~/.vix/settings.json.
-// Returns false if the flag is absent (opt-in: thinking is hidden by default).
-func ShowThinking() bool {
-	p := filepath.Join(HomeVixDir(), "settings.json")
-	data, err := os.ReadFile(p)
-	if err != nil {
-		return false
-	}
-	var cfg struct {
-		Features map[string]bool `json:"features"`
-	}
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return false
-	}
-	return cfg.Features["show_thinking"]
-}
-
-// SetShowThinking writes the show_thinking feature flag to ~/.vix/settings.json,
-// preserving other top-level keys (theme, other features, etc).
-func SetShowThinking(v bool) error {
+// setFeature writes a boolean feature flag to ~/.vix/settings.json, preserving
+// other top-level keys (theme, other features, etc).
+func setFeature(name string, v bool) error {
 	home := HomeVixDir()
 	if home == "" {
 		return fmt.Errorf("no home directory")
@@ -173,7 +156,7 @@ func SetShowThinking(v bool) error {
 	if features == nil {
 		features = map[string]any{}
 	}
-	features["show_thinking"] = v
+	features[name] = v
 	raw["features"] = features
 
 	out, err := json.MarshalIndent(raw, "", "  ")
@@ -182,6 +165,119 @@ func SetShowThinking(v bool) error {
 	}
 	return os.WriteFile(p, out, 0o644)
 }
+
+// TelemetryEnabled reads the telemetry feature flag from ~/.vix/settings.json.
+// Returns true if the flag is absent (opt-out model).
+func TelemetryEnabled() bool { return feature("telemetry", true) }
+
+// SetTelemetryEnabled writes the telemetry feature flag to ~/.vix/settings.json.
+func SetTelemetryEnabled(v bool) error { return setFeature("telemetry", v) }
+
+// ShowThinking reads the show_thinking feature flag from ~/.vix/settings.json.
+// Returns false if the flag is absent (opt-in: thinking is hidden by default).
+func ShowThinking() bool { return feature("show_thinking", false) }
+
+// SetShowThinking writes the show_thinking feature flag to ~/.vix/settings.json.
+func SetShowThinking(v bool) error { return setFeature("show_thinking", v) }
+
+// ReadAgentsMD reads the read_agents_md feature flag. Defaults to false.
+func ReadAgentsMD() bool { return feature("read_agents_md", false) }
+
+// SetReadAgentsMD writes the read_agents_md feature flag.
+func SetReadAgentsMD(v bool) error { return setFeature("read_agents_md", v) }
+
+// ReadClaudeMD reads the read_claude_md feature flag. Defaults to false.
+func ReadClaudeMD() bool { return feature("read_claude_md", false) }
+
+// SetReadClaudeMD writes the read_claude_md feature flag.
+func SetReadClaudeMD(v bool) error { return setFeature("read_claude_md", v) }
+
+// ToolOrchestrator reads the tool_orchestrator feature flag. Defaults to false.
+func ToolOrchestrator() bool { return feature("tool_orchestrator", false) }
+
+// SetToolOrchestrator writes the tool_orchestrator feature flag.
+func SetToolOrchestrator(v bool) error { return setFeature("tool_orchestrator", v) }
+
+// Compaction defaults mirror the daemon-side defaults in internal/daemon.
+const (
+	defaultCompactionAuto      = true
+	defaultCompactionThreshold = 0.8
+)
+
+// CompactionAuto reads compaction.auto from ~/.vix/settings.json. Defaults to
+// true when absent.
+func CompactionAuto() bool {
+	p := filepath.Join(HomeVixDir(), "settings.json")
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return defaultCompactionAuto
+	}
+	var cfg struct {
+		Compaction struct {
+			Auto *bool `json:"auto"`
+		} `json:"compaction"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil || cfg.Compaction.Auto == nil {
+		return defaultCompactionAuto
+	}
+	return *cfg.Compaction.Auto
+}
+
+// CompactionThreshold reads compaction.threshold from ~/.vix/settings.json.
+// Defaults to 0.8 when absent.
+func CompactionThreshold() float64 {
+	p := filepath.Join(HomeVixDir(), "settings.json")
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return defaultCompactionThreshold
+	}
+	var cfg struct {
+		Compaction struct {
+			Threshold *float64 `json:"threshold"`
+		} `json:"compaction"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil || cfg.Compaction.Threshold == nil {
+		return defaultCompactionThreshold
+	}
+	return *cfg.Compaction.Threshold
+}
+
+// setCompactionField writes a single key inside the top-level `compaction`
+// object in ~/.vix/settings.json, preserving other keys.
+func setCompactionField(key string, v any) error {
+	home := HomeVixDir()
+	if home == "" {
+		return fmt.Errorf("no home directory")
+	}
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		return err
+	}
+	p := filepath.Join(home, "settings.json")
+
+	raw := map[string]any{}
+	if data, err := os.ReadFile(p); err == nil {
+		_ = json.Unmarshal(data, &raw)
+	}
+
+	comp, _ := raw["compaction"].(map[string]any)
+	if comp == nil {
+		comp = map[string]any{}
+	}
+	comp[key] = v
+	raw["compaction"] = comp
+
+	out, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(p, out, 0o644)
+}
+
+// SetCompactionAuto writes compaction.auto to ~/.vix/settings.json.
+func SetCompactionAuto(v bool) error { return setCompactionField("auto", v) }
+
+// SetCompactionThreshold writes compaction.threshold to ~/.vix/settings.json.
+func SetCompactionThreshold(v float64) error { return setCompactionField("threshold", v) }
 
 // ThemeConfig holds user-configurable brand colors.
 type ThemeConfig struct {

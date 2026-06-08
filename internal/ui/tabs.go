@@ -160,9 +160,83 @@ func truncateLabel(s string, w int) string {
 	return string(r[:w-1]) + "…"
 }
 
+// settingsItem identifies a selectable row in the Settings tab. The order here
+// is the render order and the cursor index space (0..settingsItemCount-1).
+type settingsItem int
+
+const (
+	settingShowThinking settingsItem = iota
+	settingReadAgentsMD
+	settingReadClaudeMD
+	settingToolOrchestrator
+	settingTelemetry
+	settingCompactionAuto
+	settingCompactionThreshold
+	settingsItemCount
+)
+
+// settingsState carries the current values shown in the Settings tab plus the
+// cursor position. Values are read from ~/.vix/settings.json at render time.
+type settingsState struct {
+	cursor              int
+	showThinking        bool
+	readAgentsMD        bool
+	readClaudeMD        bool
+	toolOrchestrator    bool
+	telemetry           bool
+	compactionAuto      bool
+	compactionThreshold float64
+}
+
+// toggleSetting flips (or, for the threshold row, leaves unchanged) the setting
+// at the given row and persists it to ~/.vix/settings.json.
+func (m *Model) toggleSetting(item settingsItem) {
+	switch item {
+	case settingShowThinking:
+		v := !config.ShowThinking()
+		if sess := m.currentSession(); sess != nil {
+			sess.showThinking = !sess.showThinking
+			v = sess.showThinking
+			if sess.showThinking && sess.thinkingBuf != "" {
+				sess.thinkingRendered = renderThinkingText(sess.thinkingBuf, m.styles, m.mdRenderer.width+4)
+			} else {
+				sess.thinkingRendered = ""
+			}
+		}
+		_ = config.SetShowThinking(v)
+	case settingReadAgentsMD:
+		_ = config.SetReadAgentsMD(!config.ReadAgentsMD())
+	case settingReadClaudeMD:
+		_ = config.SetReadClaudeMD(!config.ReadClaudeMD())
+	case settingToolOrchestrator:
+		_ = config.SetToolOrchestrator(!config.ToolOrchestrator())
+	case settingTelemetry:
+		_ = config.SetTelemetryEnabled(!config.TelemetryEnabled())
+	case settingCompactionAuto:
+		_ = config.SetCompactionAuto(!config.CompactionAuto())
+	case settingCompactionThreshold:
+		// Threshold is adjusted with ←/→, not toggled.
+	}
+}
+
+// adjustCompactionThreshold nudges the auto-compaction threshold by delta,
+// clamped to [0.1, 1.0] and rounded to the nearest 0.05.
+func (m *Model) adjustCompactionThreshold(delta float64) {
+	v := config.CompactionThreshold() + delta
+	if v < 0.1 {
+		v = 0.1
+	}
+	if v > 1.0 {
+		v = 1.0
+	}
+	v = float64(int(v*20+0.5)) / 20 // round to nearest 0.05
+	_ = config.SetCompactionThreshold(v)
+}
+
 // renderSettingsView renders the Settings tab content (global preferences).
-func renderSettingsView(width, height int, s Styles, showThinking bool) string {
+func renderSettingsView(width, height int, s Styles, st settingsState) string {
 	dimStyle := lipgloss.NewStyle().Foreground(colorDim)
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(colorPrimary)
 	innerWidth := width - 4
 	if innerWidth < 0 {
 		innerWidth = 0
@@ -171,16 +245,64 @@ func renderSettingsView(width, height int, s Styles, showThinking bool) string {
 	sep := dimStyle.Width(innerWidth).Render(strings.Repeat("─", innerWidth))
 
 	var lines []string
-	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(colorPrimary)
-	lines = append(lines, titleStyle.Width(innerWidth).Render("Display"), sep)
+	idx := 0 // running index of selectable settings, matches settingsItem
 
-	thinkingToggle := "[ ]"
-	if showThinking {
-		thinkingToggle = "[✓]"
+	row := func(text string) {
+		if idx == st.cursor {
+			lines = append(lines, titleStyle.Width(innerWidth).Render("▸ "+text))
+		} else {
+			lines = append(lines, dimStyle.Width(innerWidth).Render("  "+text))
+		}
+		idx++
 	}
-	thinkingLine := thinkingToggle + "  Show extended thinking"
-	lines = append(lines, lipgloss.NewStyle().Bold(true).Foreground(colorPrimary).Width(innerWidth).Render("▸ "+thinkingLine))
-	lines = append(lines, "", dimStyle.Italic(true).Width(innerWidth).Render("Enter toggle"))
+
+	toggleRow := func(label string, on bool) {
+		box := "[ ]"
+		if on {
+			box = "[✓]"
+		}
+		row(box + "  " + label)
+	}
+
+	sliderRow := func(label string, val float64) {
+		const barWidth = 20
+		filled := int(val*float64(barWidth) + 0.5)
+		if filled < 0 {
+			filled = 0
+		}
+		if filled > barWidth {
+			filled = barWidth
+		}
+		bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
+		pct := int(val*100 + 0.5)
+		row(fmt.Sprintf("%s  %s %3d%%", label, bar, pct))
+	}
+
+	section := func(name string) {
+		if len(lines) > 0 {
+			lines = append(lines, "")
+		}
+		lines = append(lines, titleStyle.Width(innerWidth).Render(name), sep)
+	}
+
+	section("Display")
+	toggleRow("Show extended thinking", st.showThinking)
+
+	section("Context")
+	toggleRow("Read AGENTS.md", st.readAgentsMD)
+	toggleRow("Read CLAUDE.md", st.readClaudeMD)
+
+	section("Agent")
+	toggleRow("Tool orchestrator", st.toolOrchestrator)
+
+	section("Privacy")
+	toggleRow("Send anonymous telemetry", st.telemetry)
+
+	section("Compaction")
+	toggleRow("Auto-compaction", st.compactionAuto)
+	sliderRow("Threshold       ", st.compactionThreshold)
+
+	lines = append(lines, "", dimStyle.Italic(true).Width(innerWidth).Render("↑↓ navigate · Enter toggle · ←→ adjust threshold"))
 
 	content := strings.Join(lines, "\n")
 	return s.ViewportFocusedStyle.Width(width).Height(height).Render(content)
@@ -560,10 +682,11 @@ func renderModelsView(width, height int, s Styles,
 const keyValNotAvailable = "(not available)"
 
 // renderTabBar renders the two-tab bar: Sessions | Chat.
-// alertBlink is true when some session needs user attention (shown on Chat tab label).
-// hasUnread is true when any session has unread messages; it shows a secondary-colored
-// dot in front of the Sessions tab title.
-func renderTabBar(activeTab TabKind, width int, s Styles, viewportFocused bool, alertBlink bool, hasUnread bool) string {
+// alertActive is true when some session is waiting for user input; the Sessions
+// tab title then blinks (alertBlinkOn is the current blink phase). When no alert
+// is active but unseen is true (a message arrived while the Sessions tab was not
+// focused), the Sessions title is tinted secondary statically (no blink).
+func renderTabBar(activeTab TabKind, width int, s Styles, viewportFocused bool, alertActive bool, alertBlinkOn bool, unseen bool) string {
 	type tabDef struct {
 		label string
 		kind  TabKind
@@ -608,21 +731,22 @@ func renderTabBar(activeTab TabKind, width int, s Styles, viewportFocused bool, 
 		switch {
 		case d.kind == activeTab:
 			textStyle = s.TabActiveStyle
-		case alertBlink && d.kind == TabKindSessions:
+		case d.kind == TabKindSessions && alertActive:
+			// Waiting for input: blink between the alert color and inactive.
+			if alertBlinkOn {
+				textStyle = s.TabAlertStyle
+			} else {
+				textStyle = s.TabInactiveStyle
+			}
+		case d.kind == TabKindSessions && unseen:
+			// Unseen activity: static secondary tint (superseded by the blink above).
 			textStyle = s.TabAlertStyle
 		default:
 			textStyle = s.TabInactiveStyle
 		}
 
 		top.WriteString(sepStyle.Render(topLine))
-		if hasUnread && d.kind == TabKindSessions {
-			// Replace the label's leading space with a secondary-colored dot,
-			// keeping the overall label width (and thus the box) unchanged.
-			rest := strings.TrimPrefix(d.label, " ")
-			mid.WriteString(sepStyle.Render("│") + unreadDotStyle.Render("●") + textStyle.Render(rest) + sepStyle.Render("│"))
-		} else {
-			mid.WriteString(sepStyle.Render("│") + textStyle.Render(d.label) + sepStyle.Render("│"))
-		}
+		mid.WriteString(sepStyle.Render("│") + textStyle.Render(d.label) + sepStyle.Render("│"))
 		bot.WriteString(sepStyle.Render(botLine))
 		visPos += lw + 2
 	}

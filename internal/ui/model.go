@@ -321,6 +321,11 @@ type Model struct {
 	tabAlertBlinkOn  bool
 	tabAlertBlinkGen int
 
+	// sessionsTabUnseen marks that a message arrived while the Sessions tab was
+	// not focused; it tints the Sessions tab title secondary (static, not
+	// blinking) and is cleared when the user visits the Sessions tab.
+	sessionsTabUnseen bool
+
 	// Transient status bar message (second line)
 	statusMsg StatusMessage
 
@@ -338,6 +343,7 @@ type Model struct {
 	kittySupported bool
 	cfg            *config.Config
 	testMode       bool
+	settingsCursor int // selected row in the Settings tab
 
 	// restoreSessions holds persisted open sessions (beyond the first, which is
 	// the initial client) to reopen on Init.
@@ -695,15 +701,23 @@ func (m Model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// --- Settings tab key handling ---
 		if m.activeTab == TabKindSettings {
 			switch msg.String() {
-			case "enter":
-				if sess := m.currentSession(); sess != nil {
-					sess.showThinking = !sess.showThinking
-					if sess.showThinking && sess.thinkingBuf != "" {
-						sess.thinkingRendered = renderThinkingText(sess.thinkingBuf, m.styles, m.mdRenderer.width+4)
-					} else {
-						sess.thinkingRendered = ""
-					}
-					_ = config.SetShowThinking(sess.showThinking)
+			case "up", "k":
+				if m.settingsCursor > 0 {
+					m.settingsCursor--
+				}
+			case "down", "j":
+				if m.settingsCursor < int(settingsItemCount)-1 {
+					m.settingsCursor++
+				}
+			case "enter", " ":
+				m.toggleSetting(settingsItem(m.settingsCursor))
+			case "left", "h":
+				if settingsItem(m.settingsCursor) == settingCompactionThreshold {
+					m.adjustCompactionThreshold(-0.05)
+				}
+			case "right", "l":
+				if settingsItem(m.settingsCursor) == settingCompactionThreshold {
+					m.adjustCompactionThreshold(0.05)
 				}
 			case "f1":
 				cmds = append(cmds, m.switchTab(TabKindSessions))
@@ -1323,6 +1337,7 @@ func (m *Model) switchTab(k TabKind) tea.Cmd {
 	m.activeTab = k
 	switch k {
 	case TabKindSessions:
+		m.sessionsTabUnseen = false
 		m.syncSessionsSelected()
 	case TabKindChat:
 		if sess := m.currentSession(); sess != nil {
@@ -2212,6 +2227,9 @@ func (m *Model) applyEventToSession(idx int, event protocol.SessionEvent) []tea.
 		m.flushSessionBuf(sess)
 		if idx != m.selectedSession || m.activeTab != TabKindChat {
 			sess.unreadCount++
+			if m.activeTab != TabKindSessions {
+				m.sessionsTabUnseen = true
+			}
 		}
 		turnInput := sess.inputTokens - sess.turnStartInputTokens
 		turnOutput := sess.outputTokens - sess.turnStartOutputTokens
@@ -2331,14 +2349,7 @@ func (m Model) View() tea.View {
 	if m.activeTab == TabKindSessions || m.activeTab == TabKindModels || m.activeTab == TabKindSettings {
 		tabBarWidth = m.width
 	}
-	anyUnread := false
-	for _, sess := range m.sessions {
-		if sess.unreadCount > 0 {
-			anyUnread = true
-			break
-		}
-	}
-	tabBar := renderTabBar(m.activeTab, tabBarWidth, m.styles, viewportFocused, m.tabAlertBlinkOn, anyUnread)
+	tabBar := renderTabBar(m.activeTab, tabBarWidth, m.styles, viewportFocused, m.hasAlertSessions(), m.tabAlertBlinkOn, m.sessionsTabUnseen)
 	uv.NewStyledString(tabBar).Draw(canvas, image.Rect(0, y, tabBarWidth, y+layout.TabBarHeight))
 	y += layout.TabBarHeight
 
@@ -2476,11 +2487,20 @@ func (m Model) View() tea.View {
 
 	case TabKindSettings:
 		settingsHeight := m.height - layout.TabBarHeight - layout.StatusBarHeight
-		settingsShowThinking := config.ShowThinking()
-		if settSess := m.currentSession(); settSess != nil {
-			settingsShowThinking = settSess.showThinking
+		st := settingsState{
+			cursor:              m.settingsCursor,
+			showThinking:        config.ShowThinking(),
+			readAgentsMD:        config.ReadAgentsMD(),
+			readClaudeMD:        config.ReadClaudeMD(),
+			toolOrchestrator:    config.ToolOrchestrator(),
+			telemetry:           config.TelemetryEnabled(),
+			compactionAuto:      config.CompactionAuto(),
+			compactionThreshold: config.CompactionThreshold(),
 		}
-		sv := renderSettingsView(m.width, settingsHeight, m.styles, settingsShowThinking)
+		if settSess := m.currentSession(); settSess != nil {
+			st.showThinking = settSess.showThinking
+		}
+		sv := renderSettingsView(m.width, settingsHeight, m.styles, st)
 		uv.NewStyledString(sv).Draw(canvas, image.Rect(0, y, m.width, y+settingsHeight))
 		y += settingsHeight
 	}
