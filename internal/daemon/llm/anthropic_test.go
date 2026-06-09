@@ -218,6 +218,70 @@ func TestStreamMessageWith_EffortOverride_DisablesThinking(t *testing.T) {
 	}
 }
 
+// TestStreamMessageWith_HaikuOmitsThinking verifies that Claude Haiku models
+// never carry a `thinking` config in the outbound request, even when the
+// configured effort is non-empty. Haiku rejects adaptive thinking with
+// "Adaptive thinking not allowed for this model", so the adapter must force it
+// off.
+func TestStreamMessageWith_HaikuOmitsThinking(t *testing.T) {
+	var (
+		mu   sync.Mutex
+		body map[string]any
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var parsed map[string]any
+		if err := json.Unmarshal(raw, &parsed); err != nil {
+			t.Errorf("failed to parse request body: %v\nbody=%s", err, raw)
+		}
+		mu.Lock()
+		body = parsed
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		f, _ := w.(http.Flusher)
+		send := func(event, data string) {
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
+			if f != nil {
+				f.Flush()
+			}
+		}
+		send("message_start", `{"type":"message_start","message":{"id":"msg_x","type":"message","role":"assistant","model":"claude-haiku-4-5","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":1}}}`)
+		send("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`)
+		send("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}`)
+		send("content_block_stop", `{"type":"content_block_stop","index":0}`)
+		send("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}}`)
+		send("message_stop", `{"type":"message_stop"}`)
+	}))
+	defer srv.Close()
+
+	client, err := NewAnthropic(Config{
+		Credential: config.Credential{},
+		Model:      "claude-haiku-4-5-20251001",
+		Effort:     "adaptive",
+		MaxTokens:  1024,
+		BaseURL:    srv.URL,
+	})
+	if err != nil {
+		t.Fatalf("NewAnthropic: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	msgs := []MessageParam{NewUserMessage(NewTextBlock("hi"))}
+	if _, _, err := client.StreamMessageWith(ctx, nil, msgs, nil, nil, nil, StreamOpts{}); err != nil {
+		t.Fatalf("stream failed: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if _, ok := body["thinking"]; ok {
+		t.Errorf("haiku request: expected no `thinking` field, got %v", body["thinking"])
+	}
+}
+
 // TestAnthropic_StreamMessage_ToolCall verifies the adapter reconstructs
 // a tool_use block from a streamed sequence of input_json_delta fragments
 // — the load-bearing path for every tool the agent dispatches.

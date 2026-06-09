@@ -130,6 +130,13 @@ func (a *anthropicClient) StreamMessageWith(
 	if opts.EffortOverride != nil {
 		effort = *opts.EffortOverride
 	}
+	// Claude Haiku models don't support adaptive/extended thinking; the API
+	// rejects such requests with "Adaptive thinking not allowed for this
+	// model". The provider's default effort policy is "adaptive" for every
+	// Anthropic model, so force it off here for Haiku.
+	if !anthropicModelSupportsThinking(a.model) {
+		effort = ""
+	}
 	applyEffort(&params, effort)
 
 	// Correlation ID for this attempt.
@@ -314,6 +321,14 @@ func applyEffort(params *anthropic.MessageNewParams, effort string) {
 	case "max":
 		params.OutputConfig = anthropic.OutputConfigParam{Effort: anthropic.OutputConfigEffortMax}
 	}
+}
+
+// anthropicModelSupportsThinking reports whether a bare Anthropic model name
+// accepts adaptive/extended thinking. Claude Haiku models do not: enabling the
+// adaptive thinking config for them makes the API reject the request with
+// "Adaptive thinking not allowed for this model".
+func anthropicModelSupportsThinking(model string) bool {
+	return !strings.Contains(strings.ToLower(model), "haiku")
 }
 
 // toAnthropicSystem maps neutral SystemBlocks to anthropic.TextBlockParam.
