@@ -31,6 +31,11 @@ type openaiClient struct {
 	systemPrefix         string
 	streamIdleTimeout    time.Duration
 	thinkingStallTimeout time.Duration
+	// codexBackend is true when the adapter targets the ChatGPT/Codex
+	// backend (chatgpt.com/backend-api/codex) reached via the OpenAI Codex
+	// OAuth flow. That endpoint rejects the Responses API's default
+	// store=true with a 400, so we must send store=false for it.
+	codexBackend bool
 }
 
 // NewOpenAI constructs the OpenAI Responses adapter.
@@ -67,7 +72,15 @@ func NewOpenAI(cfg Config) (Client, error) {
 		systemPrefix:         cfg.PluginCfg.SystemPrefix,
 		streamIdleTimeout:    idle,
 		thinkingStallTimeout: stall,
+		codexBackend:         isCodexBackend(cfg.BaseURL),
 	}, nil
+}
+
+// isCodexBackend reports whether a base URL points at the ChatGPT/Codex
+// backend served through the OpenAI Codex OAuth flow. That endpoint is not the
+// standard platform API and requires store=false on Responses requests.
+func isCodexBackend(baseURL string) bool {
+	return strings.Contains(strings.ToLower(baseURL), "chatgpt.com")
 }
 
 func (o *openaiClient) Provider() ProviderID          { return ProviderOpenAI }
@@ -127,6 +140,14 @@ func (o *openaiClient) StreamMessageWith(
 	}
 	if maxTokens > 0 {
 		params.MaxOutputTokens = param.NewOpt(maxTokens)
+	}
+
+	// The ChatGPT/Codex backend rejects the Responses API's default
+	// store=true with a 400 Bad Request. We run stateless (the full
+	// conversation is re-sent each turn), so server-side storage is
+	// unnecessary anyway — send store=false for that endpoint.
+	if o.codexBackend {
+		params.Store = param.NewOpt(false)
 	}
 
 	// Tools translation: each neutral ToolParam → openai responses.FunctionToolParam.

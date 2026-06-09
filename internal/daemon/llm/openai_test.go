@@ -288,6 +288,99 @@ func TestOpenAI_StreamMessage_RequestsIncludeForReasoning(t *testing.T) {
 	}
 }
 
+// TestOpenAI_StreamMessage_CodexBackendSetsStoreFalse verifies that requests to
+// the ChatGPT/Codex backend carry store=false. That endpoint rejects the
+// Responses API default (store=true) with a 400 — see issue #27. The regular
+// OpenAI endpoint must NOT receive store at all (leaving the server default).
+func TestOpenAI_StreamMessage_CodexBackendSetsStoreFalse(t *testing.T) {
+	capture := func(codex bool) map[string]any {
+		t.Helper()
+		var (
+			mu     sync.Mutex
+			bodies []map[string]any
+		)
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			raw, _ := io.ReadAll(r.Body)
+			var parsed map[string]any
+			_ = json.Unmarshal(raw, &parsed)
+			mu.Lock()
+			bodies = append(bodies, parsed)
+			mu.Unlock()
+
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(200)
+			f, _ := w.(http.Flusher)
+			fmt.Fprintf(w, "event: response.completed\ndata: %s\n\n", `{"type":"response.completed","sequence_number":1,"response":{"id":"r","object":"response","created_at":1,"status":"completed","model":"gpt-5","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2,"input_tokens_details":{"cached_tokens":0},"output_tokens_details":{"reasoning_tokens":0}},"parallel_tool_calls":false,"tool_choice":"auto","tools":[]}}`)
+			if f != nil {
+				f.Flush()
+			}
+		}))
+		defer srv.Close()
+
+		client, err := NewOpenAI(Config{
+			Credential: config.Credential{Value: "test-key"},
+			Model:      "gpt-5",
+			MaxTokens:  1024,
+			BaseURL:    srv.URL,
+			StreamIdle: 5 * time.Second,
+		})
+		if err != nil {
+			t.Fatalf("NewOpenAI: %v", err)
+		}
+		// The test server URL can't also contain "chatgpt.com", so flip the
+		// codex flag directly to exercise the store=false branch.
+		client.(*openaiClient).codexBackend = codex
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, _, err := client.StreamMessage(ctx, nil, []MessageParam{
+			NewUserMessage(NewTextBlock("hi")),
+		}, nil, nil, nil); err != nil {
+			t.Fatalf("StreamMessage: %v", err)
+		}
+
+		mu.Lock()
+		defer mu.Unlock()
+		if len(bodies) != 1 {
+			t.Fatalf("expected 1 request body, got %d", len(bodies))
+		}
+		return bodies[0]
+	}
+
+	codexBody := capture(true)
+	store, ok := codexBody["store"]
+	if !ok {
+		t.Fatalf("codex backend: expected store field present; body=%v", codexBody)
+	}
+	if store != false {
+		t.Errorf("codex backend: expected store=false, got %v", store)
+	}
+
+	regularBody := capture(false)
+	if _, ok := regularBody["store"]; ok {
+		t.Errorf("regular backend: expected store omitted, got %v", regularBody["store"])
+	}
+}
+
+// TestIsCodexBackend pins the base-URL detection used to scope store=false.
+func TestIsCodexBackend(t *testing.T) {
+	cases := []struct {
+		url  string
+		want bool
+	}{
+		{"https://chatgpt.com/backend-api/codex", true},
+		{"https://CHATGPT.com/backend-api/codex", true},
+		{"https://api.openai.com/v1", false},
+		{"http://127.0.0.1:8080", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := isCodexBackend(c.url); got != c.want {
+			t.Errorf("isCodexBackend(%q) = %v, want %v", c.url, got, c.want)
+		}
+	}
+}
+
 // TestOpenAI_StreamMessage_IdleTimeout verifies the watchdog fires when
 // the Responses SSE stream goes silent past the idle window.
 func TestOpenAI_StreamMessage_IdleTimeout(t *testing.T) {

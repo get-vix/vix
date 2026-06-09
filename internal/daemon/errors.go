@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"strings"
@@ -84,6 +85,42 @@ func apiErrorMessage(apiErr *anthropic.Error) string {
 	return ""
 }
 
+// openAIErrorDetail returns the most informative human-readable detail for an
+// OpenAI API error. The SDK populates oaiErr.Message only when the body uses
+// the standard {"error":{"message":...}} envelope. The ChatGPT/Codex backend
+// instead returns shapes like {"detail":...}, which the SDK unwraps to nothing
+// — leaving Message empty and discarding the reason. In that case we fall back
+// to reading the original response body (still attached to oaiErr.Response) and
+// parse it for "detail" or "error.message", finally degrading to a truncated
+// raw body so the user always sees something actionable.
+func openAIErrorDetail(oaiErr *openai.Error) string {
+	if oaiErr.Message != "" {
+		return oaiErr.Message
+	}
+	if oaiErr.Response == nil || oaiErr.Response.Body == nil {
+		return ""
+	}
+	raw, err := io.ReadAll(io.LimitReader(oaiErr.Response.Body, 4096))
+	if err != nil || len(raw) == 0 {
+		return ""
+	}
+	var body struct {
+		Detail string `json:"detail"`
+		Error  struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(raw, &body) == nil {
+		if body.Detail != "" {
+			return body.Detail
+		}
+		if body.Error.Message != "" {
+			return body.Error.Message
+		}
+	}
+	return strings.TrimSpace(string(raw))
+}
+
 // classifyError determines if an API error is retryable and returns a
 // user-friendly description.
 func classifyError(err error) (retryable bool, friendlyMsg string) {
@@ -125,7 +162,7 @@ func classifyError(err error) (retryable bool, friendlyMsg string) {
 
 	var oaiErr *openai.Error
 	if errors.As(err, &oaiErr) {
-		detail := oaiErr.Message
+		detail := openAIErrorDetail(oaiErr)
 		withDetail := func(label string) string {
 			if detail != "" {
 				return fmt.Sprintf("%s: %s", label, detail)
