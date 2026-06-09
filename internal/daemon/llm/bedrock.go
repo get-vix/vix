@@ -33,6 +33,7 @@ type bedrockClient struct {
 	cred                 config.Credential
 	systemPrefix         string
 	region               string
+	baseURL              string
 	streamIdleTimeout    time.Duration
 	thinkingStallTimeout time.Duration
 }
@@ -65,6 +66,7 @@ func NewBedrock(cfg Config) (Client, error) {
 		cred:                 cfg.Credential,
 		systemPrefix:         cfg.PluginCfg.SystemPrefix,
 		region:               region,
+		baseURL:              cfg.BaseURL,
 		streamIdleTimeout:    idle,
 		thinkingStallTimeout: stall,
 	}, nil
@@ -121,8 +123,14 @@ func (b *bedrockClient) StreamMessageWith(
 	log.Printf("[llm req=%s] stream_start provider=bedrock model=%s max_tokens=%d messages=%d tools=%d",
 		reqID, b.model, maxTokens, len(messages), len(tools))
 
-	endpointURL := fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s/invoke-with-response-stream",
-		url.PathEscape(b.region), url.PathEscape(b.model))
+	var endpointURL string
+	if b.baseURL != "" {
+		endpointURL = strings.TrimRight(b.baseURL, "/") +
+			"/model/" + url.PathEscape(b.model) + "/invoke-with-response-stream"
+	} else {
+		endpointURL = fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s/invoke-with-response-stream",
+			url.PathEscape(b.region), url.PathEscape(b.model))
+	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpointURL, bytes.NewReader(body))
 	if err != nil {
@@ -265,13 +273,13 @@ func parseEventType(headers []byte) string {
 // ---- streaming event types (Anthropic format, same as direct API) ------
 
 type bdStreamEvent struct {
-	Type  string          `json:"type"`
-	Index int             `json:"index"`
-	Delta *bdDelta        `json:"delta,omitempty"`
+	Type  string   `json:"type"`
+	Index int      `json:"index"`
+	Delta *bdDelta `json:"delta,omitempty"`
 	// message_start
-	Message *bdMsgStart   `json:"message,omitempty"`
+	Message *bdMsgStart `json:"message,omitempty"`
 	// message_delta usage
-	Usage *bdUsage        `json:"usage,omitempty"`
+	Usage *bdUsage `json:"usage,omitempty"`
 	// content_block_start
 	ContentBlock *bdContentBlock `json:"content_block,omitempty"`
 }
@@ -281,8 +289,8 @@ type bdMsgStart struct {
 }
 
 type bdUsage struct {
-	InputTokens         int64 `json:"input_tokens"`
-	OutputTokens        int64 `json:"output_tokens"`
+	InputTokens              int64 `json:"input_tokens"`
+	OutputTokens             int64 `json:"output_tokens"`
 	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
 	CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
 }
@@ -342,8 +350,8 @@ func (b *bedrockClient) runStream(
 	}()
 
 	var (
-		acc         bedrockAccumulator
-		eventCount  int
+		acc          bedrockAccumulator
+		eventCount   int
 		firstEventAt time.Time
 	)
 
@@ -405,11 +413,11 @@ func (b *bedrockClient) runStream(
 
 // bedrockAccumulator collects state across streaming events.
 type bedrockAccumulator struct {
-	textParts   []string
-	content     []ContentBlock
-	toolCalls   []ToolCall
-	stopReason  string
-	usage       Usage
+	textParts  []string
+	content    []ContentBlock
+	toolCalls  []ToolCall
+	stopReason string
+	usage      Usage
 
 	// current block state
 	curType      string // "text" | "thinking" | "tool_use"
@@ -512,11 +520,11 @@ func (a *bedrockAccumulator) toMessage() *Message {
 // ---- request builder ---------------------------------------------------
 
 type bedrockRequest struct {
-	AnthropicVersion string               `json:"anthropic_version"`
-	MaxTokens        int64                `json:"max_tokens"`
-	System           []bdSystemBlock      `json:"system,omitempty"`
-	Messages         []bdMessage_         `json:"messages"`
-	Tools            []bdTool             `json:"tools,omitempty"`
+	AnthropicVersion string          `json:"anthropic_version"`
+	MaxTokens        int64           `json:"max_tokens"`
+	System           []bdSystemBlock `json:"system,omitempty"`
+	Messages         []bdMessage_    `json:"messages"`
+	Tools            []bdTool        `json:"tools,omitempty"`
 }
 
 type bdSystemBlock struct {
@@ -530,28 +538,28 @@ type bdCacheControl struct {
 }
 
 type bdMessage_ struct {
-	Role    string        `json:"role"`
-	Content []bdContent   `json:"content"`
+	Role    string      `json:"role"`
+	Content []bdContent `json:"content"`
 }
 
 type bdContent struct {
-	Type         string            `json:"type"`
-	Text         string            `json:"text,omitempty"`
+	Type string `json:"type"`
+	Text string `json:"text,omitempty"`
 	// tool_use
-	ID           string            `json:"id,omitempty"`
-	Name         string            `json:"name,omitempty"`
-	Input        map[string]any    `json:"input,omitempty"`
+	ID    string         `json:"id,omitempty"`
+	Name  string         `json:"name,omitempty"`
+	Input map[string]any `json:"input,omitempty"`
 	// tool_result
-	ToolUseID    string            `json:"tool_use_id,omitempty"`
-	Content      string            `json:"content,omitempty"`
-	IsError      bool              `json:"is_error,omitempty"`
+	ToolUseID string `json:"tool_use_id,omitempty"`
+	Content   string `json:"content,omitempty"`
+	IsError   bool   `json:"is_error,omitempty"`
 	// thinking
-	Thinking     string            `json:"thinking,omitempty"`
-	Signature    string            `json:"signature,omitempty"`
+	Thinking  string `json:"thinking,omitempty"`
+	Signature string `json:"signature,omitempty"`
 	// image
-	Source       *bdImageSource    `json:"source,omitempty"`
+	Source *bdImageSource `json:"source,omitempty"`
 	// cache
-	CacheControl *bdCacheControl   `json:"cache_control,omitempty"`
+	CacheControl *bdCacheControl `json:"cache_control,omitempty"`
 }
 
 type bdImageSource struct {
@@ -561,15 +569,15 @@ type bdImageSource struct {
 }
 
 type bdTool struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description,omitempty"`
-	InputSchema bdToolSchema   `json:"input_schema"`
+	Name        string       `json:"name"`
+	Description string       `json:"description,omitempty"`
+	InputSchema bdToolSchema `json:"input_schema"`
 }
 
 type bdToolSchema struct {
-	Type       string         `json:"type"`
-	Properties any            `json:"properties,omitempty"`
-	Required   []string       `json:"required,omitempty"`
+	Type       string   `json:"type"`
+	Properties any      `json:"properties,omitempty"`
+	Required   []string `json:"required,omitempty"`
 }
 
 func (b *bedrockClient) buildRequest(
