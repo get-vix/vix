@@ -43,7 +43,7 @@ func TestPrimaryEnvVar(t *testing.T) {
 
 func TestKnownProvidersStable(t *testing.T) {
 	got := KnownProviders()
-	want := []string{"anthropic", "openai", "openrouter", "minimax", "mimo"}
+	want := []string{"anthropic", "openai", "openrouter", "minimax", "mimo", "bedrock"}
 	if len(got) != len(want) {
 		t.Fatalf("KnownProviders len = %d, want %d", len(got), len(want))
 	}

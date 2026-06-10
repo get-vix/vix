@@ -147,18 +147,20 @@ func TestListStoredProviderKeys(t *testing.T) {
 	t.Setenv("OPENROUTER_API_KEY", "")
 	t.Setenv("MINIMAX_API_KEY", "")
 	t.Setenv("MIMO_API_KEY", "")
+	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "")
 	DeleteProviderKey("anthropic")
 	DeleteProviderKey("openai")
 	DeleteProviderKey("openrouter")
 	DeleteProviderKey("minimax")
 	DeleteProviderKey("mimo")
+	DeleteProviderKey("bedrock")
 
 	StoreProviderKey("anthropic", "sk-ant-test-key")
 	defer DeleteProviderKey("anthropic")
 
 	keys := ListStoredProviderKeys()
-	if len(keys) != 5 {
-		t.Fatalf("expected 5 provider entries, got %d", len(keys))
+	if len(keys) != 6 {
+		t.Fatalf("expected 6 provider entries, got %d", len(keys))
 	}
 
 	anthropicFound := false
