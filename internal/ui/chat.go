@@ -1171,6 +1171,44 @@ func renderWorkflowStart(name string, totalSteps int, s Styles) ChatMessage {
 	}
 }
 
+// renderWorkflowStatus renders a workflow run status transition (paused,
+// blocked, budget limited) as a dim system line in the transcript.
+func renderWorkflowStatus(name, status, stepID string, iteration int, tokensUsed, tokenBudget int64, note string, s Styles) ChatMessage {
+	var label string
+	switch status {
+	case "paused":
+		label = "Workflow paused"
+	case "blocked":
+		label = "Workflow blocked"
+	case "budget_limited":
+		label = "Workflow budget exhausted"
+	default:
+		label = "Workflow " + status
+	}
+	detail := fmt.Sprintf("%s — %q", label, name)
+	if stepID != "" {
+		detail += fmt.Sprintf(" at step '%s'", stepID)
+	}
+	if iteration > 0 {
+		detail += fmt.Sprintf(" (iteration %d", iteration)
+		if tokenBudget > 0 {
+			detail += fmt.Sprintf(" · %d/%d tokens", tokensUsed, tokenBudget)
+		} else if tokensUsed > 0 {
+			detail += fmt.Sprintf(" · %d tokens", tokensUsed)
+		}
+		detail += ")"
+	}
+	if note != "" {
+		detail += ": " + note
+	}
+	rendered := fmt.Sprintf("\n%s\n", s.PlanDescStyle.Render(detail))
+	return ChatMessage{
+		Type:     MsgSystem,
+		Text:     detail,
+		Rendered: rendered,
+	}
+}
+
 // renderWorkflowStepStart renders a workflow step starting indicator.
 func renderWorkflowStepStart(stepID string, stepIdx, total int, explanation string) ChatMessage {
 	var prefix string

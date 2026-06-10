@@ -503,6 +503,33 @@ func SkillToolSchema() llm.ToolParam {
 	}
 }
 
+// WorkflowSignalToolSchema returns the workflow_signal tool definition. It is
+// appended to a workflow agent step's tool list when the step declares
+// "signal": true, and is intercepted by the workflow engine rather than the
+// session tool dispatcher: the agent uses it to declare the run complete or
+// blocked, and the workflow's next_steps route on $(workflow.signal.status).
+func WorkflowSignalToolSchema() llm.ToolParam {
+	return llm.ToolParam{
+		Name:        "workflow_signal",
+		Description: "Declare the outcome of the goal/workflow you are pursuing. Call with status \"complete\" ONLY when the full objective is verifiably met, or \"blocked\" ONLY when you are truly at an impasse that requires user input or an external change. Do not call it otherwise — simply end your turn to continue working in the next iteration.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"status": map[string]any{
+					"type":        "string",
+					"enum":        []string{"complete", "blocked"},
+					"description": "The outcome being declared.",
+				},
+				"note": map[string]any{
+					"type":        "string",
+					"description": "Short justification: what evidence proves completion, or what exactly is blocking progress.",
+				},
+			},
+			"required": []string{"status"},
+		},
+	}
+}
+
 // ReadOnlyToolSchemas returns only the read-only tool schemas (for plan exploration).
 func ReadOnlyToolSchemas() []llm.ToolParam {
 	all := ToolSchemas()

@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/get-vix/vix/internal/config"
@@ -45,6 +46,7 @@ type WorkflowDef struct {
 	EntryPoint StepRef                    `json:"entry_point"`
 	Steps      map[string]WorkflowStepDef `json:"steps"`
 	Summary    string                     `json:"summary,omitempty"`
+	Budget     *WorkflowBudget            `json:"budget,omitempty"` // optional run budget (tokens/seconds/iterations)
 }
 
 // StepOption is a structured option for tool steps using ask_question_to_user.
@@ -78,6 +80,8 @@ type WorkflowStepDef struct {
 	Options     []StepOption        `json:"options,omitempty"`      // structured options for ask_question_to_user
 	Category    string              `json:"category,omitempty"`     // tab/category label for ask_question_to_user
 	TimeoutSec  *int                `json:"timeout_sec,omitempty"`  // per-step timeout (type="bash" only); pointer distinguishes absent from 0
+	Signal      bool                `json:"signal,omitempty"`       // agent steps: expose the workflow_signal tool to the agent
+	OnError     *StepRef            `json:"on_error,omitempty"`     // agent steps: route here instead of aborting when the step fails
 }
 
 // IsStreamVisible returns whether streaming output should be shown for this step.
@@ -87,9 +91,9 @@ func (s *WorkflowStepDef) IsStreamVisible() bool {
 
 // StepResult holds output from a completed workflow step.
 type StepResult struct {
-	Output string
-	Parsed map[string]any    // nil if json_output was false or parse failed
-	Params map[string]string // input params received by this step
+	Output string            `json:"output"`
+	Parsed map[string]any    `json:"parsed,omitempty"` // nil if json_output was false or parse failed
+	Params map[string]string `json:"params,omitempty"` // input params received by this step
 }
 
 // AgentRunner is a persistent agent with maintained history.
@@ -120,6 +124,7 @@ type WorkflowRun struct {
 	Def         *WorkflowDef
 	StepAgents  map[string]*AgentRunner // step_id -> runner used
 	StepResults map[string]*StepResult  // step_id -> result
+	State       *WorkflowRunState       // live persisted position/accounting for this run
 }
 
 // FeatureToolOrchestrator is the feature flag name for the tool orchestrator mode.
@@ -641,6 +646,17 @@ func validateWorkflow(pf *WorkflowDef) error {
 		return fmt.Errorf("entry_point '%s' references unknown step", pf.EntryPoint.ID)
 	}
 
+	if b := pf.Budget; b != nil {
+		if b.MaxTokens < 0 || b.MaxSeconds < 0 || b.MaxIterations < 0 {
+			return fmt.Errorf("budget limits must be >= 0")
+		}
+		if b.OnExceeded != nil && b.OnExceeded.ID != "" && b.OnExceeded.ID != "stop" {
+			if _, ok := pf.Steps[b.OnExceeded.ID]; !ok {
+				return fmt.Errorf("budget on_exceeded '%s' references unknown step", b.OnExceeded.ID)
+			}
+		}
+	}
+
 	for stepID, step := range pf.Steps {
 		if step.Type == "" {
 			return fmt.Errorf("step '%s': missing type", stepID)
@@ -654,6 +670,22 @@ func validateWorkflow(pf *WorkflowDef) error {
 				if _, ok := pf.Steps[ns.ID]; !ok {
 					return fmt.Errorf("step '%s': next_step '%s' references unknown step", stepID, ns.ID)
 				}
+			}
+		}
+
+		// signal and on_error are agent-step features; reject elsewhere so
+		// configs fail loudly at load time instead of silently no-opping.
+		if step.Type != "agent" {
+			if step.Signal {
+				return fmt.Errorf("step '%s': signal only valid on type='agent'", stepID)
+			}
+			if step.OnError != nil {
+				return fmt.Errorf("step '%s': on_error only valid on type='agent'", stepID)
+			}
+		}
+		if step.OnError != nil && step.OnError.ID != "" && step.OnError.ID != "stop" {
+			if _, ok := pf.Steps[step.OnError.ID]; !ok {
+				return fmt.Errorf("step '%s': on_error '%s' references unknown step", stepID, step.OnError.ID)
 			}
 		}
 
@@ -1453,6 +1485,9 @@ func (s *Session) executeParallelSteps(
 					if s.headless {
 						agent.Tools = ExcludeTools(agent.Tools, "ask_question_to_user")
 					}
+					if step.Signal {
+						agent.Tools = appendSignalTool(agent.Tools)
+					}
 				} else if step.ForkFrom != "" {
 					mu.Lock()
 					source, ok := exec.StepAgents[step.ForkFrom]
@@ -1467,6 +1502,9 @@ func (s *Session) executeParallelSteps(
 						return
 					}
 					agent = ar
+					if step.Signal {
+						agent.Tools = appendSignalTool(agent.Tools)
+					}
 				}
 
 				vars := envVars(s.cwd, s.model)
@@ -1476,6 +1514,7 @@ func (s *Session) executeParallelSteps(
 					vars[k] = v
 				}
 				mu.Unlock()
+				mergeRuntimeVars(vars, exec.State, pf.Budget)
 				for k, v := range stepParams {
 					vars[k] = v
 				}
@@ -1491,6 +1530,9 @@ func (s *Session) executeParallelSteps(
 				}
 
 				stepExecuteTool := func(name string, params map[string]any, cwd string) (*ToolResult, error) {
+					if name == "workflow_signal" {
+						return s.handleWorkflowSignal(pf, exec.State, stepID, params), nil
+					}
 					for _, t := range step.DenyTools {
 						if t == name {
 							return &ToolResult{Output: fmt.Sprintf("tool '%s' is denied in step '%s'", name, stepID), IsError: true}, nil
@@ -1499,7 +1541,18 @@ func (s *Session) executeParallelSteps(
 					return executeTool(name, params, cwd)
 				}
 
-				output, err := agent.Send(stepCtx, resolvedMessage, stepExecuteTool, streamCb, s.cwd, s.hooksForStep(silent))
+				stepHooks := s.hooksForStep(silent)
+				if exec.State != nil {
+					base := stepHooks.OnStreamDone
+					stepHooks.OnStreamDone = func(inputTokens, outputTokens, cacheCreation, cacheRead, elapsedMs int64) {
+						atomic.AddInt64(&exec.State.Budget.TokensUsed, inputTokens+outputTokens+cacheCreation+cacheRead)
+						if base != nil {
+							base(inputTokens, outputTokens, cacheCreation, cacheRead, elapsedMs)
+						}
+					}
+				}
+
+				output, err := agent.Send(stepCtx, resolvedMessage, stepExecuteTool, streamCb, s.cwd, stepHooks)
 				stepElapsed := time.Since(stepStart).Milliseconds()
 
 				if err == nil && step.Output != "" {
@@ -1596,16 +1649,65 @@ func (s *Session) executeParallelSteps(
 	return contRefs, nil
 }
 
-// executeWorkflow runs a full workflow to completion.
-func (s *Session) executeWorkflow(ctx context.Context, pf *WorkflowDef, prompt string) error {
+// executeWorkflow runs a full workflow to completion. When resume is non-nil
+// the run continues from the persisted cursor: step results, per-step agent
+// conversations, and budget accounting are restored, and the entry point is
+// replaced by resume.CurrentRef.
+func (s *Session) executeWorkflow(ctx context.Context, pf *WorkflowDef, prompt string, resume *WorkflowRunState) error {
 	exec := &WorkflowRun{
 		Def:         pf,
 		StepAgents:  make(map[string]*AgentRunner),
 		StepResults: make(map[string]*StepResult),
 	}
 
+	if resume != nil {
+		prompt = resume.Prompt
+	}
+	state := &WorkflowRunState{
+		Name:   pf.Name,
+		Status: WorkflowStatusRunning,
+		Prompt: prompt,
+	}
+	elapsed := elapsedTracker{start: time.Now()}
+	if resume != nil {
+		state.Iteration = resume.Iteration
+		state.Budget = resume.Budget
+		state.BudgetRouted = resume.BudgetRouted
+		state.ErrorRouted = resume.ErrorRouted
+		elapsed.base = resume.Budget.ElapsedSeconds
+		for id, r := range resume.StepResults {
+			exec.StepResults[id] = r
+		}
+	}
+	exec.State = state
+
 	cred := s.llm.Credential()
 	parentModel := s.model
+
+	// Rebuild step agents from a resume snapshot. A runner is fully derivable
+	// from its SubagentConfig plus conversation; rebuild failures are logged
+	// and skipped so the step falls back to a fresh agent when re-visited.
+	if resume != nil {
+		for id, snap := range resume.StepAgents {
+			stepDef, ok := pf.Steps[id]
+			if !ok {
+				continue
+			}
+			ar, err := NewAgentRunner(snap.Config, cred, parentModel, s.cwd, s.projectConfig.ToolTimeouts, s.searchDirsSlice()...)
+			if err != nil {
+				LogError("[workflow] resume: cannot rebuild agent for step '%s': %v", id, err)
+				continue
+			}
+			ar.Messages = append([]llm.MessageParam(nil), snap.Messages...)
+			if s.headless {
+				ar.Tools = ExcludeTools(ar.Tools, "ask_question_to_user")
+			}
+			if stepDef.Signal {
+				ar.Tools = appendSignalTool(ar.Tools)
+			}
+			exec.StepAgents[id] = ar
+		}
+	}
 
 	executeTool := func(name string, params map[string]any, cwd string) (*ToolResult, error) {
 		return s.executeToolConfirmed(ctx, name, params), nil
@@ -1652,20 +1754,55 @@ func (s *Session) executeWorkflow(ctx context.Context, pf *WorkflowDef, prompt s
 	baseVars["workflow.prompt"] = prompt
 	baseVars["session.id"] = s.id
 
-	// Resolve entry point params
+	// Resolve entry point params — or, on resume, pick up at the saved cursor.
 	currentRef := &StepRef{
 		ID:     pf.EntryPoint.ID,
 		Params: resolveParams(pf.EntryPoint.Params, baseVars),
 	}
+	if resume != nil && resume.CurrentRef != nil {
+		if _, ok := pf.Steps[resume.CurrentRef.ID]; ok {
+			currentRef = resume.CurrentRef
+		} else {
+			LogError("[workflow] resume: step '%s' no longer exists in %q, restarting from entry point", resume.CurrentRef.ID, pf.Name)
+		}
+	}
 	var routedFrom string
 	var logicalStep int
-	const maxIterations = 200
+
+	// Hard iteration cap. The configured budget governs the real limit (and
+	// routes to on_exceeded below); this is a safety net against runaway
+	// loops, widened when a budget legitimately allows more iterations.
+	maxIterations := 200
+	if pf.Budget != nil && pf.Budget.MaxIterations > 0 && pf.Budget.MaxIterations+50 > maxIterations {
+		maxIterations = pf.Budget.MaxIterations + 50
+	}
+
+	// Finalize on every exit path: completed runs clear their persisted state;
+	// interrupted runs (cancel/crash) park as paused, failed ones as blocked —
+	// both resumable from the cursor.
+	finished := false
+	defer func() {
+		if finished {
+			s.setWorkflowRunState(nil)
+			s.persist()
+			return
+		}
+		if ctx.Err() != nil {
+			state.Status = WorkflowStatusPaused
+		} else if state.Status == WorkflowStatusRunning {
+			state.Status = WorkflowStatusBlocked
+		}
+		state.Budget.ElapsedSeconds = elapsed.seconds()
+		s.saveWorkflowProgress(exec, currentRef)
+		s.emitWorkflowStatus(pf, state, currentRef)
+	}()
 
 	for iteration := 0; currentRef != nil && currentRef.ID != "" && currentRef.ID != "stop" && iteration < maxIterations; iteration++ {
 		step := pf.Steps[currentRef.ID]
 		stepID := currentRef.ID
 		stepParams := currentRef.Params
 		logicalStep++
+		state.Budget.ElapsedSeconds = elapsed.seconds()
 
 		if ctx.Err() != nil {
 			s.emit("event.workflow_complete", protocol.EventWorkflowComplete{
@@ -1676,6 +1813,45 @@ func (s *Session) executeWorkflow(ctx context.Context, pf *WorkflowDef, prompt s
 			s.activePlan = nil
 			return ctx.Err()
 		}
+
+		// Budget gate: when any configured limit is spent, flip the run to
+		// budget_limited and divert — once — to the on_exceeded step (so the
+		// workflow can wrap up gracefully), or stop when none is configured.
+		if !state.BudgetRouted && state.budgetExceeded(pf.Budget) {
+			state.Status = WorkflowStatusBudgetLimited
+			state.BudgetRouted = true
+			s.emitWorkflowStatus(pf, state, currentRef)
+			routeVars := make(map[string]string, len(baseVars))
+			for k, v := range baseVars {
+				routeVars[k] = v
+			}
+			for k, v := range buildStepVars(exec.StepResults) {
+				routeVars[k] = v
+			}
+			mergeRuntimeVars(routeVars, state, pf.Budget)
+			if oe := pf.Budget.OnExceeded; oe != nil && oe.ID != "" && oe.ID != "stop" {
+				currentRef = &StepRef{ID: oe.ID, Params: resolveParams(oe.Params, routeVars)}
+				step = pf.Steps[currentRef.ID]
+				stepID = currentRef.ID
+				stepParams = currentRef.Params
+			} else {
+				stopped = true
+				break
+			}
+		}
+
+		// Each workflow_signal is only visible to the routing decisions that
+		// follow it: starting a new signal-capable step clears the previous one.
+		if step.Signal {
+			state.Signal = SignalState{}
+		}
+		state.Iteration++
+
+		// Refresh live accounting vars ($(workflow.*)) for prompts and
+		// execute_if conditions, then checkpoint the run so an interruption
+		// anywhere in this step resumes from this exact cursor.
+		mergeRuntimeVars(baseVars, state, pf.Budget)
+		s.saveWorkflowProgress(exec, currentRef)
 
 		silent := step.Silent
 		stepCtx := ctx
@@ -1994,6 +2170,9 @@ func (s *Session) executeWorkflow(ctx context.Context, pf *WorkflowDef, prompt s
 				if s.headless {
 					agent.Tools = ExcludeTools(agent.Tools, "ask_question_to_user")
 				}
+				if step.Signal {
+					agent.Tools = appendSignalTool(agent.Tools)
+				}
 				agentLabel = step.Agent
 			} else if step.ForkFrom != "" {
 				source, ok := exec.StepAgents[step.ForkFrom]
@@ -2017,6 +2196,9 @@ func (s *Session) executeWorkflow(ctx context.Context, pf *WorkflowDef, prompt s
 					return fmt.Errorf("step '%s': %w", stepID, err)
 				}
 				agent = ar
+				if step.Signal {
+					agent.Tools = appendSignalTool(agent.Tools)
+				}
 				agentLabel = stepID + " (from " + step.ForkFrom + ")"
 			}
 			_ = agentLabel
@@ -2052,6 +2234,7 @@ func (s *Session) executeWorkflow(ctx context.Context, pf *WorkflowDef, prompt s
 				for k, v := range buildStepVars(exec.StepResults) {
 					vars[k] = v
 				}
+				mergeRuntimeVars(vars, state, pf.Budget)
 				for k, v := range stepParams {
 					vars[k] = v
 				}
@@ -2067,6 +2250,9 @@ func (s *Session) executeWorkflow(ctx context.Context, pf *WorkflowDef, prompt s
 
 			// Tool executor with deny_tools enforcement
 			stepExecuteTool := func(name string, params map[string]any, cwd string) (*ToolResult, error) {
+				if name == "workflow_signal" {
+					return s.handleWorkflowSignal(pf, state, stepID, params), nil
+				}
 				if len(step.DenyTools) > 0 {
 					for _, t := range step.DenyTools {
 						if t == name {
@@ -2094,7 +2280,15 @@ func (s *Session) executeWorkflow(ctx context.Context, pf *WorkflowDef, prompt s
 			stepHooks := &TurnHooks{
 				OnStreamDelta:   baseHooks.OnStreamDelta,
 				OnThinkingDelta: baseHooks.OnThinkingDelta,
-				OnStreamDone:    baseHooks.OnStreamDone,
+				OnStreamDone: func(inputTokens, outputTokens, cacheCreation, cacheRead, elapsedMs int64) {
+					// Budget accounting: fires once per LLM call, so every
+					// turn inside this step (tool loops, drains, continues)
+					// counts toward the run's token budget.
+					atomic.AddInt64(&state.Budget.TokensUsed, inputTokens+outputTokens+cacheCreation+cacheRead)
+					if baseHooks.OnStreamDone != nil {
+						baseHooks.OnStreamDone(inputTokens, outputTokens, cacheCreation, cacheRead, elapsedMs)
+					}
+				},
 				OnToolCall: func(ev protocol.EventToolCall) {
 					tracker.RecordCall(ev.Name)
 					if baseHooks.OnToolCall != nil {
@@ -2178,6 +2372,34 @@ func (s *Session) executeWorkflow(ctx context.Context, pf *WorkflowDef, prompt s
 					ToolStats:           tracker.Stats(),
 					DurationMs:          stepElapsed,
 				})
+				// on_error: route to the configured fallback step (once)
+				// instead of aborting, so the workflow can wrap up — e.g.
+				// summarize progress after a terminal API error. Cancellation
+				// still aborts: there is no point steering a dead context.
+				if step.OnError != nil && ctx.Err() == nil && !state.ErrorRouted {
+					state.ErrorRouted = true
+					state.Status = WorkflowStatusBlocked
+					exec.StepResults[stepID] = &StepResult{
+						Output: fmt.Sprintf("Step '%s' failed: %v", stepID, err),
+						Params: stepParams,
+					}
+					exec.StepAgents[stepID] = agent
+					s.emitWorkflowStatus(pf, state, currentRef)
+					if step.OnError.ID == "" || step.OnError.ID == "stop" {
+						stopped = true
+						goto done
+					}
+					routeVars := make(map[string]string, len(baseVars))
+					for k, v := range baseVars {
+						routeVars[k] = v
+					}
+					for k, v := range buildStepVars(exec.StepResults) {
+						routeVars[k] = v
+					}
+					mergeRuntimeVars(routeVars, state, pf.Budget)
+					currentRef = &StepRef{ID: step.OnError.ID, Params: resolveParams(step.OnError.Params, routeVars)}
+					continue
+				}
 				s.emit("event.workflow_complete", protocol.EventWorkflowComplete{
 					WorkflowName: pf.Name,
 					Success:      false,
@@ -2263,6 +2485,9 @@ func (s *Session) executeWorkflow(ctx context.Context, pf *WorkflowDef, prompt s
 				for k, v := range buildStepVars(exec.StepResults) {
 					advanceVars[k] = v
 				}
+				// Re-merge live vars: a workflow_signal emitted during this
+				// step must be visible to the execute_if routing below.
+				mergeRuntimeVars(advanceVars, state, pf.Budget)
 				if len(step.NextSteps) == 1 {
 					ns := step.NextSteps[0]
 					resolvedCondition := resolveBashExpansions(resolveTemplateString(ns.ExecuteIf, advanceVars), s.cwd)
@@ -2313,6 +2538,13 @@ func (s *Session) executeWorkflow(ctx context.Context, pf *WorkflowDef, prompt s
 	}
 
 done:
+	// Normal end of the run: mark finished so the deferred finalizer clears
+	// the persisted run state (completed runs are not resumable).
+	if state.Status == WorkflowStatusRunning {
+		state.Status = WorkflowStatusComplete
+	}
+	finished = true
+
 	var summary string
 	if pf.Summary != "" {
 		summaryVars := buildStepVars(exec.StepResults)

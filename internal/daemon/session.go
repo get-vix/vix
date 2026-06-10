@@ -140,6 +140,13 @@ type Session struct {
 	sessionMode       string // "chat" or "workflow"
 	activeWorkflow    string // name of the active workflow when sessionMode=="workflow"
 
+	// workflowRunState is the last published snapshot of an in-flight (or
+	// interrupted) workflow run — its resume cursor, step results, per-step
+	// agent conversations, and budget accounting. Guarded by s.mu; snapshots
+	// are immutable once published (see saveWorkflowProgress). Persisted in
+	// the session record so interrupted runs survive a daemon restart.
+	workflowRunState *WorkflowRunState
+
 	// Persistence/attach state.
 	// attachRecord is non-nil when this session is resuming a persisted record;
 	// Run() emits event.replay (with restore validation) after initBrain.
@@ -1669,7 +1676,9 @@ func (s *Session) handleInput(text string, attachments []protocol.Attachment) {
 		s.messages = nil
 		s.turnSnapshots = nil
 		s.todoList = nil
+		s.workflowRunState = nil
 		s.mu.Unlock()
+		s.persist()
 		s.emit("event.clear", nil)
 		s.emit("event.todo_list_updated", protocol.EventTodoListUpdated{Todos: []protocol.TodoItem{}})
 		s.emit("event.agent_done", nil)
@@ -2472,6 +2481,34 @@ func (s *Session) handleWorkflowCommand(name, text string) {
 	s.activeWorkflow = name
 	s.persist()
 
+	// Resume an interrupted run of this workflow (user cancel or daemon
+	// restart): continue from the persisted cursor instead of starting over.
+	// Any text the user submitted alongside is injected into the resumed
+	// step's agent via the usual workflow-message channel. A different
+	// workflow name (or a fresh start after completion) discards old state.
+	var resume *WorkflowRunState
+	if st := s.snapshotWorkflowRunState(); st != nil {
+		if st.Name == name && st.Resumable() {
+			if _, ok := wf.Steps[st.CurrentRef.ID]; ok {
+				resume = st
+			}
+		}
+		if resume == nil {
+			s.setWorkflowRunState(nil)
+		}
+	}
+	if resume != nil && text != "" {
+		select {
+		case s.workflowMsgChan <- text:
+		default:
+		}
+	}
+	if resume != nil {
+		s.emit("event.stream_chunk", protocol.EventStreamChunk{
+			Text: fmt.Sprintf("Resuming workflow %q at step '%s' (iteration %d).\n", name, resume.CurrentRef.ID, resume.Iteration),
+		})
+	}
+
 	planCtx, planCancel := context.WithCancel(s.ctx)
 	s.planCancel = planCancel
 	defer func() {
@@ -2479,7 +2516,7 @@ func (s *Session) handleWorkflowCommand(name, text string) {
 		s.planCancel = nil
 	}()
 
-	err := s.executeWorkflow(planCtx, wf, text)
+	err := s.executeWorkflow(planCtx, wf, text, resume)
 	if err != nil && !errors.Is(err, context.Canceled) {
 		s.emit("event.error", protocol.EventError{Message: fmt.Sprintf("workflow failed: %v", err)})
 	}

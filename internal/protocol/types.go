@@ -455,6 +455,20 @@ type StepCost struct {
 	DurationMs          int64   `json:"duration_ms,omitempty"`
 }
 
+// EventWorkflowStatus signals a workflow run status transition (paused,
+// blocked, budget_limited, resumed). Carries the run's live accounting so
+// clients can render an indicator without tracking step events themselves.
+type EventWorkflowStatus struct {
+	WorkflowName   string `json:"workflow_name"`
+	Status         string `json:"status"`
+	StepID         string `json:"step_id,omitempty"`
+	Iteration      int    `json:"iteration,omitempty"`
+	TokensUsed     int64  `json:"tokens_used,omitempty"`
+	TokenBudget    int64  `json:"token_budget,omitempty"`
+	ElapsedSeconds int64  `json:"elapsed_seconds,omitempty"`
+	Note           string `json:"note,omitempty"`
+}
+
 // EventWorkflowComplete signals a workflow has finished.
 type EventWorkflowComplete struct {
 	WorkflowName string     `json:"workflow_name"`

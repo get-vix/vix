@@ -20,14 +20,14 @@ import (
 
 // SubagentConfig defines how a subagent behaves.
 type SubagentConfig struct {
-	Name         string
-	Description  string   // short description for LLM tool listing
-	Model        string   // empty = inherit parent model
-	Effort       string   // "adaptive", "low", "medium", "high", "max", or "" (inherit)
-	Tools        []string // tool name filter; nil = all tools
-	MaxTurns     int      // 0 = default (20)
-	MaxTokens    int      // per-LLM-call output token cap; 0 = default (32768)
-	SystemPrompt string
+	Name         string   `json:"name"`
+	Description  string   `json:"description,omitempty"`   // short description for LLM tool listing
+	Model        string   `json:"model,omitempty"`         // empty = inherit parent model
+	Effort       string   `json:"effort,omitempty"`        // "adaptive", "low", "medium", "high", "max", or "" (inherit)
+	Tools        []string `json:"tools,omitempty"`         // tool name filter; nil = all tools
+	MaxTurns     int      `json:"max_turns,omitempty"`     // 0 = default (20)
+	MaxTokens    int      `json:"max_tokens,omitempty"`    // per-LLM-call output token cap; 0 = default (32768)
+	SystemPrompt string   `json:"system_prompt,omitempty"`
 }
 
 // SubagentResult holds the output of a completed subagent run.

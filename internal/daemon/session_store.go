@@ -34,6 +34,11 @@ type sessionRecord struct {
 	SessionMode    string `json:"session_mode"`
 	ActiveWorkflow string `json:"active_workflow,omitempty"`
 
+	// WorkflowRun is the resume snapshot of an interrupted workflow run
+	// (cursor, step results, per-step agent conversations, budget). Nil when
+	// no run is in flight; completed runs are cleared rather than archived.
+	WorkflowRun *WorkflowRunState `json:"workflow_run,omitempty"`
+
 	Messages   []llm.MessageParam  `json:"messages"`
 	TodoList   []protocol.TodoItem `json:"todo_list,omitempty"`
 	ActivePlan *protocol.Plan      `json:"active_plan,omitempty"`
@@ -302,6 +307,7 @@ func (s *Session) buildRecord() sessionRecord {
 	msgs := make([]llm.MessageParam, len(s.messages))
 	copy(msgs, s.messages)
 	plan := s.activePlan
+	workflowRun := s.workflowRunState
 	s.mu.Unlock()
 
 	s.todoMu.RLock()
@@ -317,6 +323,7 @@ func (s *Session) buildRecord() sessionRecord {
 		ForkTurnIdx:       s.forkTurnIdx,
 		SessionMode:       s.sessionMode,
 		ActiveWorkflow:    s.activeWorkflow,
+		WorkflowRun:       workflowRun,
 		Messages:          msgs,
 		TodoList:          todos,
 		ActivePlan:        plan,
@@ -357,6 +364,13 @@ func (s *Session) seedFromRecord(rec *sessionRecord) {
 		s.sessionMode = "chat"
 	}
 	s.activeWorkflow = rec.ActiveWorkflow
+	// An interrupted run persisted as "running" means the daemon died
+	// mid-workflow; park it as paused so it reads correctly and resumes the
+	// same way as a user-cancelled run.
+	if rec.WorkflowRun != nil && rec.WorkflowRun.Status == WorkflowStatusRunning {
+		rec.WorkflowRun.Status = WorkflowStatusPaused
+	}
+	s.workflowRunState = rec.WorkflowRun
 	if !rec.StartedAt.IsZero() {
 		s.startTime = rec.StartedAt
 	}
@@ -399,7 +413,17 @@ func (s *Session) emitReplay() {
 			warnings = append(warnings, fmt.Sprintf("Workflow %q no longer exists; this session has been switched to chat mode.", s.activeWorkflow))
 			s.sessionMode = "chat"
 			s.activeWorkflow = ""
+			s.setWorkflowRunState(nil)
 		}
+	}
+
+	// Interrupted workflow run: offer to pick it up from its cursor. Sending
+	// any message while this workflow is active dispatches session.workflow,
+	// which detects the saved state and resumes instead of restarting.
+	if st := s.snapshotWorkflowRunState(); st != nil && st.Resumable() && s.activeWorkflow == st.Name {
+		warnings = append(warnings, fmt.Sprintf(
+			"Workflow %q was interrupted at step '%s' (iteration %d). Send a message to resume it, or /clear to discard the run.",
+			st.Name, st.CurrentRef.ID, st.Iteration))
 	}
 
 	s.mu.Lock()

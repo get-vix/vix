@@ -2400,6 +2400,16 @@ func (m *Model) applyEventToSession(idx int, event protocol.SessionEvent) []tea.
 			m.updateChatWidth()
 		}
 
+	case "event.workflow_status":
+		data := marshalData(event.Data)
+		var ws protocol.EventWorkflowStatus
+		json.Unmarshal(data, &ws)
+		// "running" transitions (resume) are visible via step events already;
+		// only surface the noteworthy stops.
+		if ws.Status != "running" {
+			sess.chatMessages = append(sess.chatMessages, renderWorkflowStatus(ws.WorkflowName, ws.Status, ws.StepID, ws.Iteration, ws.TokensUsed, ws.TokenBudget, ws.Note, m.styles))
+		}
+
 	case "event.agent_done":
 		sess.thinkingAnim.Stop()
 		m.flushSessionBuf(sess)
