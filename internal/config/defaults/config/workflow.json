@@ -1,6 +1,102 @@
 {
   "workflows": [
     {
+      "name": "Goal",
+      "budget": {
+        "max_iterations": 30,
+        "on_exceeded": {
+          "id": "wrap_up"
+        }
+      },
+      "entry_point": {
+        "id": "pursue",
+        "params": {
+          "objective": "$(workflow.prompt)",
+          "feedback": ""
+        }
+      },
+      "steps": {
+        "pursue": {
+          "type": "agent",
+          "agent": "general",
+          "effort": "adaptive",
+          "signal": true,
+          "explanation": "Working toward the goal",
+          "input_params": {
+            "objective": {
+              "description": "The user's goal objective"
+            },
+            "feedback": {
+              "description": "Auditor feedback or continuation note from the previous iteration; empty on the first pass"
+            }
+          },
+          "prompt": "$(file:prompts/goal/pursue.md)",
+          "stream": true,
+          "on_error": {
+            "id": "wrap_up"
+          },
+          "next_steps": [
+            {
+              "id": "wrap_up",
+              "execute_if": "[ \"$(workflow.signal.status)\" = \"blocked\" ]"
+            },
+            {
+              "id": "verify",
+              "params": {
+                "objective": "$(workflow.prompt)"
+              },
+              "execute_if": "[ \"$(workflow.signal.status)\" = \"complete\" ]"
+            },
+            {
+              "id": "pursue",
+              "params": {
+                "objective": "$(workflow.prompt)",
+                "feedback": "Previous iteration ended without a completion signal. Continue from where you left off."
+              },
+              "execute_if": "[ -z \"$(workflow.signal.status)\" ]"
+            }
+          ]
+        },
+        "verify": {
+          "type": "agent",
+          "agent": "general",
+          "effort": "adaptive",
+          "explanation": "Independently auditing the completion claim",
+          "json_output": true,
+          "display_key": "feedback",
+          "input_params": {
+            "objective": {
+              "description": "The goal objective to audit against the current state"
+            }
+          },
+          "prompt": "$(file:prompts/goal/verify.md)",
+          "stream": true,
+          "next_steps": [
+            {
+              "id": "wrap_up",
+              "execute_if": "[ \"$(step.verify.verdict)\" = \"pass\" ]"
+            },
+            {
+              "id": "pursue",
+              "params": {
+                "objective": "$(workflow.prompt)",
+                "feedback": "An independent audit rejected the completion claim. Address these gaps before signalling complete again:\n$(step.verify.feedback)"
+              },
+              "execute_if": "[ \"$(step.verify.verdict)\" != \"pass\" ]"
+            }
+          ]
+        },
+        "wrap_up": {
+          "type": "agent",
+          "fork_from": "pursue",
+          "effort": "low",
+          "explanation": "Wrapping up the goal run",
+          "prompt": "$(file:prompts/goal/wrap_up.md)",
+          "stream": true
+        }
+      }
+    },
+    {
       "entry_point": {
         "id": "explore",
         "params": {
