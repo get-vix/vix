@@ -100,12 +100,14 @@ type ToolBackendConfig struct {
 	Backend string `json:"backend"`
 }
 
-// LoadDaemonConfig loads daemon configuration with defaults.
-func LoadDaemonConfig() (*DaemonConfig, error) {
+// LoadDaemonConfig loads daemon configuration with defaults. version is the
+// running binary's build version, used to refresh managed defaults in ~/.vix
+// when it changes between runs.
+func LoadDaemonConfig(version string) (*DaemonConfig, error) {
 	homeDir := HomeVixDir()
 	if homeDir != "" {
 		os.MkdirAll(homeDir, 0o755)
-		if err := BootstrapHomeVixDir(homeDir); err != nil {
+		if err := BootstrapHomeVixDir(homeDir, version); err != nil {
 			log.Printf("[config] bootstrap failed: %v", err)
 		}
 	}

@@ -115,7 +115,7 @@ func main() {
 	// the plugin loader and pre-session bootstrap have a stable identifier
 	// to log against; it does NOT determine the actual session model.
 	const model = "anthropic/claude-sonnet-4-5-20250929"
-	daemonConfig, err := config.LoadDaemonConfig()
+	daemonConfig, err := config.LoadDaemonConfig(Version)
 	if err != nil {
 		log.Printf("WARNING: Failed to load daemon config: %v", err)
 		daemonConfig = &config.DaemonConfig{}

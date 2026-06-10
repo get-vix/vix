@@ -196,7 +196,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error creating --config-dir %q: %v\n", cfg.ConfigDir, err)
 			os.Exit(1)
 		}
-		if err := config.BootstrapHomeVixDir(cfg.ConfigDir); err != nil {
+		if err := config.BootstrapHomeVixDir(cfg.ConfigDir, Version); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: bootstrap of --config-dir failed: %v\n", err)
 		}
 	}
