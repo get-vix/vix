@@ -2313,16 +2313,16 @@ func (m *Model) applyEventToSession(idx int, event protocol.SessionEvent) []tea.
 		var tu protocol.EventTodoListUpdated
 		json.Unmarshal(data, &tu)
 		sess.todos = tu.Todos
-		switch sess.rightPanel.mode {
-		case rpModeWorkflow:
+		switch {
+		case sess.rightPanel.IsVisible() && sess.rightPanel.mode == rpModeWorkflow:
 			// Todos render below workflow steps automatically.
-		case rpModeTodos:
+		case sess.rightPanel.IsVisible() && sess.rightPanel.mode == rpModeTodos:
 			if !hasPendingTodos(sess.todos) {
 				sess.rightPanel.Close()
 				m.updateChatWidth()
 			}
 		default:
-			if !sess.rightPanel.IsVisible() && hasPendingTodos(sess.todos) {
+			if hasPendingTodos(sess.todos) {
 				sess.rightPanel.OpenTodos(m.height)
 				m.updateChatWidth()
 			}
@@ -2941,6 +2941,10 @@ func (m *Model) flushSessionBuf(sess *SessionState) {
 func (m *Model) applyReplay(sess *SessionState, rep protocol.EventReplay) {
 	sess.chatMessages = m.buildReplayChatMessages(rep)
 	sess.todos = rep.Todos
+	if !sess.rightPanel.IsVisible() && hasPendingTodos(sess.todos) {
+		sess.rightPanel.OpenTodos(m.height)
+		m.updateChatWidth()
+	}
 	sess.activePlan = rep.ActivePlan
 	if rep.Model != "" {
 		sess.setModel(rep.Model)
