@@ -258,6 +258,47 @@ func (p VixPaths) StateFile() string {
 	return filepath.Join(p.home, "state.json")
 }
 
+// Jobs returns the directory holding scheduled job specs (<id>.json files).
+// Jobs are user-global like sessions — each spec carries its own cwd — so the
+// store lives next to sessions/: override mode uses override/jobs; normal mode
+// uses home/jobs (empty when home is unavailable, which disables the scheduler).
+func (p VixPaths) Jobs() string {
+	if p.override != "" {
+		return filepath.Join(p.override, "jobs")
+	}
+	if p.home == "" {
+		return ""
+	}
+	return filepath.Join(p.home, "jobs")
+}
+
+// JobsState returns the path of the machine-written job runtime state file
+// (next/last run times, statuses, error counters), kept separate from the
+// user-authored specs in Jobs() so spec files never churn. Override mode:
+// override/jobs-state.json; normal mode: home/jobs-state.json.
+func (p VixPaths) JobsState() string {
+	if p.override != "" {
+		return filepath.Join(p.override, "jobs-state.json")
+	}
+	if p.home == "" {
+		return ""
+	}
+	return filepath.Join(p.home, "jobs-state.json")
+}
+
+// HeartbeatMD returns the path of the user-global heartbeat whiteboard file
+// read by the default heartbeat job's prompt. Override mode:
+// override/heartbeat.md; normal mode: home/heartbeat.md.
+func (p VixPaths) HeartbeatMD() string {
+	if p.override != "" {
+		return filepath.Join(p.override, "heartbeat.md")
+	}
+	if p.home == "" {
+		return ""
+	}
+	return filepath.Join(p.home, "heartbeat.md")
+}
+
 func (p VixPaths) subdirs(name string) []string {
 	layers := p.Layers()
 	out := make([]string, len(layers))

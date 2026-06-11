@@ -293,6 +293,17 @@ type Model struct {
 
 	// Sessions tab UI
 	sessionsSelected int
+	// vixSessions are the persisted vix-initiated records (job runs, alerts)
+	// for this cwd, rendered as their own group below the live sessions.
+	// Refreshed on Init, on entering the tab, and on event.sessions_changed.
+	vixSessions []protocol.SessionSummary
+	// focusRestoredID, when set, names a session the user just opened from
+	// the Sessions tab (enter on a vix-initiated row): the matching
+	// sessionRestoredMsg focuses it instead of restoring in the background.
+	focusRestoredID string
+	// vixSeeded guards the one-shot launch seeding of sessionsTabUnseen from
+	// persisted unread vix records (first vixSessionsMsg only).
+	vixSeeded bool
 
 	// Models tab UI
 	modelsLoggedIn         []string                             // providers with a stored credential
@@ -456,6 +467,8 @@ func (m Model) Init() tea.Cmd {
 	for _, sum := range m.restoreSessions {
 		cmds = append(cmds, attachRestoreSession(m.socketPath, m.cwd, m.cfg.ConfigDir, m.cfg.Model, m.authToken, m.enableAutomaticWritePermission, m.enableAutomaticDirectoryAccess, sum))
 	}
+	// Populate the Vix-initiated group of the Sessions tab.
+	cmds = append(cmds, fetchVixSessions(m.socketPath, m.cwd, m.cfg.ConfigDir, m.authToken))
 	cmds = append(cmds, waitForResume, tea.RequestBackgroundColor)
 	return tea.Batch(cmds...)
 }
@@ -640,11 +653,18 @@ func (m Model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			case "down":
-				if n := m.sessionsVisibleCount(); m.sessionsSelected < n-1 {
+				if n := m.sessionsVisibleCount() + len(m.vixSessions); m.sessionsSelected < n-1 {
 					m.sessionsSelected++
 				}
 				return m, nil
 			case "enter":
+				if sum, ok := m.vixSelectedSummary(); ok {
+					// Open a vix-initiated record: attach it like a restored
+					// session; the replay rebuilds the conversation and the
+					// matching sessionRestoredMsg focuses it.
+					m.focusRestoredID = sum.ID
+					return m, attachRestoreSession(m.socketPath, m.cwd, m.cfg.ConfigDir, m.cfg.Model, m.authToken, m.enableAutomaticWritePermission, m.enableAutomaticDirectoryAccess, sum)
+				}
 				if idx, ok := m.sessionsSelectedIdx(); ok {
 					m.selectedSession = idx
 					m.activeTab = TabKindChat
@@ -674,6 +694,9 @@ func (m Model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Batch(cmds...)
 			case "d":
 				// Duplicate the selected session into a new one.
+				if _, ok := m.vixSelectedSummary(); ok {
+					return m, m.emitStatusMsg("Open the run first to duplicate it", StatusMsgWarning)
+				}
 				idx, ok := m.sessionsSelectedIdx()
 				if !ok {
 					return m, nil
@@ -690,6 +713,10 @@ func (m Model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				nm, c := m.doDuplicate(srcSess, lastSep)
 				return nm, c
 			case "x":
+				if sum, ok := m.vixSelectedSummary(); ok {
+					// Dismiss a vix-initiated record without opening it.
+					return m, dismissVixSession(m.socketPath, m.cwd, m.cfg.ConfigDir, m.authToken, sum.ID)
+				}
 				if idx, ok := m.sessionsSelectedIdx(); ok {
 					m.sessionCloseIdx = idx
 					m.sessionCloseSelected = 1 // default No
@@ -1222,7 +1249,8 @@ func (m Model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case sessionRestoredMsg:
-		// A persisted open session was re-attached on launch. Add it as a new
+		// A persisted open session was re-attached (launch restore, or a
+		// vix-initiated record opened from the Sessions tab). Add it as a new
 		// session; its viewport is rebuilt from the daemon's event.replay.
 		if _, existing := m.findSessionByDaemonID(msg.summary.ID); existing != nil {
 			msg.client.Close()
@@ -1231,6 +1259,12 @@ func (m Model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		restored := newSessionState(m.cfg, msg.client)
 		if msg.summary.Model != "" {
 			restored.setModel(msg.summary.Model)
+		}
+		// Seed the unread indicator from the persisted flag so activity that
+		// happened while vix was closed (job runs, alerts) survives restarts.
+		if msg.summary.Unread {
+			restored.unreadCount = 1
+			m.sessionsTabUnseen = true
 		}
 		// Restored sessions are waiting for their replay; show the placeholder
 		// (with an animated spinner) until it arrives.
@@ -1252,12 +1286,43 @@ func (m Model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if idx <= m.selectedSession {
 			m.selectedSession++
 		}
+		// A record the user explicitly opened from the Sessions tab gets
+		// focused immediately (launch restores stay in the background).
+		if m.focusRestoredID != "" && m.focusRestoredID == msg.summary.ID {
+			m.focusRestoredID = ""
+			m.selectedSession = idx
+			m.activeTab = TabKindChat
+			restored.input.SetWidth(m.width - 4)
+			m.markSessionRead(restored)
+		}
 		m.syncSessionsSelected()
 		return m, tea.Batch(startSessionEventLoop(msg.client), restored.thinkingAnim.Start())
 
 	case sessionRestoreFailedMsg:
 		// Best-effort: a persisted session could not be reopened. Leave it on
 		// disk; it will be offered again on the next launch.
+		return m, nil
+
+	case vixSessionsMsg:
+		m.vixSessions = msg.sums
+		// One-shot launch seeding: unread job runs/alerts that accumulated
+		// while vix was closed tint the Sessions tab. Live arrivals re-latch
+		// via event.job_done; refreshes after the first don't, so a visited
+		// tab stays calm.
+		if !m.vixSeeded {
+			m.vixSeeded = true
+			if m.activeTab != TabKindSessions {
+				for _, sum := range msg.sums {
+					if sum.Unread {
+						m.sessionsTabUnseen = true
+						break
+					}
+				}
+			}
+		}
+		if n := m.sessionsVisibleCount() + len(m.vixSessions); m.sessionsSelected >= n && n > 0 {
+			m.sessionsSelected = n - 1
+		}
 		return m, nil
 
 	case tea.PasteMsg:
@@ -1383,8 +1448,13 @@ func (m *Model) hasUnreadSessions() bool {
 // markSessionRead clears a session's unread counter and, once no session has
 // unread activity left, lowers the Sessions-tab highlight latch. This lets the
 // highlight clear when the last unread conversation is opened directly, without
-// having to visit the Sessions tab.
+// having to visit the Sessions tab. When something was actually cleared, the
+// daemon is told too (session.mark_read) so the persisted unread flag — the
+// one that survives restarts — drops with it.
 func (m *Model) markSessionRead(sess *SessionState) {
+	if sess.unreadCount > 0 && sess.client != nil {
+		sess.client.SendMarkRead()
+	}
 	sess.unreadCount = 0
 	if !m.hasUnreadSessions() {
 		m.sessionsTabUnseen = false
@@ -1403,7 +1473,10 @@ func (m *Model) switchTab(k TabKind) tea.Cmd {
 	case TabKindSessions:
 		m.sessionsTabUnseen = false
 		m.syncSessionsSelected()
-		return m.maybeStartSessionsSpinner()
+		return tea.Batch(
+			m.maybeStartSessionsSpinner(),
+			fetchVixSessions(m.socketPath, m.cwd, m.cfg.ConfigDir, m.authToken),
+		)
 	case TabKindChat:
 		if sess := m.currentSession(); sess != nil {
 			m.markSessionRead(sess)
@@ -2153,6 +2226,19 @@ func (m *Model) applyEventToSession(idx int, event protocol.SessionEvent) []tea.
 		// its spinner.
 		sess.awaitingReplay = false
 		sess.thinkingAnim.Stop()
+		// Viewing the replay counts as reading: clear the persisted unread
+		// flag when this session is the one on screen. Sent unconditionally
+		// (not via markSessionRead) because the disk flag may be set even
+		// when the local counter is zero — e.g. a vix job run just opened.
+		if idx == m.selectedSession && m.activeTab == TabKindChat {
+			sess.unreadCount = 0
+			if !m.hasUnreadSessions() {
+				m.sessionsTabUnseen = false
+			}
+			if sess.client != nil {
+				sess.client.SendMarkRead()
+			}
+		}
 
 	case "event.init_state":
 		data := marshalData(event.Data)
@@ -2195,6 +2281,38 @@ func (m *Model) applyEventToSession(idx int, event protocol.SessionEvent) []tea.
 		m.updateLatest = ua.Latest
 		m.updateURL = ua.URL
 		m.updateMethod = ua.Method
+
+	case "event.sessions_changed":
+		// The persisted sessions list changed outside this client (a job run
+		// was persisted or swept): refresh the Vix-initiated group.
+		cmds = append(cmds, fetchVixSessions(m.socketPath, m.cwd, m.cfg.ConfigDir, m.authToken))
+
+	case "event.job_done":
+		data := marshalData(event.Data)
+		var jd protocol.EventJobDone
+		json.Unmarshal(data, &jd)
+		text, kind := jobDoneStatusText(jd)
+		m.sessionsTabUnseen = true
+		cmds = append(cmds,
+			m.emitStatusMsg(text, kind),
+			fetchVixSessions(m.socketPath, m.cwd, m.cfg.ConfigDir, m.authToken))
+
+	case "event.job_run":
+		data := marshalData(event.Data)
+		var jr protocol.EventJobRun
+		json.Unmarshal(data, &jr)
+		// Only failures-of-policy are worth a status line; routine starts are
+		// silent (the run will land in the sessions list anyway).
+		switch jr.Status {
+		case "invalid":
+			cmds = append(cmds, m.emitStatusMsg(fmt.Sprintf("Job %s has an invalid spec: %s", jr.JobID, jr.Error), StatusMsgWarning))
+		case "auto_disabled":
+			cmds = append(cmds, m.emitStatusMsg(fmt.Sprintf("Job %s disabled after repeated failures", jr.JobID), StatusMsgError))
+		}
+
+	case "event.job_nudge":
+		// One-time hint emitted when the first user-created job appears.
+		cmds = append(cmds, m.emitStatusMsg("Tip: `vix daemon install` starts vixd at login so scheduled jobs survive reboots", StatusMsgInfo))
 
 	case "event.stream_chunk":
 		data := marshalData(event.Data)
@@ -2418,6 +2536,10 @@ func (m *Model) applyEventToSession(idx int, event protocol.SessionEvent) []tea.
 			if m.activeTab != TabKindSessions {
 				m.sessionsTabUnseen = true
 			}
+		} else if sess.client != nil {
+			// The user watched this turn complete: clear the persisted unread
+			// flag the daemon just set at turn end.
+			sess.client.SendMarkRead()
 		}
 		turnInput := sess.inputTokens - sess.turnStartInputTokens
 		turnOutput := sess.outputTokens - sess.turnStartOutputTokens
@@ -2552,7 +2674,7 @@ func (m Model) View() tea.View {
 		if m.sessionsSpinnerActive {
 			spinnerFrame = string(animFrames[m.sessionsSpinnerStep%len(animFrames)])
 		}
-		sv := renderSessionsView(m.sessions, m.width, sessionsHeight, m.styles, m.sessionsSelected, spinnerFrame)
+		sv := renderSessionsView(m.sessions, m.vixSessions, m.width, sessionsHeight, m.styles, m.sessionsSelected, spinnerFrame)
 		uv.NewStyledString(sv).Draw(canvas, image.Rect(0, y, m.width, y+sessionsHeight))
 		y += sessionsHeight
 
@@ -3492,6 +3614,17 @@ func (m *Model) sessionsSelectedIdx() (int, bool) {
 		return 0, false
 	}
 	return indices[m.sessionsSelected], true
+}
+
+// vixSelectedSummary returns the vix-initiated record for the highlighted row,
+// when the selection sits in the Vix-initiated group (the rows below the live
+// sessions).
+func (m *Model) vixSelectedSummary() (protocol.SessionSummary, bool) {
+	off := m.sessionsSelected - m.sessionsVisibleCount()
+	if off < 0 || off >= len(m.vixSessions) {
+		return protocol.SessionSummary{}, false
+	}
+	return m.vixSessions[off], true
 }
 
 // hasAlertSessions reports whether any session is waiting for user input.

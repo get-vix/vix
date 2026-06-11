@@ -441,3 +441,100 @@ func TestTrimStaleClosedSessionsNever(t *testing.T) {
 		t.Errorf("record should have been kept with retention disabled: %v", err)
 	}
 }
+
+// ── Unread flag ──
+
+// TestUnreadRoundTrip: the session-global unread flag persists and surfaces in
+// summaries; legacy records without the field read as seen.
+func TestUnreadRoundTrip(t *testing.T) {
+	paths := testPaths(t)
+
+	rec := sampleRecord()
+	rec.Unread = true
+	if err := saveSessionRecord(paths, rec); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	got, found, _ := loadOpenSessionRecord(paths, rec.ID)
+	if !found || !got.Unread {
+		t.Fatalf("unread flag lost: found=%v rec=%+v", found, got)
+	}
+	if !got.summary().Unread {
+		t.Fatal("summary must carry Unread")
+	}
+
+	// Legacy record: no unread field on disk → read.
+	legacy := sampleRecord()
+	legacy.ID = "sess-legacy"
+	if err := saveSessionRecord(paths, legacy); err != nil {
+		t.Fatalf("save legacy: %v", err)
+	}
+	got, _, _ = loadOpenSessionRecord(paths, legacy.ID)
+	if got.Unread || got.summary().Unread {
+		t.Fatal("legacy record must read as seen")
+	}
+}
+
+// TestMarkReadCommandClearsUnread: buildRecord reflects the session flag, and
+// the mark_read transition persists.
+func TestMarkReadCommandClearsUnread(t *testing.T) {
+	paths := testPaths(t)
+	srv := NewServer("/tmp/unused.sock", config.Credential{}, "t", "m", &config.DaemonConfig{}, PluginConfig{})
+	sess := NewSession("sess-mr", srv, nil, "m", "/work", paths.Override(), false, true, true, true, context.Background())
+
+	sess.unread = true
+	sess.persist()
+	got, found, _ := loadOpenSessionRecord(sess.paths, "sess-mr")
+	if !found || !got.Unread {
+		t.Fatalf("turn-end persist must carry unread, got %+v", got)
+	}
+
+	// What the session.mark_read command handler does:
+	sess.unread = false
+	sess.persist()
+	got, _, _ = loadOpenSessionRecord(sess.paths, "sess-mr")
+	if got.Unread {
+		t.Fatal("mark_read must clear the persisted flag")
+	}
+}
+
+// TestSweepExemptsUnreadRuns: the open/ retention sweep never auto-dismisses
+// unread or failed job runs; read OK runs beyond the cap age out.
+func TestSweepExemptsUnreadRuns(t *testing.T) {
+	paths := testPaths(t)
+	trig := &protocol.TriggerInfo{Type: "cron", Ref: "job-x"}
+	mk := func(id string, age time.Duration, status string, unread bool) {
+		rec := sessionRecord{
+			ID: id, CWD: "/work", Origin: "vix", Trigger: trig,
+			JobStatus: status, Unread: unread,
+			SessionMode: "chat", StartedAt: time.Now().Add(-age),
+		}
+		if err := saveSessionRecord(paths, rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Newest three stay regardless; the four older ones exercise the rules.
+	mk("r1", 1*time.Hour, "ok", false)
+	mk("r2", 2*time.Hour, "ok", false)
+	mk("r3", 3*time.Hour, "ok", false)
+	mk("r4", 4*time.Hour, "ok", true)     // unread → kept
+	mk("r5", 5*time.Hour, "error", false) // failure → kept
+	mk("r6", 6*time.Hour, "ok", false)    // read ok → swept
+	mk("r7", 7*time.Hour, "ok", false)    // read ok → swept
+
+	sweepJobRunRecords(paths, "job-x")
+
+	openIDs := map[string]bool{}
+	for _, r := range listSessionRecordsIn(paths.SessionsOpen()) {
+		openIDs[r.ID] = true
+	}
+	for _, want := range []string{"r1", "r2", "r3", "r4", "r5"} {
+		if !openIDs[want] {
+			t.Errorf("%s should have been kept in open/", want)
+		}
+	}
+	for _, gone := range []string{"r6", "r7"} {
+		if openIDs[gone] {
+			t.Errorf("%s should have been swept to closed/", gone)
+		}
+	}
+}

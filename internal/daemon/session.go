@@ -155,6 +155,23 @@ type Session struct {
 	// action), distinguishing an explicit close (move record open->closed) from
 	// a bare disconnect (record stays open for next-run reopen).
 	closedByUser bool
+
+	// Provenance: empty origin means user-started; "vix" marks sessions the
+	// daemon initiated itself (scheduled job runs, synthetic alert sessions).
+	// trigger then records what fired it. Set at construction time by the job
+	// runner, persisted in the session record, surfaced in session.list.
+	origin  string
+	trigger *protocol.TriggerInfo
+	// jobStatus is the finished run's status (ok | error | timeout), set by
+	// the job runner just before the final persist so the record carries it
+	// (retention exempts failures from auto-dismissal; the TUI shows a badge).
+	jobStatus string
+	// unread is the session-global "has content the user hasn't seen" flag.
+	// Set whenever a turn or workflow run completes (new content), cleared by
+	// the session.mark_read command the TUI sends when the user views the
+	// session. Persisted in the record so the indicator survives restarts;
+	// absent on legacy records, which therefore read as seen.
+	unread bool
 }
 
 // NewSession creates a new agent session.
@@ -604,6 +621,15 @@ func (s *Session) Run() {
 				json.Unmarshal(cmd.Data, &data)
 				s.trimHistory(data.TurnIdx)
 				s.persist()
+			case "session.mark_read":
+				// The user is looking at this session: clear the persisted
+				// unread flag. Queued commands land between turns, so a
+				// mark_read sent mid-turn applies before the turn's own
+				// unread=true — the TUI re-sends on agent_done when focused.
+				if s.unread {
+					s.unread = false
+					s.persist()
+				}
 			case "session.close":
 				s.closedByUser = true
 				return
@@ -835,15 +861,20 @@ func (s *Session) skillInfoList() []protocol.SkillInfo {
 	return infos
 }
 
-// workflowInfoList returns the list of WorkflowInfo in config order.
+// workflowInfoList returns the list of WorkflowInfo in config order, omitting
+// workflows that opted out of the TUI (display_in_tui: false) — they remain
+// runnable by name (scheduled jobs), just not listed in the switcher.
 func (s *Session) workflowInfoList() []protocol.WorkflowInfo {
 	wfs := s.snapshotWorkflows()
 	if len(wfs) == 0 {
 		return nil
 	}
-	infos := make([]protocol.WorkflowInfo, len(wfs))
-	for i, wf := range wfs {
-		infos[i] = protocol.WorkflowInfo{Name: wf.Name}
+	infos := make([]protocol.WorkflowInfo, 0, len(wfs))
+	for _, wf := range wfs {
+		if !wf.ShowInTUI() {
+			continue
+		}
+		infos = append(infos, protocol.WorkflowInfo{Name: wf.Name})
 	}
 	return infos
 }
@@ -1832,6 +1863,7 @@ func (s *Session) handleInput(text string, attachments []protocol.Attachment) {
 	copy(snapshot, s.messages)
 	s.turnSnapshots = append(s.turnSnapshots, snapshot)
 	s.mu.Unlock()
+	s.unread = true // new content; cleared by session.mark_read when viewed
 	s.persist()
 	s.emit("event.agent_done", nil)
 }

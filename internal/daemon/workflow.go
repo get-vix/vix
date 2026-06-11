@@ -47,6 +47,17 @@ type WorkflowDef struct {
 	Steps      map[string]WorkflowStepDef `json:"steps"`
 	Summary    string                     `json:"summary,omitempty"`
 	Budget     *WorkflowBudget            `json:"budget,omitempty"` // optional run budget (tokens/seconds/iterations)
+	// DisplayInTUI controls whether the workflow appears in the TUI's
+	// workflow switcher (Shift+Tab) and slash menu. Default true; internal
+	// workflows (e.g. the shipped heartbeat one) set false. It does not
+	// affect runnability — jobs and explicit invocations still work by name.
+	DisplayInTUI *bool `json:"display_in_tui,omitempty"`
+}
+
+// ShowInTUI reports whether the workflow should be listed in the TUI
+// (absent display_in_tui defaults to true).
+func (w *WorkflowDef) ShowInTUI() bool {
+	return w.DisplayInTUI == nil || *w.DisplayInTUI
 }
 
 // StepOption is a structured option for tool steps using ask_question_to_user.
@@ -1779,9 +1790,11 @@ func (s *Session) executeWorkflow(ctx context.Context, pf *WorkflowDef, prompt s
 
 	// Finalize on every exit path: completed runs clear their persisted state;
 	// interrupted runs (cancel/crash) park as paused, failed ones as blocked —
-	// both resumable from the cursor.
+	// both resumable from the cursor. Either way the run produced content the
+	// user may not have seen: flag the session unread.
 	finished := false
 	defer func() {
+		s.unread = true
 		if finished {
 			s.setWorkflowRunState(nil)
 			s.persist()

@@ -67,6 +67,28 @@ Start the daemon and client in separate terminals:
 ./bin/vix
 ```
 
+`vix` never spawns the daemon: when the socket is unreachable it errors with
+"vixd is not running — start it with `vix daemon start`". The subcommand group
+`vix daemon start|stop|status|install|uninstall` manages the long-lived daemon
+(`install` registers a login LaunchAgent/systemd user unit). Client and daemon
+enforce an exact version match (hard gate; `dev` builds skip it) — a mismatch
+means restart the daemon: `vix daemon stop && vix daemon start`.
+
+## Scheduled jobs
+
+vixd runs a scheduler over `~/.vix/jobs/*.json` (hot-reloaded; runtime state in
+`~/.vix/jobs-state.json` — spec/state split so user files never churn). Each
+run executes in an isolated headless session (plain prompt, or a workflow via
+the `workflow` field) and lands in the Sessions tab under "Vix-initiated".
+Triggers: `cron` (robfig syntax incl. `@every`) and one-shot `at`. The shipped
+`heartbeat` job reads `~/.vix/heartbeat.md` every 30 minutes and skips with
+zero tokens while the file is effectively empty (or the run answers
+HEARTBEAT_OK). The model-facing surface is the `jobs` skill (no tool, no slash
+command): the agent writes job files directly and verifies via
+jobs-state.json. Engine: `internal/daemon/jobs/`; runner:
+`internal/daemon/job_runner.go`. Kill switch: `"features": {"jobs": false}` or
+`VIX_DISABLE_JOBS=1`.
+
 ### Detecting whether `vixd` is running (sandbox caveat)
 
 When you (an AI coding agent) are working inside a live vix session, **a `vixd`

@@ -51,6 +51,12 @@ type SessionStartData struct {
 	EnableAutomaticWritePermission bool   `json:"enable_automatic_write_permission"`
 	EnableAutomaticDirectoryAccess bool   `json:"enable_automatic_directory_access"`
 	Headless                       bool   `json:"headless"`
+	// ClientVersion is the vix binary version opening this session. The daemon
+	// refuses the session (event.error, code "version_mismatch") when it does
+	// not exactly match the daemon's own version — a long-lived daemon must
+	// never serve a client from a different build. Builds reporting "dev" skip
+	// the check so local development against a running daemon stays possible.
+	ClientVersion string `json:"client_version,omitempty"`
 	// Fork fields: when ForkSessionID is non-empty the new session is seeded
 	// with the conversation history of the named session up to and including
 	// the turn at ForkTurnIdx (0-based).
@@ -63,6 +69,13 @@ type SessionStartData struct {
 	// explicitly closed session stays closed. If no open record exists the
 	// daemon answers with event.error carrying Code "session_not_found".
 	AttachSessionID string `json:"attach_session_id,omitempty"`
+}
+
+// TriggerInfo records what fired a vix-initiated session: a scheduled job's
+// trigger type ("cron" | "at") and the job id.
+type TriggerInfo struct {
+	Type string `json:"type"`
+	Ref  string `json:"ref,omitempty"`
 }
 
 // SessionSummary is the lightweight projection of a persisted session returned
@@ -79,6 +92,19 @@ type SessionSummary struct {
 	// in some connection). The launching client uses it to avoid attaching a
 	// session another instance already owns (exclusive single-writer ownership).
 	Attached bool `json:"attached,omitempty"`
+	// Origin distinguishes user-started sessions ("", the default) from
+	// vix-initiated ones ("vix" — scheduled job runs, synthetic alerts). The
+	// TUI groups the sessions list by it and never auto-claims vix-initiated
+	// sessions on launch.
+	Origin  string       `json:"origin,omitempty"`
+	Trigger *TriggerInfo `json:"trigger,omitempty"`
+	// JobStatus carries the finished run's status (ok | error | timeout) for
+	// vix-initiated sessions, powering the badge in the sessions list.
+	JobStatus string `json:"job_status,omitempty"`
+	// Unread reports whether the session holds content the user hasn't seen
+	// (session-global, persisted — survives restarts). Cleared via the
+	// session.mark_read command when the user views the session.
+	Unread bool `json:"unread,omitempty"`
 }
 
 // SessionInputData carries user chat input.
@@ -391,6 +417,37 @@ type EventUpdateAvailable struct {
 	URL     string `json:"url,omitempty"`
 	Method  string `json:"method,omitempty"`
 }
+
+// --- Job events (scheduled jobs engine) ---
+// Broadcast to every attached client via BroadcastEvent; payloads are also
+// emitted by the scheduler as plain maps with matching keys.
+
+// EventJobRun signals a job lifecycle transition before/without a finished
+// run: status is "started", "invalid" (spec failed validation), or
+// "auto_disabled" (too many consecutive failures). Error carries detail for
+// the non-started statuses.
+type EventJobRun struct {
+	JobID  string `json:"job_id"`
+	Name   string `json:"name,omitempty"`
+	Status string `json:"status"`
+	Error  string `json:"error,omitempty"`
+}
+
+// EventJobDone reports a finished job run. Status is ok | error | timeout
+// (skipped runs are silent by design). SessionID references the persisted run
+// session in the sessions list.
+type EventJobDone struct {
+	JobID     string `json:"job_id"`
+	Name      string `json:"name,omitempty"`
+	Status    string `json:"status"`
+	Error     string `json:"error,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
+}
+
+// EventSessionsChanged tells attached clients the persisted sessions list
+// changed outside their own connection (a job run was persisted or swept), so
+// they should re-fetch session.list.
+type EventSessionsChanged struct{}
 
 // --- Workflow events ---
 

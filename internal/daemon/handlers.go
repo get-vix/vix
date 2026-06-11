@@ -13,7 +13,16 @@ func RegisterBuiltinHandlers(s *Server) {
 	RegisterCredentialHandlers(s)
 
 	s.RegisterHandler("ping", func(data map[string]any) (map[string]any, error) {
-		return map[string]any{"status": "ok", "message": "pong"}, nil
+		return map[string]any{"status": "ok", "message": "pong", "version": s.version}, nil
+	})
+
+	// daemon.stop performs a coordinated shutdown: every attached vix instance
+	// is told to quit, then the daemon exits. Used by `vix daemon stop` and
+	// deliberately version-gate-exempt (one-shot RPCs carry no version): the
+	// stop command must work precisely when client and daemon versions differ.
+	s.RegisterHandler("daemon.stop", func(data map[string]any) (map[string]any, error) {
+		go s.QuitAll()
+		return map[string]any{"status": "ok", "message": "stopping"}, nil
 	})
 
 	s.RegisterHandler("init", func(data map[string]any) (map[string]any, error) {
@@ -67,5 +76,30 @@ func RegisterBuiltinHandlers(s *Server) {
 			summaries = append(summaries, sum)
 		}
 		return map[string]any{"status": "ok", "sessions": summaries}, nil
+	})
+
+	// session.dismiss archives a persisted session record (open/ → closed/)
+	// without attaching it. Used by the TUI to dismiss vix-initiated run
+	// records from the sessions list. Refuses sessions currently live in a
+	// connection.
+	s.RegisterHandler("session.dismiss", func(data map[string]any) (map[string]any, error) {
+		id, _ := data["id"].(string)
+		if id == "" {
+			return map[string]any{"status": "error", "message": "missing 'id'"}, nil
+		}
+		s.sessionMu.Lock()
+		_, live := s.sessions[id]
+		s.sessionMu.Unlock()
+		if live {
+			return map[string]any{"status": "error", "message": "session is open in another connection"}, nil
+		}
+		cwd, _ := data["cwd"].(string)
+		configDir, _ := data["config_dir"].(string)
+		paths := config.NewVixPaths(configDir, s.homeVixDir, cwd)
+		if err := moveSessionToClosed(paths, id); err != nil {
+			return map[string]any{"status": "error", "message": err.Error()}, nil
+		}
+		s.broadcastSessionsChanged()
+		return map[string]any{"status": "ok"}, nil
 	})
 }

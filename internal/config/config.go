@@ -217,6 +217,39 @@ func ToolOrchestrator() bool { return feature("tool_orchestrator", false) }
 // SetToolOrchestrator writes the tool_orchestrator feature flag.
 func SetToolOrchestrator(v bool) error { return setFeature("tool_orchestrator", v) }
 
+// JobsEnabled reads the jobs feature flag (the scheduled-jobs engine in vixd).
+// Defaults to true; the VIX_DISABLE_JOBS environment variable overrides
+// everything as an emergency kill switch.
+func JobsEnabled() bool {
+	if v := os.Getenv("VIX_DISABLE_JOBS"); v == "1" || v == "true" {
+		return false
+	}
+	return feature("jobs", true)
+}
+
+// JobsMaxConcurrentRuns reads jobs.max_concurrent_runs from
+// ~/.vix/settings.json. Returns 0 when absent/invalid, letting the scheduler
+// apply its default.
+func JobsMaxConcurrentRuns() int {
+	p := filepath.Join(HomeVixDir(), "settings.json")
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return 0
+	}
+	var cfg struct {
+		Jobs struct {
+			MaxConcurrentRuns int `json:"max_concurrent_runs"`
+		} `json:"jobs"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return 0
+	}
+	if cfg.Jobs.MaxConcurrentRuns < 0 {
+		return 0
+	}
+	return cfg.Jobs.MaxConcurrentRuns
+}
+
 // Compaction defaults mirror the daemon-side defaults in internal/daemon.
 const (
 	defaultCompactionAuto      = true

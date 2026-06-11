@@ -106,6 +106,33 @@ func (c *Client) Ping() bool {
 	return resp["status"] == "ok"
 }
 
+// DaemonVersion returns the running daemon's build version, as reported by the
+// ping handler. Daemons predating the version field report "" — callers must
+// treat that as a mismatch with any released client.
+func (c *Client) DaemonVersion() (string, error) {
+	resp, err := c.sendRequest(map[string]any{"action": "ping"})
+	if err != nil {
+		return "", err
+	}
+	v, _ := resp["version"].(string)
+	return v, nil
+}
+
+// StopDaemon asks the daemon to perform a coordinated shutdown (every attached
+// vix instance is told to quit, then the daemon exits). Exempt from the version
+// gate so it works across mismatched builds.
+func (c *Client) StopDaemon() error {
+	resp, err := c.sendRequest(map[string]any{"action": "daemon.stop"})
+	if err != nil {
+		return err
+	}
+	if resp["status"] != "ok" {
+		msg, _ := resp["message"].(string)
+		return fmt.Errorf("daemon.stop failed: %s", msg)
+	}
+	return nil
+}
+
 // ListSessions returns the persisted open sessions for cwd, so the TUI can
 // reopen them on launch. Sessions are stored globally (~/.vix/sessions) and
 // filtered by cwd daemon-side.
@@ -127,6 +154,25 @@ func (c *Client) ListSessions(cwd, configDir string) ([]protocol.SessionSummary,
 		return nil, err
 	}
 	return out, nil
+}
+
+// DismissSession archives a persisted session record (open/ → closed/) without
+// attaching it. Used to dismiss vix-initiated run records from the TUI.
+func (c *Client) DismissSession(cwd, configDir, id string) error {
+	resp, err := c.sendRequest(map[string]any{
+		"command":    "session.dismiss",
+		"cwd":        cwd,
+		"config_dir": configDir,
+		"id":         id,
+	})
+	if err != nil {
+		return err
+	}
+	if resp["status"] != "ok" {
+		msg, _ := resp["message"].(string)
+		return fmt.Errorf("session.dismiss failed: %s", msg)
+	}
+	return nil
 }
 
 // ExecuteTool sends a tool execution request to the daemon.
@@ -211,11 +257,27 @@ type SessionClient struct {
 	// via SetAuthToken before Connect; matches the daemon's
 	// -auth-token-path. Empty when the daemon side is also unauthenticated.
 	authToken string
+	// Client build version stamped into SessionStartData so the daemon can
+	// enforce the version gate. Defaults to the process-wide value set via
+	// SetClientVersion.
+	version string
+}
+
+// clientVersion is the build version stamped on every SessionClient created by
+// this process. Set once at startup (cmd/vix/main.go) via SetClientVersion so
+// every connection — initial, restore, reconnect, fork — carries it.
+var clientVersion string
+
+// SetClientVersion records the process-wide client build version used by all
+// subsequently created SessionClients. Call once at startup, before any
+// connection is opened.
+func SetClientVersion(v string) {
+	clientVersion = v
 }
 
 // NewSessionClient creates a new session client (does not connect yet).
 func NewSessionClient(socketPath string) *SessionClient {
-	return &SessionClient{socketPath: socketPath}
+	return &SessionClient{socketPath: socketPath, version: clientVersion}
 }
 
 // SetAuthToken stores the shared-secret token used to authenticate every
@@ -273,6 +335,11 @@ var ErrSessionNotFound = errors.New("session not found")
 // retry later (the owner may disconnect) or restore/attach a different session.
 var ErrSessionBusy = errors.New("session busy")
 
+// ErrVersionMismatch is returned by Connect/Attach when the daemon refused the
+// session because the client and daemon builds differ. The wrapped message
+// carries both versions and the remediation command.
+var ErrVersionMismatch = errors.New("version mismatch")
+
 // Attach establishes a persistent connection and resumes the persisted session
 // with the given ID. On success the daemon replays the conversation via
 // event.replay. Returns ErrSessionNotFound when no record exists on disk.
@@ -291,6 +358,7 @@ func (sc *SessionClient) Attach(cwd, configDir, model string, forceInit bool, en
 
 // connectWith dials the daemon and starts a session with the given start data.
 func (sc *SessionClient) connectWith(startData protocol.SessionStartData) error {
+	startData.ClientVersion = sc.version
 	conn, err := net.Dial("unix", sc.socketPath)
 	if err != nil {
 		return fmt.Errorf("daemon connect: %w", err)
@@ -325,6 +393,9 @@ func (sc *SessionClient) connectWith(startData protocol.SessionStartData) error 
 		}
 		if ee.Code == "session_busy" {
 			return ErrSessionBusy
+		}
+		if ee.Code == "version_mismatch" {
+			return fmt.Errorf("%w: %s", ErrVersionMismatch, ee.Message)
 		}
 		if ee.Message != "" {
 			return fmt.Errorf("session start failed: %s", ee.Message)
@@ -428,6 +499,15 @@ func (sc *SessionClient) SendTrim(turnIdx int) error {
 	})
 }
 
+// SendMarkRead tells the daemon the user is viewing this session: the
+// persisted unread flag is cleared. Sent by the TUI when a session gains
+// focus and when a turn completes while focused.
+func (sc *SessionClient) SendMarkRead() error {
+	return sc.sendCommand(protocol.SessionCommand{
+		Type: "session.mark_read",
+	})
+}
+
 // SendCancel cancels the current work.
 func (sc *SessionClient) SendCancel() error {
 	return sc.sendCommand(protocol.SessionCommand{
@@ -517,8 +597,8 @@ type InstanceClient struct {
 // RegisterInstance dials the daemon and registers this process as an attached
 // instance, returning a handle whose Close ends the registration. mode is
 // advisory ("tui" | "headless"). On any failure it returns an error and the
-// caller may simply proceed without registration (the daemon then can't
-// exit-with-clients on this process, which is a safe degradation).
+// caller may simply proceed without registration — the count is observability
+// only (web UI vitals, logging).
 func RegisterInstance(socketPath, authToken, mode string) (*InstanceClient, error) {
 	conn, err := net.Dial("unix", socketPath)
 	if err != nil {

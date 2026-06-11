@@ -30,6 +30,7 @@ type configWatcher struct {
 	server   *Server
 	wfPath   string
 	langPath string
+	jobsDir  string
 	w        *fsnotify.Watcher
 
 	mu       sync.Mutex
@@ -69,6 +70,21 @@ func (s *Server) startConfigWatcher() {
 		w:        w,
 		debounce: make(map[string]*time.Timer),
 	}
+
+	// Hot-reload the scheduled-jobs spec directory too, when the scheduler is
+	// running: writing ~/.vix/jobs/<id>.json (by hand or by the model) takes
+	// effect without a daemon restart.
+	if s.jobScheduler != nil {
+		jobsDir := filepath.Join(s.homeVixDir, "jobs")
+		if err := os.MkdirAll(jobsDir, 0o755); err == nil {
+			if err := w.Add(jobsDir); err == nil {
+				cw.jobsDir = jobsDir
+			} else {
+				LogError("config watcher: cannot watch %s: %v", jobsDir, err)
+			}
+		}
+	}
+
 	go cw.run(s.serverCtx)
 	LogInfo("config watcher: watching %s", dir)
 }
@@ -92,6 +108,10 @@ func (cw *configWatcher) run(ctx context.Context) {
 				cw.schedule(cw.wfPath, cw.reloadWorkflows)
 			case cw.langPath:
 				cw.schedule(cw.langPath, cw.reloadLanguages)
+			default:
+				if cw.jobsDir != "" && filepath.Dir(filepath.Clean(ev.Name)) == cw.jobsDir {
+					cw.schedule(cw.jobsDir, cw.reloadJobs)
+				}
 			}
 		case err, ok := <-cw.w.Errors:
 			if !ok {
@@ -140,4 +160,12 @@ func (cw *configWatcher) reloadLanguages() {
 	brain.ReloadLanguageMap(paths)
 	lsp.ReloadPool(cw.langPath)
 	LogInfo("config watcher: reloaded languages from %s", cw.langPath)
+}
+
+// reloadJobs asks the scheduler to re-read the job spec directory.
+func (cw *configWatcher) reloadJobs() {
+	if cw.server.jobScheduler != nil {
+		LogInfo("config watcher: job specs changed, reloading scheduler")
+		cw.server.jobScheduler.Reload()
+	}
 }

@@ -9,6 +9,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/get-vix/vix/internal/config"
+	"github.com/get-vix/vix/internal/protocol"
 	"github.com/get-vix/vix/internal/update"
 )
 
@@ -51,7 +52,10 @@ var sessionsSpinnerStyle = lipgloss.NewStyle().Foreground(colorPrimary)
 // renderSessionsView renders the sessions list overview. spinnerFrame is the
 // current loading-spinner glyph (empty when the spinner is inactive); it is
 // shown in a busy session's leading-indicator slot in place of the unread dot.
-func renderSessionsView(sessions []*SessionState, width, height int, s Styles, selectedRow int, spinnerFrame string) string {
+// vixSessions are the persisted vix-initiated records (job runs, alerts),
+// rendered as their own group below the live sessions; the selection index
+// space covers live rows first, then vix rows.
+func renderSessionsView(sessions []*SessionState, vixSessions []protocol.SessionSummary, width, height int, s Styles, selectedRow int, spinnerFrame string) string {
 	const colSession = 10
 	const colRunning = 10
 
@@ -155,6 +159,51 @@ func renderSessionsView(sessions []*SessionState, width, height int, s Styles, s
 			rows = append(rows, "  "+plainCols)
 		}
 		rowIdx++
+	}
+
+	// Vix-initiated group: persisted job runs and alerts, openable (enter) or
+	// dismissable (x) without being live sessions.
+	if len(vixSessions) > 0 {
+		rows = append(rows, "", s.TabActiveStyle.Render("  Vix-initiated"))
+		for _, sum := range vixSessions {
+			idCol := sum.ID
+			if dash := strings.Index(idCol, "-"); dash >= 0 {
+				idCol = idCol[:dash]
+			} else if len(idCol) > colSession {
+				idCol = idCol[:colSession]
+			}
+
+			badge := ""
+			if sum.Trigger != nil && sum.Trigger.Ref != "" {
+				badge = sum.Trigger.Ref
+			}
+			status := sum.JobStatus
+			if status == "" {
+				status = "alert"
+			}
+			msgCol := badge + " · " + status
+			if sum.FirstMessage != "" {
+				msgCol += "  " + sum.FirstMessage
+			}
+			if len(msgCol) > colMessage {
+				msgCol = msgCol[:colMessage-1] + "…"
+			}
+
+			ranCol := "—"
+			if t, err := time.Parse(time.RFC3339, sum.StartedAt); err == nil {
+				ranCol = formatRunningTime(time.Since(t)) + " ago"
+			}
+
+			plainCols := fmt.Sprintf("%-*s  %-*s  %-*s", colSession, idCol, colMessage, msgCol, colRunning, ranCol) + strings.Repeat(" ", badgeVisible)
+			if rowIdx == selectedRow {
+				rows = append(rows, s.TabAlertStyle.Render("  "+plainCols))
+			} else if sum.Unread {
+				rows = append(rows, unreadDotStyle.Render("●")+" "+plainCols)
+			} else {
+				rows = append(rows, "  "+plainCols)
+			}
+			rowIdx++
+		}
 	}
 
 	content := strings.Join(rows, "\n")

@@ -285,6 +285,35 @@
           "type": "tool"
         }
       }
+    },
+    {
+      "name": "heartbeat",
+      "display_in_tui": false,
+      "budget": {
+        "max_iterations": 5,
+        "max_seconds": 480
+      },
+      "entry_point": {
+        "id": "check",
+        "params": {
+          "instructions": "$(workflow.prompt)"
+        }
+      },
+      "steps": {
+        "check": {
+          "type": "agent",
+          "agent": "general",
+          "effort": "low",
+          "explanation": "Heartbeat check",
+          "input_params": {
+            "instructions": {
+              "description": "The heartbeat whiteboard contents plus the HEARTBEAT_OK contract"
+            }
+          },
+          "prompt": "$(instructions)",
+          "stream": true
+        }
+      }
     }
   ]
 }

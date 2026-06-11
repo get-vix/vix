@@ -46,6 +46,18 @@ type sessionRecord struct {
 	StartedAt     time.Time `json:"started_at"`
 	LastRequestAt time.Time `json:"last_request_at,omitempty"`
 
+	// Provenance: empty Origin = user-started; "vix" = daemon-initiated
+	// (scheduled job run, synthetic alert). Trigger records what fired it.
+	Origin  string                `json:"origin,omitempty"`
+	Trigger *protocol.TriggerInfo `json:"trigger,omitempty"`
+	// JobStatus is the finished run's status (ok | error | timeout) for
+	// vix-initiated records; empty for user sessions and synthetic alerts.
+	JobStatus string `json:"job_status,omitempty"`
+	// Unread is the session-global "content the user hasn't seen" flag. Set
+	// on turn/run completion, cleared by session.mark_read. Absent on legacy
+	// records (= read), keeping upgrades quiet.
+	Unread bool `json:"unread,omitempty"`
+
 	TotalInputTokens  int64 `json:"total_input_tokens,omitempty"`
 	TotalOutputTokens int64 `json:"total_output_tokens,omitempty"`
 	TotalCacheRead    int64 `json:"total_cache_read,omitempty"`
@@ -122,7 +134,18 @@ func loadOpenSessionRecord(paths config.VixPaths, id string) (sessionRecord, boo
 // listOpenSessionRecords returns every parseable record in the open/ directory.
 // Unreadable/corrupt files are skipped rather than failing the whole listing.
 func listOpenSessionRecords(paths config.VixPaths) []sessionRecord {
-	dir := paths.SessionsOpen()
+	out := listSessionRecordsIn(paths.SessionsOpen())
+	// Creation order (oldest first) so the TUI displays sessions in the order
+	// the user started them.
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].StartedAt.Before(out[j].StartedAt)
+	})
+	return out
+}
+
+// listSessionRecordsIn reads every parseable record in dir. Unreadable or
+// corrupt files are skipped.
+func listSessionRecordsIn(dir string) []sessionRecord {
 	if dir == "" {
 		return nil
 	}
@@ -145,13 +168,65 @@ func listOpenSessionRecords(paths config.VixPaths) []sessionRecord {
 		}
 		out = append(out, rec)
 	}
-	// Creation order (oldest first) so the TUI displays sessions in the order
-	// the user started them.
-	sort.SliceStable(out, func(i, j int) bool {
-		return out[i].StartedAt.Before(out[j].StartedAt)
-	})
 	return out
 }
+
+// Job-run retention defaults: open/ keeps the newest few runs per job (the
+// "latest runs at a glance" view), closed/ keeps a deeper history.
+const (
+	jobRunsOpenKeep   = 3
+	jobRunsClosedKeep = 10
+)
+
+// sweepJobRunRecords enforces per-job retention after a run persists.
+// open/: the newest jobRunsOpenKeep vix-initiated records for jobRef stay;
+// older successful ones are auto-dismissed to closed/. Failed runs (job_status
+// error/timeout) and synthetic alerts (no job_status) are exempt — a failure
+// never slides out of sight on its own; only the user dismisses it.
+// closed/: the newest jobRunsClosedKeep records for jobRef stay; older ones
+// are deleted. This doubles as the job's run history depth.
+func sweepJobRunRecords(paths config.VixPaths, jobRef string) {
+	forJob := func(recs []sessionRecord) []sessionRecord {
+		var out []sessionRecord
+		for _, r := range recs {
+			if r.Origin == "vix" && r.Trigger != nil && r.Trigger.Ref == jobRef {
+				out = append(out, r)
+			}
+		}
+		// Newest first.
+		sort.SliceStable(out, func(i, j int) bool {
+			return out[i].StartedAt.After(out[j].StartedAt)
+		})
+		return out
+	}
+
+	open := forJob(listSessionRecordsIn(paths.SessionsOpen()))
+	if len(open) > jobRunsOpenKeep {
+		for _, r := range open[jobRunsOpenKeep:] {
+			// Failures, alerts, and anything the user hasn't seen yet wait
+			// for an explicit dismissal; only read, successful runs age out.
+			if r.JobStatus != StatusOKRecord || r.Unread {
+				continue
+			}
+			if err := moveSessionToClosed(paths, r.ID); err != nil {
+				LogError("job retention: move %s to closed: %v", r.ID, err)
+			}
+		}
+	}
+
+	closed := forJob(listSessionRecordsIn(paths.SessionsClosed()))
+	if len(closed) > jobRunsClosedKeep {
+		for _, r := range closed[jobRunsClosedKeep:] {
+			p := sessionRecordPath(paths.SessionsClosed(), r.ID)
+			if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+				LogError("job retention: delete %s: %v", r.ID, err)
+			}
+		}
+	}
+}
+
+// StatusOKRecord is the job_status value marking a successful run record.
+const StatusOKRecord = "ok"
 
 // moveSessionToClosed moves a record from open/ to closed/. It is invoked on an
 // explicit user close (the "x" action), never on a bare disconnect. A no-op
@@ -290,6 +365,10 @@ func (r sessionRecord) summary() protocol.SessionSummary {
 		CWD:          r.CWD,
 		Model:        r.Model,
 		FirstMessage: r.firstUserMessage(),
+		Origin:       r.Origin,
+		Trigger:      r.Trigger,
+		JobStatus:    r.JobStatus,
+		Unread:       r.Unread,
 	}
 	if !r.StartedAt.IsZero() {
 		s.StartedAt = r.StartedAt.Format(time.RFC3339)
@@ -329,6 +408,10 @@ func (s *Session) buildRecord() sessionRecord {
 		ActivePlan:        plan,
 		StartedAt:         s.startTime,
 		LastRequestAt:     s.lastRequestAt,
+		Origin:            s.origin,
+		Trigger:           s.trigger,
+		JobStatus:         s.jobStatus,
+		Unread:            s.unread,
 		TotalInputTokens:  s.totalInputTokens,
 		TotalOutputTokens: s.totalOutputTokens,
 		TotalCacheRead:    s.totalCacheRead,
@@ -359,6 +442,9 @@ func (s *Session) seedFromRecord(rec *sessionRecord) {
 	s.activePlan = rec.ActivePlan
 	s.parentID = rec.ParentID
 	s.forkTurnIdx = rec.ForkTurnIdx
+	s.origin = rec.Origin
+	s.trigger = rec.Trigger
+	s.unread = rec.Unread
 	s.sessionMode = rec.SessionMode
 	if s.sessionMode == "" {
 		s.sessionMode = "chat"

@@ -7,13 +7,15 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"github.com/get-vix/vix/internal/config"
-	"github.com/get-vix/vix/internal/protocol"
 	"net"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/get-vix/vix/internal/config"
+	"github.com/get-vix/vix/internal/daemon/jobs"
+	"github.com/get-vix/vix/internal/protocol"
 )
 
 // HandlerFunc is the type for daemon request handlers.
@@ -64,23 +66,28 @@ type Server struct {
 	subscribers  []chan struct{}
 	subscriberMu sync.Mutex
 
-	// Instance counting + exit-with-clients. Each vix process (TUI or headless)
-	// holds one long-lived "instance.register" connection for its lifetime, so
+	// Instance counting. Each vix process (TUI or headless) holds one
+	// long-lived "instance.register" connection for its lifetime, so
 	// instanceCount tracks how many vix processes are attached to this daemon.
-	// When exitWithClients is set, the daemon shuts itself down once the count
-	// returns to 0 after having seen at least one instance (everHadInstance) —
-	// guarded by a grace period so a quick quit→relaunch doesn't kill it. A
-	// daemon launched directly (vixd) leaves exitWithClients false and runs
-	// until signalled.
-	exitWithClients bool
-	instanceMu      sync.Mutex
-	instanceCount   int
-	everHadInstance bool
-	exitGraceGen    int // generation guard for the grace timer
+	// Purely observability (web UI vitals, logging): the daemon runs until
+	// signalled or told to stop, regardless of attached instances.
+	instanceMu    sync.Mutex
+	instanceCount int
+
+	// version is the daemon build version (vixd's main.Version). Sessions from
+	// clients with a different version are refused (see handleSession). Empty
+	// in in-process test embeddings, which disables the gate.
+	version string
 
 	// cancel cancels serverCtx; set in ListenAndServe so internal triggers
-	// (e.g. exit-with-clients) can initiate a graceful shutdown.
+	// (QuitAll — in-app update or `vix daemon stop`) can initiate a graceful
+	// shutdown.
 	cancel context.CancelFunc
+
+	// jobScheduler is the scheduled-jobs engine, nil when disabled (feature
+	// flag, VIX_DISABLE_JOBS, or no home directory). Set before ListenAndServe
+	// via StartJobScheduler; the config watcher uses it for hot reload.
+	jobScheduler *jobs.Scheduler
 
 	// Update status: the latest GitHub release seen by the once-per-day check,
 	// versus the running daemon Version. Populated by a background goroutine in
@@ -161,69 +168,39 @@ func NewServer(sockPath string, cred config.Credential, sessionID, model string,
 	return s
 }
 
-// SetExitWithClients configures whether the daemon shuts itself down once the
-// last attached vix instance disconnects (after a grace period). Off by default
-// so a directly-launched vixd runs until signalled; vix sets it when it spawns a
-// daemon. Must be called before ListenAndServe.
-func (s *Server) SetExitWithClients(v bool) {
-	s.exitWithClients = v
+// SetVersion records the daemon build version. Sessions started by clients
+// whose version differs are refused (hard gate, see handleSession). Must be
+// called before ListenAndServe. Leaving it unset (in-process test embeddings)
+// disables the gate.
+func (s *Server) SetVersion(v string) {
+	s.version = v
 }
 
-// exitGracePeriod is how long the daemon waits after its last vix instance
-// disconnects before shutting down (when exitWithClients is set). The grace
-// absorbs a quick quit→relaunch or a transient instance-channel re-open without
-// tearing down a daemon another client is about to reuse. It is a var so tests
-// can shorten it.
-var exitGracePeriod = 3 * time.Second
+// Version returns the daemon build version recorded via SetVersion.
+func (s *Server) Version() string {
+	return s.version
+}
 
 // instanceConnected records a newly attached vix instance.
 func (s *Server) instanceConnected() {
 	s.instanceMu.Lock()
 	s.instanceCount++
-	s.everHadInstance = true
-	s.exitGraceGen++ // cancel any pending grace timer: we have a client again
 	n := s.instanceCount
 	s.instanceMu.Unlock()
 	LogInfo("vix instance connected (now %d attached)", n)
 	s.notifySubscribers()
 }
 
-// instanceDisconnected records a detached vix instance and, when configured,
-// arms the exit-with-clients grace timer if none remain.
+// instanceDisconnected records a detached vix instance.
 func (s *Server) instanceDisconnected() {
 	s.instanceMu.Lock()
 	if s.instanceCount > 0 {
 		s.instanceCount--
 	}
 	n := s.instanceCount
-	arm := s.exitWithClients && s.everHadInstance && n == 0
-	s.exitGraceGen++
-	gen := s.exitGraceGen
 	s.instanceMu.Unlock()
 	LogInfo("vix instance disconnected (now %d attached)", n)
 	s.notifySubscribers()
-	if arm {
-		s.armExitGrace(gen)
-	}
-}
-
-// armExitGrace schedules a shutdown after exitGracePeriod, unless a new instance
-// connects (or another disconnect re-arms) in the meantime — detected via the
-// generation guard. Fires on a timer so a quick relaunch keeps the daemon alive.
-func (s *Server) armExitGrace(gen int) {
-	LogInfo("No vix instances attached — exiting in %s unless one reconnects.", exitGracePeriod)
-	time.AfterFunc(exitGracePeriod, func() {
-		s.instanceMu.Lock()
-		stale := gen != s.exitGraceGen || s.instanceCount > 0
-		s.instanceMu.Unlock()
-		if stale {
-			return
-		}
-		LogInfo("No vix instances attached for %s — shutting down.", exitGracePeriod)
-		if s.cancel != nil {
-			s.cancel()
-		}
-	})
 }
 
 // LogAccess logs a tool access event. Safe to call even if accessDB is nil.
@@ -263,10 +240,104 @@ func (s *Server) authOK(token string) bool {
 	return subtle.ConstantTimeCompare([]byte(token), []byte(s.authToken)) == 1
 }
 
+// EnableJobScheduler constructs the scheduled-jobs engine over the global job
+// store (~/.vix/jobs). Must be called before ListenAndServe, which starts the
+// timer loop; the config watcher hot-reloads the spec directory. No-op when
+// the home directory is unavailable.
+func (s *Server) EnableJobScheduler() {
+	paths := config.NewVixPaths("", s.homeVixDir, "")
+	dir := paths.Jobs()
+	statePath := paths.JobsState()
+	if dir == "" || statePath == "" {
+		return
+	}
+	// First enable (no jobs directory yet): seed the default heartbeat job and
+	// its whiteboard stub. One-time — users may edit or disable both freely.
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			LogError("jobs: cannot create %s: %v", dir, err)
+			return
+		}
+		seedDefaultHeartbeat(dir, paths.HeartbeatMD())
+	} else if err := os.MkdirAll(dir, 0o755); err != nil {
+		LogError("jobs: cannot create %s: %v", dir, err)
+		return
+	}
+	notify := func(eventType string, data any) {
+		s.BroadcastEvent(protocol.SessionEvent{Type: eventType, Data: data})
+		s.notifySubscribers()
+	}
+	s.jobScheduler = jobs.NewScheduler(jobs.NewStore(dir, statePath), s.JobRunner(), notify, config.JobsMaxConcurrentRuns())
+}
+
+// seedDefaultHeartbeat writes the shipped heartbeat job spec and the
+// effectively-empty heartbeat.md stub. The stub is headings/comments only, so
+// the job fires, skips in microseconds, and spends zero tokens until the user
+// writes a real task into the file.
+func seedDefaultHeartbeat(jobsDir, heartbeatPath string) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return
+	}
+	job := jobs.Spec{
+		ID:      "heartbeat",
+		Name:    "Heartbeat",
+		Enabled: true,
+		Trigger: jobs.Trigger{Type: "cron", Expr: "*/30 9-19 * * *"},
+		Prompt: "$(file:.vix/heartbeat.md)\n\n" +
+			"Follow it strictly. Do not infer tasks from prior conversations. " +
+			"If nothing needs attention, reply HEARTBEAT_OK.",
+		Workflow:    "heartbeat",
+		CWD:         home,
+		SkipIfEmpty: true,
+		Timeout:     "10m",
+		CreatedBy:   "vix",
+	}
+	data, _ := json.MarshalIndent(job, "", "  ")
+	target := filepath.Join(jobsDir, "heartbeat.json")
+	if err := os.WriteFile(target, append(data, '\n'), 0o644); err != nil {
+		LogError("jobs: seed heartbeat job: %v", err)
+	} else {
+		LogInfo("jobs: seeded default heartbeat job at %s", target)
+	}
+
+	if heartbeatPath == "" {
+		return
+	}
+	if _, err := os.Stat(heartbeatPath); err == nil {
+		return // user already has one
+	}
+	stub := `# Heartbeat
+
+<!--
+vix reads this file on the "heartbeat" job's schedule (every 30 minutes,
+9:00-19:59 by default — edit ~/.vix/jobs/heartbeat.json to change it).
+
+While this file only contains headings and comments, the check is skipped
+BEFORE any model call: zero tokens spent. Write a task below to put the
+heartbeat to work, for example:
+
+- Check git status in ~/Developer/myproject; if there are uncommitted
+  changes older than a day, summarise them.
+- Read the last 20 lines of ~/logs/backup.log and alert me if the most
+  recent backup failed.
+
+When a check finds nothing to report, the agent answers HEARTBEAT_OK and the
+run leaves no trace. Anything else shows up in the Sessions tab under
+"Vix-initiated".
+-->
+`
+	if err := os.WriteFile(heartbeatPath, []byte(stub), 0o644); err != nil {
+		LogError("jobs: seed heartbeat.md: %v", err)
+	} else {
+		LogInfo("jobs: seeded heartbeat whiteboard at %s", heartbeatPath)
+	}
+}
+
 // ListenAndServe starts the Unix socket server and blocks until ctx is cancelled.
 func (s *Server) ListenAndServe(ctx context.Context) error {
-	// Wrap the incoming context so internal triggers (exit-with-clients) can
-	// cancel the server the same way an external signal does.
+	// Wrap the incoming context so internal triggers (QuitAll) can cancel the
+	// server the same way an external signal does.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	s.cancel = cancel
@@ -290,6 +361,12 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 
 	// Hot-reload workflow.json / languages.json on save.
 	s.startConfigWatcher()
+
+	// Scheduled-jobs engine (when enabled): timer loop with startup catch-up.
+	if s.jobScheduler != nil {
+		go s.jobScheduler.Start(ctx)
+		LogInfo("jobs: scheduler started")
+	}
 
 	// One-shot stale trim of closed session records in the default global
 	// store (~/.vix/sessions/closed). Retention comes from settings.json
@@ -411,8 +488,7 @@ func (s *Server) handleClient(conn net.Conn) {
 // handleInstance holds an instance.register connection open for the lifetime of
 // a vix process, counting it as an attached instance. It blocks reading until
 // the peer closes the connection (clean exit or process death both deliver EOF
-// on a local Unix socket), then records the disconnect — which may arm the
-// exit-with-clients grace timer if no instances remain.
+// on a local Unix socket), then records the disconnect.
 func (s *Server) handleInstance(conn net.Conn, scanner *bufio.Scanner) {
 	s.instanceConnected()
 	defer s.instanceDisconnected()
@@ -427,6 +503,23 @@ func (s *Server) handleSession(conn net.Conn, scanner *bufio.Scanner, startCmd p
 	// Parse session start data
 	var startData protocol.SessionStartData
 	json.Unmarshal(startCmd.Data, &startData)
+
+	// Version gate: a long-lived daemon must never serve a client from a
+	// different build. Exact match required; "dev" on either side skips the
+	// check (local development); empty daemon version means an in-process test
+	// embedding (gate off). Old clients that predate the gate send no
+	// ClientVersion and are refused like any other mismatch.
+	if s.version != "" && s.version != "dev" && startData.ClientVersion != "dev" && startData.ClientVersion != s.version {
+		LogError("Session refused: client version %q != daemon version %q", startData.ClientVersion, s.version)
+		s.writeEvent(conn, protocol.SessionEvent{
+			Type: "event.error",
+			Data: protocol.EventError{
+				Message: fmt.Sprintf("vix %s cannot talk to vixd %s. Restart the daemon: vix daemon stop && vix daemon start", startData.ClientVersion, s.version),
+				Code:    "version_mismatch",
+			},
+		})
+		return
+	}
 
 	cwd := startData.CWD
 	if cwd == "" {

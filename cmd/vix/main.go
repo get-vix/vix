@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -31,6 +32,12 @@ import (
 var Version = "dev"
 
 func main() {
+	// Subcommand dispatch before flag parsing: `vix daemon start|stop|status`
+	// manages the long-lived vixd process explicitly (vix never auto-spawns it).
+	if len(os.Args) >= 2 && os.Args[1] == "daemon" {
+		os.Exit(runDaemonCommand(os.Args[2:]))
+	}
+
 	versionFlag := flag.Bool("version", false, "Print version and exit")
 	forceInit := flag.Bool("force-init", false, "Delete and re-create the .vix directory")
 	testMode := flag.Bool("test", false, "Fill chat with fake data for UI testing")
@@ -42,28 +49,10 @@ func main() {
 	disableWritePermission := flag.Bool("disable-automatic-write-permission", false, "Require user confirmation for write_file, edit_file, and delete_file calls (by default, writes execute without confirmation)")
 	disableDirAccess := flag.Bool("disable-automatic-directory-access", false, "Restrict tool calls to paths within the working directory (by default, all paths are accessible)")
 	vfsFlag := flag.Bool("vfs", false, "Run a VFS command (e.g. vix --vfs read_file <path>)")
-	logDir := flag.String("log-dir", "", "Directory for log files (vixd.log, vix-thinking.log, vix-bash-history.log, vix-jobs/). Defaults to the system temp dir. Forwarded to the spawned vixd.")
-	socketPath := flag.String("socket-path", "", "Unix socket path for the vix↔vixd connection. Defaults to /tmp/vixd.sock. Forwarded to the spawned vixd.")
+	socketPath := flag.String("socket-path", "", "Unix socket path for the vix↔vixd connection. Defaults to /tmp/vixd.sock. Must match the running vixd.")
 	authTokenPath := flag.String("auth-token-path", "", "Path to a file holding the shared-secret token to authenticate every socket message. Must match the daemon's -auth-token-path. Empty disables auth on this client; the daemon must also be unauthenticated for that to work.")
 	pprofPort := flag.Int("pprof-port", 0, "Port for the pprof HTTP server (GET /debug/pprof/*). 0 disables it. Env: VIX_PPROF_PORT.")
 	flag.Parse()
-
-	// Resolve --log-dir to an absolute path once so the value passed
-	// through to vixd matches what vix uses for the daemon stdout
-	// redirect. Empty stays empty (default behaviour preserved).
-	resolvedLogDir := ""
-	if *logDir != "" {
-		abs, err := filepath.Abs(*logDir)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: cannot resolve --log-dir %q: %v\n", *logDir, err)
-			os.Exit(1)
-		}
-		if err := os.MkdirAll(abs, 0o755); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: cannot create --log-dir %q: %v\n", abs, err)
-			os.Exit(1)
-		}
-		resolvedLogDir = abs
-	}
 
 	if v := os.Getenv("VIX_PPROF_PORT"); v != "" && *pprofPort == 0 {
 		if p, err := strconv.Atoi(v); err == nil {
@@ -265,83 +254,89 @@ func main() {
 	}
 
 	if !*testMode {
+		daemon.SetClientVersion(Version)
 		client := daemon.NewClient(cfg.SocketPath)
 		client.SetAuthToken(authToken)
 		if !client.Ping() {
-			// No daemon answered the ping — spawn a detached, long-lived daemon
-			// (silently, in both interactive and headless mode). It is NOT tied
-			// to this client's lifecycle: it runs in its own session (setsid) and
-			// survives this process exiting, so other clients sharing it keep
-			// working. It self-terminates once its last attached vix instance
-			// disconnects (--exit-with-clients; see startDaemon). An already
-			// running daemon is reused.
-			if _, err := startDaemon(apiKey, resolvedLogDir, cfg.SocketPath, *authTokenPath); err != nil {
-				fmt.Fprintf(os.Stderr, "Error starting daemon: %v\n", err)
-				os.Exit(1)
+			// vix never spawns the daemon: surface an actionable error instead.
+			if _, statErr := os.Stat(cfg.SocketPath); statErr == nil {
+				fmt.Fprintf(os.Stderr, "Error: vixd is not responding (stale socket at %s — a previous daemon may have exited uncleanly).\nStart it with: vix daemon start\n", cfg.SocketPath)
+			} else {
+				fmt.Fprintf(os.Stderr, "Error: vixd is not running.\nStart it with: vix daemon start\n")
 			}
-			if !waitForDaemon(client, 5*time.Second) {
-				fmt.Fprintf(os.Stderr, "Error: daemon did not start in time\n")
+			os.Exit(1)
+		}
+
+		// Version gate: refuse to talk to a daemon from a different build. The
+		// daemon enforces the same rule on session start; this client-side check
+		// fires first and produces the friendlier message. "dev" on either side
+		// skips the gate (local development); an empty daemon version means a
+		// pre-gate build, which is a mismatch for any released client.
+		daemonVersion, _ := client.DaemonVersion()
+		if Version != "dev" && daemonVersion != "dev" && daemonVersion != Version {
+			dv := daemonVersion
+			if dv == "" {
+				dv = "(unknown, pre-gate build)"
+			}
+			fmt.Fprintf(os.Stderr, "Error: vix %s cannot talk to vixd %s.\nRestart the daemon: vix daemon stop && vix daemon start\n", Version, dv)
+			os.Exit(1)
+		}
+
+		// Register this vix process as an attached instance for its whole
+		// lifetime. The daemon counts these for observability (web UI vitals,
+		// logging). Best-effort: if registration fails we still run.
+		instanceMode := "tui"
+		if *prompt != "" {
+			instanceMode = "headless"
+		}
+		if ic, err := daemon.RegisterInstance(cfg.SocketPath, authToken, instanceMode); err == nil {
+			defer ic.Close()
+		}
+
+		session = daemon.NewSessionClient(cfg.SocketPath)
+		session.SetAuthToken(authToken)
+
+		// TUI mode: reopen previously-open sessions for this cwd. Sessions
+		// already live in the daemon (Attached) are owned by another vix
+		// instance — skip them, since exclusive ownership would refuse the
+		// attach anyway. The first non-attached session becomes the initial
+		// client; the rest are attached by the TUI on Init. Headless mode
+		// (prompt set) always starts fresh.
+		attached := false
+		if *prompt == "" {
+			if sums, err := client.ListSessions(cfg.CWD, cfg.ConfigDir); err == nil {
+				var claimable []protocol.SessionSummary
+				for _, sum := range sums {
+					// Skip sessions another instance owns, and vix-initiated
+					// records (job runs / alerts): those are browsed from the
+					// sessions list, never auto-reopened as chat tabs.
+					if !sum.Attached && sum.Origin != "vix" {
+						claimable = append(claimable, sum)
+					}
+				}
+				if len(claimable) > 0 {
+					if err := session.Attach(cfg.CWD, cfg.ConfigDir, cfg.Model, cfg.ForceInit, !*disableWritePermission, !*disableDirAccess, false, claimable[0].ID); err == nil {
+						restoreSessions = claimable[1:]
+						attached = true
+						initialAttached = true
+					}
+				}
+			}
+		}
+		if !attached {
+			if err := session.Connect(cfg.CWD, cfg.ConfigDir, cfg.Model, cfg.ForceInit, !*disableWritePermission, !*disableDirAccess, *prompt != ""); err != nil {
+				fmt.Fprintf(os.Stderr, "Error connecting to daemon: %v\n", err)
 				os.Exit(1)
 			}
 		}
-
-		// Connect session if daemon is running
-		if client.Ping() {
-			// Register this vix process as an attached instance for its whole
-			// lifetime. The daemon counts these (independently of sessions) so a
-			// vix-spawned daemon can shut down once its last client leaves
-			// (--exit-with-clients). Best-effort: if registration fails we still
-			// run — the daemon just won't auto-exit on our account.
-			instanceMode := "tui"
-			if *prompt != "" {
-				instanceMode = "headless"
-			}
-			if ic, err := daemon.RegisterInstance(cfg.SocketPath, authToken, instanceMode); err == nil {
-				defer ic.Close()
-			}
-
-			session = daemon.NewSessionClient(cfg.SocketPath)
-			session.SetAuthToken(authToken)
-
-			// TUI mode: reopen previously-open sessions for this cwd. Sessions
-			// already live in the daemon (Attached) are owned by another vix
-			// instance — skip them, since exclusive ownership would refuse the
-			// attach anyway. The first non-attached session becomes the initial
-			// client; the rest are attached by the TUI on Init. Headless mode
-			// (prompt set) always starts fresh.
-			attached := false
-			if *prompt == "" {
-				if sums, err := client.ListSessions(cfg.CWD, cfg.ConfigDir); err == nil {
-					var claimable []protocol.SessionSummary
-					for _, sum := range sums {
-						if !sum.Attached {
-							claimable = append(claimable, sum)
-						}
-					}
-					if len(claimable) > 0 {
-						if err := session.Attach(cfg.CWD, cfg.ConfigDir, cfg.Model, cfg.ForceInit, !*disableWritePermission, !*disableDirAccess, false, claimable[0].ID); err == nil {
-							restoreSessions = claimable[1:]
-							attached = true
-							initialAttached = true
-						}
-					}
-				}
-			}
-			if !attached {
-				if err := session.Connect(cfg.CWD, cfg.ConfigDir, cfg.Model, cfg.ForceInit, !*disableWritePermission, !*disableDirAccess, *prompt != ""); err != nil {
-					fmt.Fprintf(os.Stderr, "Error connecting to daemon: %v\n", err)
-					os.Exit(1)
-				}
-			}
-			// Headless sessions are one-shot: close the record explicitly so
-			// it isn't restored by the next TUI launch. TUI exits must NOT
-			// send session.close here — the bare disconnect leaves records in
-			// open/ so they restore on relaunch; an explicit close-all is
-			// handled by the quit dialog (closeSessionsForQuit) when the user
-			// opts in.
-			if *prompt != "" {
-				defer session.SendClose()
-			}
+		// Headless sessions are one-shot: close the record explicitly so
+		// it isn't restored by the next TUI launch. TUI exits must NOT
+		// send session.close here — the bare disconnect leaves records in
+		// open/ so they restore on relaunch; an explicit close-all is
+		// handled by the quit dialog (closeSessionsForQuit) when the user
+		// opts in.
+		if *prompt != "" {
+			defer session.SendClose()
 		}
 	}
 
@@ -373,6 +368,273 @@ func main() {
 	}
 }
 
+// runDaemonCommand implements the `vix daemon start|stop|status` subcommand
+// group. vix never auto-spawns vixd: this is the explicit management surface.
+// Returns the process exit code.
+func runDaemonCommand(args []string) int {
+	usage := func() {
+		fmt.Fprintf(os.Stderr, `Usage: vix daemon <start|stop|status|install|uninstall> [flags]
+
+  start      Launch vixd detached (no-op if already running)
+  stop       Coordinated shutdown: all attached vix instances quit, then vixd exits
+  status     Report whether vixd is running and its version
+  install    Register vixd to start at login (macOS LaunchAgent / Linux systemd user unit)
+  uninstall  Remove the login registration
+
+Flags:
+  -socket-path string      Unix socket path (env VIX_SOCKET_PATH, default /tmp/vixd.sock)
+  -log-dir string          Directory for vixd log files (start only)
+  -auth-token-path string  Shared-secret token file, must match the daemon's
+`)
+	}
+	if len(args) == 0 {
+		usage()
+		return 1
+	}
+	sub := args[0]
+
+	fs := flag.NewFlagSet("vix daemon "+sub, flag.ExitOnError)
+	logDir := fs.String("log-dir", "", "Directory for vixd log files (vixd.log, vix-thinking.log, vix-bash-history.log). Defaults to the system temp dir.")
+	socketPath := fs.String("socket-path", "", "Unix socket path for the vix↔vixd connection. Env: VIX_SOCKET_PATH. Default: /tmp/vixd.sock.")
+	authTokenPath := fs.String("auth-token-path", "", "Path to a file holding the shared-secret token. Must match the daemon's -auth-token-path.")
+	fs.Parse(args[1:])
+
+	sock := *socketPath
+	if sock == "" {
+		if v := os.Getenv("VIX_SOCKET_PATH"); v != "" {
+			sock = v
+		} else {
+			sock = "/tmp/vixd.sock"
+		}
+	}
+
+	authToken := ""
+	if *authTokenPath != "" {
+		raw, err := os.ReadFile(*authTokenPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: cannot read --auth-token-path %q: %v\n", *authTokenPath, err)
+			return 1
+		}
+		authToken = strings.TrimSpace(string(raw))
+		if authToken == "" {
+			fmt.Fprintf(os.Stderr, "Error: --auth-token-path %q is empty after trimming whitespace\n", *authTokenPath)
+			return 1
+		}
+	}
+
+	client := daemon.NewClient(sock)
+	client.SetAuthToken(authToken)
+
+	switch sub {
+	case "start":
+		if client.Ping() {
+			v, _ := client.DaemonVersion()
+			fmt.Printf("vixd is already running (version %s) on %s\n", orUnknown(v), sock)
+			return 0
+		}
+		resolvedLogDir := ""
+		if *logDir != "" {
+			abs, err := filepath.Abs(*logDir)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: cannot resolve --log-dir %q: %v\n", *logDir, err)
+				return 1
+			}
+			if err := os.MkdirAll(abs, 0o755); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: cannot create --log-dir %q: %v\n", abs, err)
+				return 1
+			}
+			resolvedLogDir = abs
+		}
+		apiKey, _ := config.ResolveProviderKey("anthropic")
+		if _, err := startDaemon(apiKey, resolvedLogDir, sock, *authTokenPath); err != nil {
+			fmt.Fprintf(os.Stderr, "Error starting vixd: %v\n", err)
+			return 1
+		}
+		if !waitForDaemon(client, 5*time.Second) {
+			fmt.Fprintf(os.Stderr, "Error: vixd did not start in time (check %s/vixd.log)\n", logFileDirOrTmp(resolvedLogDir))
+			return 1
+		}
+		v, _ := client.DaemonVersion()
+		fmt.Printf("vixd started (version %s) on %s\n", orUnknown(v), sock)
+		return 0
+
+	case "stop":
+		if !client.Ping() {
+			fmt.Println("vixd is not running")
+			return 0
+		}
+		if err := client.StopDaemon(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error stopping vixd: %v\n", err)
+			return 1
+		}
+		// Wait for the socket to actually go quiet so `stop && start` works.
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if !client.Ping() {
+				fmt.Println("vixd stopped")
+				return 0
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		fmt.Fprintf(os.Stderr, "Error: vixd did not stop in time\n")
+		return 1
+
+	case "status":
+		if !client.Ping() {
+			if _, err := os.Stat(sock); err == nil {
+				fmt.Printf("vixd is not responding (stale socket at %s)\n", sock)
+			} else {
+				fmt.Println("vixd is not running")
+			}
+			return 1
+		}
+		v, _ := client.DaemonVersion()
+		fmt.Printf("vixd is running (version %s) on %s\n", orUnknown(v), sock)
+		if Version != "dev" && v != "dev" && v != Version {
+			fmt.Printf("WARNING: this vix is %s — version mismatch, sessions will be refused.\nRestart the daemon: vix daemon stop && vix daemon start\n", Version)
+		}
+		return 0
+
+	case "install":
+		return installDaemonService()
+
+	case "uninstall":
+		return uninstallDaemonService()
+
+	default:
+		usage()
+		return 1
+	}
+}
+
+// orUnknown substitutes a placeholder for an empty version string (pre-gate
+// daemon builds report no version).
+func orUnknown(v string) string {
+	if v == "" {
+		return "unknown"
+	}
+	return v
+}
+
+// daemonServicePaths returns the login-service definition for this platform:
+// the file to write, its content, and the activation/deactivation commands.
+func daemonServicePaths() (path, content string, activate, deactivate []string, err error) {
+	daemonPath, err := findDaemon()
+	if err != nil {
+		return "", "", nil, nil, err
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", "", nil, nil, err
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		path = filepath.Join(home, "Library", "LaunchAgents", "com.getvix.vixd.plist")
+		content = fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key><string>com.getvix.vixd</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>%s</string>
+	</array>
+	<key>RunAtLoad</key><true/>
+	<key>KeepAlive</key><true/>
+	<key>StandardOutPath</key><string>%s</string>
+	<key>StandardErrorPath</key><string>%s</string>
+</dict>
+</plist>
+`, daemonPath, filepath.Join(os.TempDir(), "vixd.log"), filepath.Join(os.TempDir(), "vixd.log"))
+		activate = []string{"launchctl", "load", "-w", path}
+		deactivate = []string{"launchctl", "unload", "-w", path}
+		return path, content, activate, deactivate, nil
+	case "linux":
+		path = filepath.Join(home, ".config", "systemd", "user", "vixd.service")
+		content = fmt.Sprintf(`[Unit]
+Description=vix daemon
+
+[Service]
+ExecStart=%s
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+`, daemonPath)
+		activate = []string{"systemctl", "--user", "enable", "--now", "vixd.service"}
+		deactivate = []string{"systemctl", "--user", "disable", "--now", "vixd.service"}
+		return path, content, activate, deactivate, nil
+	default:
+		return "", "", nil, nil, fmt.Errorf("login-service install is not supported on %s", runtime.GOOS)
+	}
+}
+
+// installDaemonService registers vixd to start at login, printing exactly what
+// it will write and asking for confirmation first.
+func installDaemonService() int {
+	path, content, activate, _, err := daemonServicePaths()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 1
+	}
+	fmt.Printf("This will write:\n  %s\n\n%s\nand run: %s\n\nProceed? [y/N] ", path, content, strings.Join(activate, " "))
+	var answer string
+	fmt.Scanln(&answer)
+	if a := strings.ToLower(strings.TrimSpace(answer)); a != "y" && a != "yes" {
+		fmt.Println("Aborted.")
+		return 1
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 1
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 1
+	}
+	if runtime.GOOS == "linux" {
+		exec.Command("systemctl", "--user", "daemon-reload").Run()
+	}
+	if out, err := exec.Command(activate[0], activate[1:]...).CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error activating service: %v\n%s", err, out)
+		return 1
+	}
+	fmt.Println("Installed: vixd now starts at login and restarts on failure.")
+	fmt.Println("Remove with: vix daemon uninstall")
+	return 0
+}
+
+// uninstallDaemonService removes the login registration.
+func uninstallDaemonService() int {
+	path, _, _, deactivate, err := daemonServicePaths()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 1
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		fmt.Println("Not installed (nothing to remove).")
+		return 0
+	}
+	if out, err := exec.Command(deactivate[0], deactivate[1:]...).CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: deactivation failed: %v\n%s", err, out)
+	}
+	if err := os.Remove(path); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 1
+	}
+	fmt.Printf("Removed %s. The running daemon (if any) is untouched; stop it with: vix daemon stop\n", path)
+	return 0
+}
+
+// logFileDirOrTmp returns where the vixd.log redirect lands for a given
+// resolved --log-dir (empty means the system temp dir).
+func logFileDirOrTmp(logDir string) string {
+	if logDir != "" {
+		return logDir
+	}
+	return os.TempDir()
+}
+
 // findDaemon returns the path to the vixd binary.
 // It prefers the vixd sitting next to the current executable so the client
 // and daemon always come from the same build; an unrelated vixd earlier on
@@ -391,7 +653,7 @@ func findDaemon() (string, error) {
 	return "", fmt.Errorf("vixd not found next to the vix binary or in $PATH")
 }
 
-// startDaemon spawns the daemon process as a subprocess.
+// startDaemon spawns the daemon process, detached, for `vix daemon start`.
 // If apiKey is non-empty, it is injected into the subprocess environment.
 // The daemon's stdout and stderr are redirected to <logDir>/vixd.log so
 // that logs, panics, and crash traces are recoverable after the fact.
@@ -418,21 +680,12 @@ func startDaemon(apiKey, logDir, socketPath, authTokenPath string) (*exec.Cmd, e
 	if authTokenPath != "" {
 		args = append(args, "--auth-token-path", authTokenPath)
 	}
-	// A daemon spawned by vix is private to this instance, so it must not
-	// serve the mission-control web UI (which would otherwise contend for
-	// the fixed web port). Standalone `vixd` keeps serving it.
-	args = append(args, "--no-mission-control")
-	// A vix-spawned daemon is detached and long-lived (see SysProcAttr below),
-	// but it should not outlive the vix processes using it: --exit-with-clients
-	// makes it shut down shortly after the last attached vix instance leaves. A
-	// directly-launched vixd omits this and runs until signalled.
-	args = append(args, "--exit-with-clients")
 	cmd := exec.Command(daemonPath, args...)
 	// Detach the daemon from this client: start it in a new session (setsid) so
 	// it is not in the client's process group and is unaffected by terminal
 	// signals (SIGHUP on terminal close, SIGINT/SIGTERM to the foreground
-	// group). Combined with not killing it on exit, this makes the daemon a
-	// shared, long-lived process that outlives the instance that spawned it.
+	// group). The daemon is a shared, long-lived process that runs until
+	// signalled or stopped via `vix daemon stop`.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if apiKey != "" {
 		cmd.Env = append(os.Environ(), "ANTHROPIC_API_KEY="+apiKey)
