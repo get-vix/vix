@@ -49,6 +49,12 @@ type Pool struct {
 	failedAt   map[string]time.Time // languages that failed to start + when
 	rootDir    string
 	ctx        context.Context
+
+	// done is closed by Shutdown so the per-pool ctx watcher goroutine exits
+	// when the pool is replaced (InitPool is called on every brain.init);
+	// without it one watcher leaked per session for the daemon's lifetime.
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 var (
@@ -123,12 +129,18 @@ func InitPool(ctx context.Context, rootDir string, settingsPaths ...string) {
 		failedAt:   make(map[string]time.Time),
 		rootDir:    rootDir,
 		ctx:        ctx,
+		done:       make(chan struct{}),
 	}
 	globalPool = p
 
 	go func() {
-		<-ctx.Done()
-		p.Shutdown()
+		select {
+		case <-ctx.Done():
+			p.Shutdown()
+		case <-p.done:
+			// Pool replaced (Shutdown already ran); exit instead of parking
+			// on the daemon-lifetime ctx forever.
+		}
 	}()
 }
 
@@ -232,6 +244,8 @@ func (p *Pool) ConfiguredLanguages() []string {
 
 // Shutdown closes all running LSP clients.
 func (p *Pool) Shutdown() {
+	p.closeOnce.Do(func() { close(p.done) })
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
