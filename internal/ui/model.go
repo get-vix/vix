@@ -2319,15 +2319,19 @@ func (m *Model) applyEventToSession(idx int, event protocol.SessionEvent) []tea.
 		var chunk protocol.EventStreamChunk
 		json.Unmarshal(data, &chunk)
 		sess.assistantBuf += chunk.Text
-		sess.assistantRendered = m.mdRenderer.Render(sess.assistantBuf)
+		if time.Since(sess.lastStreamRender) >= streamRenderInterval {
+			sess.assistantRendered = m.mdRenderer.Render(sess.assistantBuf)
+			sess.lastStreamRender = time.Now()
+		}
 
 	case "event.thinking_chunk":
 		data := marshalData(event.Data)
 		var chunk protocol.EventThinkingChunk
 		json.Unmarshal(data, &chunk)
 		sess.thinkingBuf += chunk.Text
-		if sess.showThinking {
+		if sess.showThinking && time.Since(sess.lastThinkingRender) >= streamRenderInterval {
 			sess.thinkingRendered = renderThinkingText(sess.thinkingBuf, m.styles, m.mdRenderer.width+4)
+			sess.lastThinkingRender = time.Now()
 		}
 
 	case "event.stream_done":
@@ -2574,6 +2578,7 @@ func (m *Model) applyEventToSession(idx int, event protocol.SessionEvent) []tea.
 	case "event.clear":
 		m.flushSessionBuf(sess)
 		sess.chatMessages = nil
+		sess.chatCache.invalidate()
 		sess.pendingTools = nil
 		sess.inputTokens = 0
 		sess.outputTokens = 0
@@ -2681,33 +2686,44 @@ func (m Model) View() tea.View {
 	case TabKindChat:
 		// Chat content
 		innerWidth := layout.ChatWidth - 4
-		var chatContent string
-		if sess != nil && sess.awaitingReplay && !m.testMode {
+		contentHeight := layout.ChatHeight - 1
+
+		var allLines []string
+		var visualRowStart []int
+		switch {
+		case sess != nil && sess.awaitingReplay && !m.testMode:
 			// While waiting for the replay the spinner runs, which would
-			// otherwise make chatContent non-empty and bypass the placeholder.
-			chatContent = renderRestoringInline(innerWidth, layout.ChatHeight-1, m.styles, sess.thinkingAnim.View())
-		} else if sess != nil {
-			chatContent = buildRenderedChat(sess.chatMessages, m.styles, innerWidth)
+			// otherwise make the content non-empty and bypass the placeholder.
+			placeholder := renderRestoringInline(innerWidth, contentHeight, m.styles, sess.thinkingAnim.View())
+			allLines = strings.Split(placeholder, "\n")
+			visualRowStart = visualRowPrefix(allLines, innerWidth)
+		case sess != nil:
+			tail := ""
 			if sess.showThinking && sess.thinkingRendered != "" {
-				chatContent += sess.thinkingRendered + "\n"
+				tail += sess.thinkingRendered + "\n"
 			}
 			if sess.assistantRendered != "" {
-				chatContent += sess.assistantRendered
+				tail += sess.assistantRendered
 			} else if animFrame := sess.thinkingAnim.View(); animFrame != "" {
-				chatContent += animFrame + "\n"
+				tail += animFrame + "\n"
 			}
-		}
-		if chatContent == "" && !m.testMode {
-			chatContent = renderWelcomeInline(innerWidth, layout.ChatHeight-1, m.styles)
+			lines, rowStart := sess.cachedChatLines(m.styles, innerWidth)
+			if emptyChatLines(lines) && tail == "" && !m.testMode {
+				welcome := renderWelcomeInline(innerWidth, contentHeight, m.styles)
+				allLines = strings.Split(welcome, "\n")
+				visualRowStart = visualRowPrefix(allLines, innerWidth)
+			} else {
+				allLines, visualRowStart = combineTail(lines, rowStart, tail, innerWidth)
+			}
+		case !m.testMode:
+			welcome := renderWelcomeInline(innerWidth, contentHeight, m.styles)
+			allLines = strings.Split(welcome, "\n")
+			visualRowStart = visualRowPrefix(allLines, innerWidth)
+		default:
+			allLines = []string{""}
+			visualRowStart = []int{0, 1}
 		}
 
-		contentHeight := layout.ChatHeight - 1
-		allLines := strings.Split(chatContent, "\n")
-
-		visualRowStart := make([]int, len(allLines)+1)
-		for i, line := range allLines {
-			visualRowStart[i+1] = visualRowStart[i] + visualRows(line, innerWidth)
-		}
 		totalVisualRows := visualRowStart[len(allLines)]
 
 		chatScrollOffset := 0
@@ -2729,7 +2745,7 @@ func (m Model) View() tea.View {
 		accVisRows := 0
 		startLogical := endLogical
 		for startLogical > 0 {
-			rows := visualRows(allLines[startLogical-1], innerWidth)
+			rows := visualRowStart[startLogical] - visualRowStart[startLogical-1]
 			if accVisRows+rows > contentHeight {
 				break
 			}
@@ -2747,8 +2763,18 @@ func (m Model) View() tea.View {
 		} else {
 			chatBorderStyle = m.styles.ViewportBlurredStyle
 		}
-		chatBox := chatBorderStyle.Width(layout.ChatWidth).Height(layout.ChatHeight).
-			Render(strings.Join(chatLines, "\n"))
+		joined := strings.Join(chatLines, "\n")
+		var chatBox string
+		if sess != nil {
+			key := fmt.Sprintf("%d|%d|%t|", layout.ChatWidth, layout.ChatHeight, sess.focus == FocusChat) + joined
+			if key != sess.chatBoxKey {
+				sess.chatBoxKey = key
+				sess.chatBoxRendered = chatBorderStyle.Width(layout.ChatWidth).Height(layout.ChatHeight).Render(joined)
+			}
+			chatBox = sess.chatBoxRendered
+		} else {
+			chatBox = chatBorderStyle.Width(layout.ChatWidth).Height(layout.ChatHeight).Render(joined)
+		}
 		uv.NewStyledString(chatBox).Draw(canvas, image.Rect(0, y, layout.ChatWidth, y+layout.ChatHeight))
 
 		// Right panel
@@ -2965,6 +2991,7 @@ func (m *Model) handleCommandAction(action string, sess *SessionState) []tea.Cmd
 		if sess != nil {
 			m.flushSessionBuf(sess)
 			sess.chatMessages = nil
+			sess.chatCache.invalidate()
 		}
 	case "copy_conversation":
 		if sess == nil || len(sess.chatMessages) == 0 {
@@ -3062,6 +3089,7 @@ func (m *Model) flushSessionBuf(sess *SessionState) {
 // Restore-time warnings are appended as system messages.
 func (m *Model) applyReplay(sess *SessionState, rep protocol.EventReplay) {
 	sess.chatMessages = m.buildReplayChatMessages(rep)
+	sess.chatCache.invalidate()
 	sess.todos = rep.Todos
 	if !sess.rightPanel.IsVisible() && hasPendingTodos(sess.todos) {
 		sess.rightPanel.OpenTodos(m.height)
@@ -3156,28 +3184,22 @@ func (m *Model) visualLineCount() int {
 func (m *Model) sessionMaxScrollOffset(sess *SessionState) int {
 	layout := computeLayout(m.width, m.height, m.visualLineCount())
 	contentHeight := layout.ChatHeight - 1
-	chatWidth := layout.ChatWidth
-	if sess.rightPanel.IsVisible() {
-		chatWidth = m.width - sess.rightPanel.PanelWidth()
-		if chatWidth < 10 {
-			chatWidth = 10
-		}
-	}
-	innerWidth := chatWidth - 4
-	chatContent := buildRenderedChat(sess.chatMessages, m.styles, innerWidth)
+	innerWidth := m.effectiveChatWidth() - 4
+	tail := ""
 	if sess.showThinking && sess.thinkingRendered != "" {
-		chatContent += sess.thinkingRendered + "\n"
+		tail += sess.thinkingRendered + "\n"
 	}
 	if sess.assistantRendered != "" {
-		chatContent += sess.assistantRendered
+		tail += sess.assistantRendered
 	}
-	if chatContent == "" && !m.testMode {
-		chatContent = renderWelcomeInline(innerWidth, contentHeight, m.styles)
+	lines, rowStart := sess.cachedChatLines(m.styles, innerWidth)
+	if emptyChatLines(lines) && tail == "" {
+		// Empty transcript: the welcome screen is generated to fit the
+		// viewport, so there is nothing to scroll.
+		return 0
 	}
-	totalVisualRows := 0
-	for _, line := range strings.Split(chatContent, "\n") {
-		totalVisualRows += visualRows(line, innerWidth)
-	}
+	_, rowStart = combineTail(lines, rowStart, tail, innerWidth)
+	totalVisualRows := rowStart[len(rowStart)-1]
 	maxOff := totalVisualRows - contentHeight
 	if maxOff < 0 {
 		return 0
@@ -3365,20 +3387,17 @@ func (m *Model) gotoTurn(sess *SessionState, turnNum int) {
 	// Rebuild the rendered chat and a visual-row prefix sum, mirroring the
 	// renderer (and sessionMaxScrollOffset), to convert the logical line into a
 	// from-bottom scroll offset.
-	chatContent := buildRenderedChat(sess.chatMessages, m.styles, innerWidth)
+	tail := ""
 	if sess.showThinking && sess.thinkingRendered != "" {
-		chatContent += sess.thinkingRendered + "\n"
+		tail += sess.thinkingRendered + "\n"
 	}
 	if sess.assistantRendered != "" {
-		chatContent += sess.assistantRendered
+		tail += sess.assistantRendered
 	}
-	allLines := strings.Split(chatContent, "\n")
+	lines, rowStart := sess.cachedChatLines(m.styles, innerWidth)
+	allLines, visualRowStart := combineTail(lines, rowStart, tail, innerWidth)
 	if targetLine > len(allLines) {
 		targetLine = len(allLines)
-	}
-	visualRowStart := make([]int, len(allLines)+1)
-	for i, line := range allLines {
-		visualRowStart[i+1] = visualRowStart[i] + visualRows(line, innerWidth)
 	}
 	totalVisualRows := visualRowStart[len(allLines)]
 	startVisRow := visualRowStart[targetLine]
@@ -3451,6 +3470,7 @@ func (m *Model) doTrim(sep TurnSepInfo) (Model, tea.Cmd) {
 	trimmed := make([]ChatMessage, sep.MsgIdx+1)
 	copy(trimmed, sess.chatMessages[:sep.MsgIdx+1])
 	sess.chatMessages = trimmed
+	sess.chatCache.invalidate()
 	sess.chatScrollOffset = 0
 	m.clampScrollOffset(sess)
 	sess.agentState = sess.trimPrevState
@@ -3580,6 +3600,7 @@ func (m *Model) rerenderSessionMessages() {
 	for i, msg := range sess.chatMessages {
 		sess.chatMessages[i] = msg.rerender(m.mdRenderer, m.styles, width)
 	}
+	sess.chatCache.invalidate()
 }
 
 // visibleSessionIndices returns the indices of all sessions.

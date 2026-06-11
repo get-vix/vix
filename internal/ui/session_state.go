@@ -10,6 +10,10 @@ import (
 	"github.com/get-vix/vix/internal/providers"
 )
 
+// streamRenderInterval caps how often the accumulated streaming buffers are
+// re-rendered through glamour (see lastStreamRender/lastThinkingRender).
+const streamRenderInterval = 100 * time.Millisecond
+
 // SessionState holds all accumulated UI state for a single agent session.
 // Sessions are independent objects — the Chat tab renders whichever session
 // is currently selected. Messages accumulate continuously from daemon events
@@ -95,6 +99,22 @@ type SessionState struct {
 
 	// Animation
 	thinkingAnim ThinkingAnim
+
+	// Cached transcript render (see chatcache.go)
+	chatCache chatCache
+
+	// Memo for the bordered chat box: skips lipgloss Wrap/applyBorder when
+	// the visible lines, focus, and dimensions are unchanged since the last
+	// frame. chatBoxKey is "<w>|<h>|<focused>|" + the joined visible lines.
+	chatBoxKey      string
+	chatBoxRendered string
+
+	// Streaming render throttle: glamour re-renders the whole accumulated
+	// buffer on each chunk, which is O(n²) over a long reply. Re-render at
+	// most every streamRenderInterval; event.stream_done always does a final
+	// full render.
+	lastStreamRender   time.Time
+	lastThinkingRender time.Time
 
 	// Input recall history (.vix/history.txt)
 	history *History

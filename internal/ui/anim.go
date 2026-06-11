@@ -11,7 +11,11 @@ import (
 )
 
 const (
-	animFPS      = 30
+	// animFPS sets the thinking spinner cadence. Every tick re-runs the full
+	// Model.View, so this directly multiplies render cost; 12fps reads as
+	// smooth (same rationale as sessionsSpinnerPeriod below) and is 2.5x
+	// cheaper than the previous 30fps.
+	animFPS      = 12
 	animNumChars = 12
 )
 
@@ -47,7 +51,6 @@ type sessionsSpinnerMsg struct{ gen int }
 // sessionsSpinnerPeriod sets the sessions-list spinner cadence. A list spinner
 // doesn't need the chat spinner's 30fps; 12fps reads as smooth and is cheap.
 const sessionsSpinnerPeriod = time.Second / 12
-
 
 // ThinkingAnim renders a spinner row: each character cycles through braille
 // spinner frames with a phase offset so a wave ripples across the bar.
