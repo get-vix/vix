@@ -1,4 +1,4 @@
 [submodule "internal/daemon/web/source"]
 	path = internal/daemon/web/source
-	url = git@github.com:get-vix/vixd-mission-control.git
+	url = git@github.com:kirby88/vixd-mission-control.git
 	update = none
