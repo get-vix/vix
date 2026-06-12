@@ -61,7 +61,7 @@ func TestLocalProviderUIFromState(t *testing.T) {
 
 // TestRefreshModelsProviders_LocalGroup asserts local providers land in their
 // own group (never logged-in/available) and the flat cursor order is
-// logged-in, local, available.
+// logged-in, available, local last.
 func TestRefreshModelsProviders_LocalGroup(t *testing.T) {
 	m := &Model{socketPath: "/nonexistent/vixd.sock"} // cred RPC fails gracefully
 	m.refreshModelsProviders()
@@ -78,9 +78,10 @@ func TestRefreshModelsProviders_LocalGroup(t *testing.T) {
 	if len(flat) != len(m.modelsLoggedIn)+2+len(m.modelsAvailable) {
 		t.Errorf("flat = %v, missing groups", flat)
 	}
-	// Local sits between logged-in and available.
-	if flat[len(m.modelsLoggedIn)] != "ollama" || flat[len(m.modelsLoggedIn)+1] != "llamacpp" {
-		t.Errorf("flat order = %v, want local group after logged-in", flat)
+	// Local sits last, after logged-in and available.
+	base := len(m.modelsLoggedIn) + len(m.modelsAvailable)
+	if flat[base] != "ollama" || flat[base+1] != "llamacpp" {
+		t.Errorf("flat order = %v, want local group last", flat)
 	}
 
 	// displayModelsForProvider: local providers read live state, not catalogue.

@@ -311,7 +311,7 @@ type Model struct {
 	modelsLocal            []string                             // local providers (Ollama, llama.cpp), own group
 	modelsLocalUI          map[string]LocalProviderUI           // live probe state per local provider
 	modelsStatus           map[string]config.ProviderAuthStatus // per-provider auth status (refreshed on change)
-	modelsProviderSel      int                                  // index into modelsLoggedIn ++ modelsLocal ++ modelsAvailable
+	modelsProviderSel      int                                  // index into modelsLoggedIn ++ modelsAvailable ++ modelsLocal
 	modelsFocus            modelsFocusArea                      // which Models-tab area has the cursor
 	modelsAuthRow          int                                  // credential-method row index (focus == auth)
 	modelsAuthBtn          int                                  // button index within the focused auth row
@@ -1612,11 +1612,12 @@ func (m *Model) refreshModelsProviders() {
 }
 
 // modelsFlat returns the provider names in display order (logged in, then
-// local, then available) — the order the provider cursor navigates.
+// available, then local last) — the order the provider cursor navigates.
+// Must stay in lockstep with renderModelsView's flat/group order.
 func (m *Model) modelsFlat() []string {
 	out := append([]string{}, m.modelsLoggedIn...)
-	out = append(out, m.modelsLocal...)
-	return append(out, m.modelsAvailable...)
+	out = append(out, m.modelsAvailable...)
+	return append(out, m.modelsLocal...)
 }
 
 // modelsSelectedProvider returns the provider name under the provider cursor.
