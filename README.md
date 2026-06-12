@@ -18,23 +18,15 @@ Sleek, Fast and Token Efficient AI Coding Agent
 
 </div>
 
-✦ **Token-Efficient by Design**: a Tree-sitter virtual filesystem lets the agent read and edit minified code — 20–50% fewer tokens with zero loss of meaning
+✦ **Self-Evolving Agent**: vix writes its own scheduled jobs, watchers, and alerts
 
-✦ **Programmable Workflows**: define your own multi-phase workflows in JSON — agent, bash, and tool steps with templating, branching, parallelism, and history forking
+✦ **Token-Efficient by Design**: stem agents maximize cache reuse across phases, and a Tree-sitter virtual filesystem lets the agent read and edit minified code — 20–50% fewer tokens with zero loss of meaning, benchmark-backed
 
-✦ **Sandboxed by Default**: every shell command runs inside Seatbelt (macOS) or Landlock/bwrap (Linux), with deny lists for both paths and URLs
-
-✦ **Daemon Architecture**: one `vixd`, as many isolated sessions as you want — TUI, headless (`-p`, JSON output for CI), or the local web dashboard
+✦ **Programmable Workflows**: define your own multi-phase agent pipelines in JSON — agent, bash, and tool steps with templating, branching, parallelism, and history forking
 
 ✦ **Whiteboard Mode**: have vix present its plan to you on a visual canvas with a voice AI walkthrough, and challenge it like a design review
 
-✦ **Conversation Surgery**: `/fork`, `/trim`, `/goto`, `/compact` — treat your session history like version control
-
-✦ **Subagents & Skills**: parallel background agents (explore, plan, review, implement) and progressive-disclosure skills, invocable as slash commands
-
-✦ **Code Intelligence**: LSP-backed navigation (definitions, references, diagnostics) and a Tree-sitter project brain, not just grep
-
-✦ **Extensible**: MCP servers (stdio + HTTP), multiple providers (Anthropic, OpenAI, OpenRouter, Bedrock...), layered project/user config
+✦ **All the features you expect from an agent**: skills, MCP servers, subagents, LSP-backed code intelligence, sandboxed execution, multiple providers (Anthropic, OpenAI, OpenRouter, Bedrock...)
 
 <div align="center">
 
