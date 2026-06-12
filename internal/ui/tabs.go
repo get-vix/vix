@@ -82,12 +82,12 @@ func renderSessionsView(userSessions, vixLive []*SessionState, vixSessions []pro
 	}
 
 	header := fmt.Sprintf("  %-*s  %-*s  %-*s%-*s", colSession, "Session", colMessage, "Title", colRunning, "Running", badgeVisible, "")
-	rows := []string{s.TabActiveStyle.Render(header)}
+	rows := []string{}
 
 	rowIdx := 0
 
 	if len(userSessions) > 0 {
-		rows = append(rows, "", "  "+sessionGroupHeaderStyle.Render(" User-initiated "))
+		rows = append(rows, "  "+sessionGroupHeaderStyle.Render(" User-initiated "), s.TabActiveStyle.Render(header))
 	}
 
 	for _, sess := range userSessions {
@@ -186,7 +186,10 @@ func renderSessionsView(userSessions, vixLive []*SessionState, vixSessions []pro
 	// as chat tabs), then persisted job runs and alerts, openable (enter) or
 	// dismissable (x) without being live sessions.
 	if len(vixLive)+len(vixSessions) > 0 {
-		rows = append(rows, "", "  "+sessionGroupHeaderStyle.Render(" Vix-initiated "))
+		if len(rows) > 0 {
+			rows = append(rows, "")
+		}
+		rows = append(rows, "  "+sessionGroupHeaderStyle.Render(" Vix-initiated "), s.TabActiveStyle.Render(header))
 
 		// vixCols formats the three shared columns of a vix-initiated row from
 		// its record summary (id, "<job> · <status>  <first message>", ran ago).
