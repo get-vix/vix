@@ -99,6 +99,40 @@ and then you can start as many instances you want, each of them are isolated:
 vix
 ```
 
+### Remote control
+
+`vixd` can optionally accept prompts from Telegram or WhatsApp and reply with the
+agent's answer. Remote control is disabled by default and requires both a feature
+flag and an allowlist in `~/.vix/settings.json`:
+
+```json
+{
+  "features": { "remote_control": true },
+  "remote_control": {
+    "enabled": true,
+    "cwd": "/absolute/project/path",
+    "telegram": {
+      "enabled": true,
+      "bot_token": "<telegram bot token>",
+      "allowed_chat_ids": ["123456789"]
+    },
+    "whatsapp": {
+      "enabled": true,
+      "access_token": "<whatsapp cloud api token>",
+      "app_secret": "<meta app secret>",
+      "phone_number_id": "<phone number id>",
+      "verify_token": "<webhook verify token>",
+      "webhook_addr": "127.0.0.1:1340",
+      "allowed_contacts": ["15551234567"]
+    }
+  }
+}
+```
+
+Telegram uses bot long-polling. WhatsApp exposes `GET/POST /whatsapp` on
+`webhook_addr` for Cloud API webhook verification and messages. Only allowlisted
+chat IDs/contacts can control vix.
+
 <div align="center">
 
 ## Why is vix faster and cheaper in plan mode?

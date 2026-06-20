@@ -237,6 +237,16 @@ func HooksEnabled() bool {
 	return feature("hooks", true)
 }
 
+// RemoteControlEnabled reads the remote_control feature flag. Defaults to false
+// because chat-service control requires explicit credentials and sender allowlists.
+// VIX_DISABLE_REMOTE_CONTROL is an emergency kill switch.
+func RemoteControlEnabled() bool {
+	if v := os.Getenv("VIX_DISABLE_REMOTE_CONTROL"); v == "1" || v == "true" {
+		return false
+	}
+	return feature("remote_control", false)
+}
+
 // JobsMaxConcurrentRuns reads jobs.max_concurrent_runs from
 // ~/.vix/settings.json. Returns 0 when absent/invalid, letting the scheduler
 // apply its default.
