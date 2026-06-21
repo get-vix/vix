@@ -163,6 +163,28 @@ func landlockBashCmd(ctx context.Context, command, cwd string, extraDirs []strin
 func buildLandlockRules(cwd string, extraDirs []string) landlockRules {
 	policy := platformPolicies["linux"]
 
+	// Landlock path-beneath rules apply to a directory and only grant
+	// access to entries directly inside it. /usr and /bin are in the
+	// default RO list, but a bash binary that resolves to e.g.
+	// /usr/bin/bash lives under /usr/bin, which is not in the list.
+	// Without an explicit rule for the resolved bash directory the
+	// helper fails with EACCES at syscall.Exec. We add it here so the
+	// sandbox works regardless of which /usr/bin/bash-style layout the
+	// host uses (split-usr, merged-usr, Nix store, busybox path, etc.).
+	ro := append([]string{}, policy.ReadOnly...)
+	bashPath := resolveBashPath()
+	bashDir := filepath.Dir(bashPath)
+	duplicate := false
+	for _, p := range ro {
+		if p == bashDir || p == bashPath {
+			duplicate = true
+			break
+		}
+	}
+	if !duplicate && bashDir != "" {
+		ro = append(ro, bashDir)
+	}
+
 	rw := append([]string{}, policy.ReadWrite...)
 	if cwd != "" {
 		rw = append(rw, cwd)
@@ -183,7 +205,7 @@ func buildLandlockRules(cwd string, extraDirs []string) landlockRules {
 	}
 
 	return landlockRules{
-		RO: append([]string{}, policy.ReadOnly...),
+		RO: ro,
 		RW: rw,
 	}
 }
