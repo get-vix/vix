@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/zalando/go-keyring"
@@ -181,6 +183,43 @@ func TestListStoredProviderKeys(t *testing.T) {
 	}
 	if !anthropicFound {
 		t.Errorf("anthropic not found in ListStoredProviderKeys")
+	}
+}
+
+func TestResolveEnvVarSearchesHomeVixDotEnv(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	if err := os.MkdirAll(HomeVixDir(), 0o755); err != nil {
+		t.Fatalf("mkdir home .vix: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(HomeVixDir(), ".env"), []byte("ANTHROPIC_API_KEY=home-file-key\n"), 0o600); err != nil {
+		t.Fatalf("write home .env: %v", err)
+	}
+
+	got, ok := ResolveEnvVar("ANTHROPIC_API_KEY")
+	if !ok || got != "home-file-key" {
+		t.Fatalf("ResolveEnvVar = %q, %v; want home-file-key, true", got, ok)
+	}
+}
+
+func TestResolveProviderCredentialBaseURLFromDotEnv(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	DeleteProviderKey("anthropic")
+
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	if err := os.WriteFile(filepath.Join(cwd, ".env"), []byte("ANTHROPIC_API_KEY=dotenv-key\nANTHROPIC_BASE_URL=https://mock.example/v1\n"), 0o600); err != nil {
+		t.Fatalf("write cwd .env: %v", err)
+	}
+
+	cred := ResolveProviderCredential("anthropic")
+	if cred.Value != "dotenv-key" || cred.Source != KeySourceEnvFile {
+		t.Fatalf("credential = %+v; want key from .env", cred)
+	}
+	if cred.BaseURL != "https://mock.example/v1" {
+		t.Fatalf("baseURL = %q, want .env override", cred.BaseURL)
 	}
 }
 

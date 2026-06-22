@@ -1,6 +1,8 @@
 package config
 
 import (
+	"strings"
+
 	"github.com/get-vix/vix/internal/auth"
 	"github.com/get-vix/vix/internal/providers"
 )
@@ -111,6 +113,10 @@ func credKindToAuthKind(kind string) AuthKind {
 
 // authMethodFromSpec projects a registry credential method into an AuthMethod.
 func authMethodFromSpec(m providers.CredentialMethod) AuthMethod {
+	baseURLEnv := m.BaseURLEnv
+	if baseURLEnv == "" && strings.HasSuffix(m.EnvVar, "_API_KEY") {
+		baseURLEnv = strings.TrimSuffix(m.EnvVar, "_API_KEY") + "_BASE_URL"
+	}
 	am := AuthMethod{
 		Kind:            credKindToAuthKind(m.Kind),
 		EnvVar:          m.EnvVar,
@@ -119,7 +125,7 @@ func authMethodFromSpec(m providers.CredentialMethod) AuthMethod {
 		BaseURL:         m.BaseURL,
 		Label:           m.Label,
 		RequiresBaseURL: m.RequiresBaseURL,
-		BaseURLEnv:      m.BaseURLEnv,
+		BaseURLEnv:      baseURLEnv,
 	}
 	if m.HeaderStyle == providers.AuthSchemeBearer {
 		am.HeaderStyle = BearerHeader
