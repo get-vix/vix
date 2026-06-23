@@ -10,7 +10,6 @@ import (
 	"runtime"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -86,7 +85,7 @@ func seatbeltProfile(cwd string, extraDirs []string) string {
 		realCwd = cwd
 	}
 
-	home := os.Getenv("HOME")
+	home := userHomeDir()
 	if home == "" {
 		home = "/Users"
 	}
@@ -183,81 +182,104 @@ func sanitizedBashEnv() []string {
 
 // sandboxedBashCmd builds an exec.Cmd that runs a bash command inside the
 // appropriate sandbox for the current platform. Falls back to a plain bash
-// invocation if no sandbox is available.
+// invocation if no sandbox is available. It is a thin delegator over the
+// Sandbox interface selected by activeSandbox().
 func sandboxedBashCmd(ctx context.Context, command, cwd string, extraDirs []string) *exec.Cmd {
-	mode := detectSandbox()
-
-	switch mode {
-	case sandboxLandlock:
-		return landlockBashCmd(ctx, command, cwd, extraDirs)
-
-	case sandboxSeatbelt:
-		profile := seatbeltProfile(cwd, extraDirs)
-		cmd := exec.CommandContext(ctx, "sandbox-exec", "-p", profile, "bash", "-c", command)
-		cmd.Dir = cwd
-		cmd.Env = sanitizedBashEnv()
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-		cmd.WaitDelay = 2 * time.Second
-		cmd.Cancel = func() error {
-			pid := cmd.Process.Pid
-			logProcessChildren(pid)
-			log.Printf("[sandbox] sending SIGKILL to process group pgid=%d (mode=seatbelt)", pid)
-			err := syscall.Kill(-pid, syscall.SIGKILL)
-			if err != nil {
-				log.Printf("[sandbox] SIGKILL failed for pgid=%d: %v", pid, err)
-			}
-			return err
-		}
-		return cmd
-
-	case sandboxBwrap:
-		realCwd, err := filepath.EvalSymlinks(cwd)
-		if err != nil {
-			realCwd = cwd
-		}
-		home := os.Getenv("HOME")
-		if home == "" {
-			home = "/home"
-		}
-
-		args := buildBwrapArgs(cwd, realCwd, home, extraDirs, command)
-
-		cmd := exec.CommandContext(ctx, "bwrap", args...)
-		cmd.Dir = cwd
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-		cmd.WaitDelay = 2 * time.Second
-		cmd.Cancel = func() error {
-			pid := cmd.Process.Pid
-			logProcessChildren(pid)
-			log.Printf("[sandbox] sending SIGKILL to process group pgid=%d (mode=bwrap)", pid)
-			err := syscall.Kill(-pid, syscall.SIGKILL)
-			if err != nil {
-				log.Printf("[sandbox] SIGKILL failed for pgid=%d: %v", pid, err)
-			}
-			return err
-		}
-		// Propagate env through bwrap
-		cmd.Env = sanitizedBashEnv()
-		return cmd
-
-	default:
-		cmd := exec.CommandContext(ctx, "bash", "-c", command)
-		cmd.Dir = cwd
-		cmd.Env = sanitizedBashEnv()
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-		cmd.WaitDelay = 2 * time.Second
-		cmd.Cancel = func() error {
-			pid := cmd.Process.Pid
-			logProcessChildren(pid)
-			log.Printf("[sandbox] sending SIGKILL to process group pgid=%d (mode=none)", pid)
-			err := syscall.Kill(-pid, syscall.SIGKILL)
-			if err != nil {
-				log.Printf("[sandbox] SIGKILL failed for pgid=%d: %v", pid, err)
-			}
-			return err
-		}
-		return cmd
+	cmd, err := activeSandbox().Wrap(ctx, command, cwd, extraDirs)
+	if err != nil {
+		// No current backend returns an error; fall back to plain bash rather
+		// than panic if one ever does.
+		return exec.CommandContext(ctx, "bash", "-c", command)
 	}
+	return cmd
+}
+
+// noneSandbox runs bash with no enforcement layer (the last-resort mode).
+type noneSandbox struct{}
+
+func (noneSandbox) Wrap(ctx context.Context, command, cwd string, extraDirs []string) (*exec.Cmd, error) {
+	cmd := exec.CommandContext(ctx, "bash", "-c", command)
+	cmd.Dir = cwd
+	cmd.Env = sanitizedBashEnv()
+	applyProcessGroup(cmd)
+	cmd.WaitDelay = 2 * time.Second
+	cmd.Cancel = func() error {
+		pid := cmd.Process.Pid
+		logProcessChildren(pid)
+		log.Printf("[sandbox] sending SIGKILL to process group pgid=%d (mode=none)", pid)
+		err := killProcessTree(pid)
+		if err != nil {
+			log.Printf("[sandbox] SIGKILL failed for pgid=%d: %v", pid, err)
+		}
+		return err
+	}
+	return cmd, nil
+}
+
+// seatbeltSandbox wraps bash in macOS sandbox-exec using a generated Seatbelt
+// profile.
+type seatbeltSandbox struct{}
+
+func (seatbeltSandbox) Wrap(ctx context.Context, command, cwd string, extraDirs []string) (*exec.Cmd, error) {
+	profile := seatbeltProfile(cwd, extraDirs)
+	cmd := exec.CommandContext(ctx, "sandbox-exec", "-p", profile, "bash", "-c", command)
+	cmd.Dir = cwd
+	cmd.Env = sanitizedBashEnv()
+	applyProcessGroup(cmd)
+	cmd.WaitDelay = 2 * time.Second
+	cmd.Cancel = func() error {
+		pid := cmd.Process.Pid
+		logProcessChildren(pid)
+		log.Printf("[sandbox] sending SIGKILL to process group pgid=%d (mode=seatbelt)", pid)
+		err := killProcessTree(pid)
+		if err != nil {
+			log.Printf("[sandbox] SIGKILL failed for pgid=%d: %v", pid, err)
+		}
+		return err
+	}
+	return cmd, nil
+}
+
+// bwrapSandbox wraps bash in a bubblewrap (bwrap) container.
+type bwrapSandbox struct{}
+
+func (bwrapSandbox) Wrap(ctx context.Context, command, cwd string, extraDirs []string) (*exec.Cmd, error) {
+	realCwd, err := filepath.EvalSymlinks(cwd)
+	if err != nil {
+		realCwd = cwd
+	}
+	home := userHomeDir()
+	if home == "" {
+		home = "/home"
+	}
+
+	args := buildBwrapArgs(cwd, realCwd, home, extraDirs, command)
+
+	cmd := exec.CommandContext(ctx, "bwrap", args...)
+	cmd.Dir = cwd
+	applyProcessGroup(cmd)
+	cmd.WaitDelay = 2 * time.Second
+	cmd.Cancel = func() error {
+		pid := cmd.Process.Pid
+		logProcessChildren(pid)
+		log.Printf("[sandbox] sending SIGKILL to process group pgid=%d (mode=bwrap)", pid)
+		err := killProcessTree(pid)
+		if err != nil {
+			log.Printf("[sandbox] SIGKILL failed for pgid=%d: %v", pid, err)
+		}
+		return err
+	}
+	// Propagate env through bwrap
+	cmd.Env = sanitizedBashEnv()
+	return cmd, nil
+}
+
+// landlockSandbox wraps bash with Linux Landlock (delegated to the
+// Linux-only landlockBashCmd; off Linux, detectSandbox never selects it).
+type landlockSandbox struct{}
+
+func (landlockSandbox) Wrap(ctx context.Context, command, cwd string, extraDirs []string) (*exec.Cmd, error) {
+	return landlockBashCmd(ctx, command, cwd, extraDirs), nil
 }
 
 // logProcessChildren logs the immediate children of a process (best-effort).
@@ -294,7 +316,7 @@ func SandboxName() string {
 // given the working directory. Useful for user-facing descriptions.
 func AllowedWritePaths(cwd string) []string {
 	paths := []string{cwd, "/tmp"}
-	if home := os.Getenv("HOME"); home != "" {
+	if home := userHomeDir(); home != "" {
 		paths = append(paths, home)
 	}
 	return paths

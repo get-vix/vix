@@ -14,7 +14,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -490,7 +489,7 @@ Flags:
 		if v := os.Getenv("VIX_SOCKET_PATH"); v != "" {
 			sock = v
 		} else {
-			sock = "/tmp/vixd.sock"
+			sock = config.DefaultSocketPath
 		}
 	}
 
@@ -668,7 +667,7 @@ Flags:
 		if v := os.Getenv("VIX_SOCKET_PATH"); v != "" {
 			sock = v
 		} else {
-			sock = "/tmp/vixd.sock"
+			sock = config.DefaultSocketPath
 		}
 	}
 
@@ -712,7 +711,7 @@ func dialDaemon(socketPath, authTokenPath string) (*daemon.Client, int) {
 		if v := os.Getenv("VIX_SOCKET_PATH"); v != "" {
 			sock = v
 		} else {
-			sock = "/tmp/vixd.sock"
+			sock = config.DefaultSocketPath
 		}
 	}
 
@@ -1023,7 +1022,11 @@ func buildDaemonPath(existingPath, home string) string {
 		}
 	}
 
-	entries = append(entries, "/usr/bin", "/bin", "/usr/sbin", "/sbin")
+	// Unix-only system binary directories. These don't exist on Windows and
+	// would only pollute the daemon's PATH, so skip them there.
+	if runtime.GOOS != "windows" {
+		entries = append(entries, "/usr/bin", "/bin", "/usr/sbin", "/sbin")
+	}
 	return strings.Join(dedupeStrings(entries), string(os.PathListSeparator))
 }
 
@@ -1124,7 +1127,7 @@ func startDaemon(apiKey, logDir, socketPath, authTokenPath string) (*exec.Cmd, e
 	// signals (SIGHUP on terminal close, SIGINT/SIGTERM to the foreground
 	// group). The daemon is a shared, long-lived process that runs until
 	// signalled or stopped via `vix daemon stop`.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	detachDaemon(cmd)
 	cmd.Env = daemonEnv(apiKey)
 	logFileDir := logDir
 	if logFileDir == "" {

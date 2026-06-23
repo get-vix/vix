@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/get-vix/vix/internal/daemon/hooks"
@@ -187,8 +186,8 @@ func runHookCommand(ctx context.Context, spec hooks.Spec, cwd string, stdin []by
 	var out, errb strings.Builder
 	cmd.Stdout = &out
 	cmd.Stderr = &errb
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	applyProcessGroup(cmd)
+	cmd.Cancel = func() error { return killProcessTree(cmd.Process.Pid) }
 
 	err := cmd.Run()
 	if cctx.Err() == context.DeadlineExceeded {

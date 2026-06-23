@@ -49,7 +49,7 @@ func (c *Client) SetAuthToken(token string) {
 
 // sendRequest sends a JSON request to the daemon and returns the parsed response.
 func (c *Client) sendRequest(data map[string]any) (map[string]any, error) {
-	conn, err := net.Dial("unix", c.socketPath)
+	conn, err := transportDial(c.socketPath)
 	if err != nil {
 		return nil, fmt.Errorf("daemon connect: %w", err)
 	}
@@ -488,7 +488,7 @@ func (sc *SessionClient) Attach(cwd, configDir, model string, forceInit bool, en
 // connectWith dials the daemon and starts a session with the given start data.
 func (sc *SessionClient) connectWith(startData protocol.SessionStartData) error {
 	startData.ClientVersion = sc.version
-	conn, err := net.Dial("unix", sc.socketPath)
+	conn, err := transportDial(sc.socketPath)
 	if err != nil {
 		return fmt.Errorf("daemon connect: %w", err)
 	}
@@ -729,7 +729,7 @@ type InstanceClient struct {
 // caller may simply proceed without registration — the count is observability
 // only (web UI vitals, logging).
 func RegisterInstance(socketPath, authToken, mode string) (*InstanceClient, error) {
-	conn, err := net.Dial("unix", socketPath)
+	conn, err := transportDial(socketPath)
 	if err != nil {
 		return nil, fmt.Errorf("daemon connect: %w", err)
 	}

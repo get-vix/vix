@@ -5,12 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"image"
-	"os"
-	"os/signal"
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"charm.land/bubbles/v2/textinput"
@@ -102,13 +99,9 @@ type clearStatusMsgMsg struct{ gen int }
 // startCursorBlinkMsg triggers cursor blink on startup.
 type startCursorBlinkMsg struct{}
 
-func waitForResume() tea.Msg {
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGCONT)
-	<-sigCh
-	signal.Stop(sigCh)
-	return resumeFromSleepMsg{}
-}
+// waitForResume blocks until the process is resumed after a Ctrl-Z suspend.
+// It listens for SIGCONT, which is POSIX-only; the per-OS implementation lives
+// in resume_unix.go / resume_windows.go.
 
 // startSessionEventLoop launches a goroutine that reads daemon events for one
 // session and injects them into the Bubble Tea loop tagged with the daemon

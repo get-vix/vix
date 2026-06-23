@@ -106,9 +106,22 @@ func isSystemPath(absPath string) bool {
 // userHomeDir returns the user's home directory or "" if unknown. Callers
 // must treat "" as "no auto-allow for HOME" — never as "auto-allow
 // everywhere".
+//
+// $HOME is honoured when set (preserving the prior os.Getenv("HOME") behaviour
+// exactly, including test overrides via t.Setenv("HOME", ...)). When $HOME is
+// unset we fall back to os.UserHomeDir, which resolves %USERPROFILE% on Windows
+// and the passwd entry on Unix — so the daemon is no longer blind to the home
+// directory on Windows where HOME is typically empty.
 func userHomeDir() string {
-	return os.Getenv("HOME")
+	if h := os.Getenv("HOME"); h != "" {
+		return h
+	}
+	if h, err := os.UserHomeDir(); err == nil {
+		return h
+	}
+	return ""
 }
+
 
 // isAccessibleByDefault is the unified check that decides whether a path
 // can be touched without bothering the user. It returns true when the

@@ -167,7 +167,7 @@ func buildLandlockRules(cwd string, extraDirs []string) landlockRules {
 	if cwd != "" {
 		rw = append(rw, cwd)
 	}
-	if home := os.Getenv("HOME"); home != "" {
+	if home := userHomeDir(); home != "" {
 		rw = append(rw, home)
 	}
 	for _, d := range extraDirs {

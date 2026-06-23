@@ -16,7 +16,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/get-vix/vix/internal/config"
@@ -252,7 +251,7 @@ func detectOutsidePaths(command, cwd string, allowedDirs []string) []string {
 	seen := make(map[string]bool)
 	var outside []string
 
-	home := os.Getenv("HOME")
+	home := userHomeDir()
 
 	check := func(raw string) {
 		// Expand tilde.
@@ -673,7 +672,7 @@ func runBashWithContext(ctx context.Context, command, cwd, input string, onLine 
 	cmd := exec.Command("bash", "-c", command)
 	cmd.Dir = cwd
 	cmd.Env = sanitizedBashEnv()
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	applyProcessGroup(cmd)
 	if input != "" {
 		cmd.Stdin = strings.NewReader(input)
 	}
@@ -698,7 +697,7 @@ func runBashWithContext(ctx context.Context, command, cwd, input string, onLine 
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			_ = killProcessTree(cmd.Process.Pid)
 		case <-done:
 		}
 	}()
@@ -856,10 +855,7 @@ func bashBackgroundImpl(registry *BashJobRegistry, command, cwd string, extraDir
 	}
 	setOOMScore(cmd.Process.Pid, 1000)
 	pid := cmd.Process.Pid
-	pgid, _ := syscall.Getpgid(pid)
-	if pgid <= 0 {
-		pgid = pid
-	}
+	pgid := processGroupID(pid)
 	_ = os.WriteFile(pidPath, []byte(fmt.Sprintf("%d\n", pid)), 0o644)
 
 	job := &BashJob{

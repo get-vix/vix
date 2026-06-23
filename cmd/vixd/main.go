@@ -24,7 +24,9 @@ import (
 
 var Version = "dev"
 
-const defaultSocketPath = "/tmp/vixd.sock"
+// defaultSocketPath is the Unix socket path shared with the client; the single
+// source of truth lives in internal/config.DefaultSocketPath.
+const defaultSocketPath = config.DefaultSocketPath
 
 func main() {
 	// Hidden self-exec subcommand: when sandbox.go's Landlock branch

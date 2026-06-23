@@ -1,3 +1,5 @@
+//go:build cgo
+
 package daemon
 
 import (
@@ -796,18 +798,8 @@ func annotateHTML(tokens []minifyToken) {
 	}
 }
 
-// srcSegment maps a contiguous run of bytes in the minified output back to the
-// original source. Each emitted token produces one segment: the byte range
-// [outStart, outStart+length) in the minified string corresponds, byte-for-byte,
-// to [srcStart, srcStart+length) in the original source, because a token's text
-// is a verbatim copy of the source bytes it came from. The gaps between segments
-// are synthetic — inserted separators (";", "\n", indentation) and
-// merge-prevention spaces that exist nowhere in the source.
-type srcSegment struct {
-	outStart int // byte offset in the minified output where the token begins
-	length   int // byte length of the token (== byteEnd-byteStart in source)
-	srcStart int // byte offset in the original source where the token begins
-}
+// srcSegment is defined in treesitter_types.go (cgo-free) so non-cgo builds
+// can still compile the vfs projection code.
 
 // minifyTokens joins tokens with minimal spacing.
 func minifyTokens(tokens []minifyToken) string {

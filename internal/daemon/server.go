@@ -424,7 +424,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		os.Remove(s.sockPath)
 	}
 
-	listener, err := net.Listen("unix", s.sockPath)
+	listener, err := transportListen(s.sockPath)
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}

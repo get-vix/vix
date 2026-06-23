@@ -8,6 +8,13 @@ import (
 	"path/filepath"
 )
 
+// DefaultSocketPath is the daemon IPC address used when no -socket-path /
+// VIX_SOCKET_PATH override is given. On Unix this is a filesystem socket.
+// The Windows value (a named pipe) is a later wave; the Unix value is kept
+// here as the single source of truth shared by cmd/vix, cmd/vixd, and this
+// package so it no longer has to be duplicated.
+const DefaultSocketPath = "/tmp/vixd.sock"
+
 // Config holds client configuration.
 type Config struct {
 	Model      string
@@ -55,7 +62,7 @@ func Load(forceInit bool, workdir, configDir, socketPath string) (*Config, error
 	}
 
 	if socketPath == "" {
-		socketPath = "/tmp/vixd.sock"
+		socketPath = DefaultSocketPath
 	}
 
 	return &Config{
