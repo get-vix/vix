@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -28,13 +29,31 @@ func TestBuildDaemonPathIncludesUserToolDirs(t *testing.T) {
 	if len(entries) == 0 || entries[0] != customBin {
 		t.Fatalf("first PATH entry = %q, want %q (full PATH: %q)", entries, customBin, got)
 	}
-	for _, want := range []string{nvmBin, goBin, cargoBin, localBin, "/usr/bin", "/bin", "/usr/sbin", "/sbin"} {
+	// User tool dirs and the /usr/bin carried in from the test's `existing`
+	// input (deduped to one) are present on every platform.
+	for _, want := range []string{nvmBin, goBin, cargoBin, localBin, "/usr/bin"} {
 		if !containsString(entries, want) {
 			t.Fatalf("PATH missing %q (full PATH: %q)", want, got)
 		}
 	}
 	if countString(entries, "/usr/bin") != 1 {
 		t.Fatalf("PATH should dedupe /usr/bin; got %d occurrences in %q", countString(entries, "/usr/bin"), got)
+	}
+	// Unix-only system binary dirs: buildDaemonPath adds them on darwin/linux
+	// and omits them on windows. Assert presence on Unix, absence on Windows.
+	systemDirs := []string{"/bin", "/usr/sbin", "/sbin"}
+	if runtime.GOOS != "windows" {
+		for _, want := range systemDirs {
+			if !containsString(entries, want) {
+				t.Fatalf("PATH missing %q (full PATH: %q)", want, got)
+			}
+		}
+	} else {
+		for _, unwanted := range systemDirs {
+			if containsString(entries, unwanted) {
+				t.Fatalf("PATH should not include Unix-only dir %q on windows (full PATH: %q)", unwanted, got)
+			}
+		}
 	}
 }
 
