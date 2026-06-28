@@ -267,12 +267,12 @@ consume:
 		case ev := <-session.eventChan:
 			switch ev.Type {
 			case "event.stream_chunk":
-				finalText.WriteString(decodeJobEvent[protocol.EventStreamChunk](ev.Data).Text)
+				finalText.WriteString(decodeUnattendedEvent[protocol.EventStreamChunk](ev.Data).Text)
 			case "event.confirm_request":
 				data, _ := json.Marshal(protocol.SessionConfirmData{Approved: false})
 				session.pushCommand(ctx, protocol.SessionCommand{Type: "session.confirm", Data: data})
 			case "event.user_question":
-				uq := decodeJobEvent[protocol.EventUserQuestion](ev.Data)
+				uq := decodeUnattendedEvent[protocol.EventUserQuestion](ev.Data)
 				answer := ""
 				if len(uq.RichOptions) > 0 {
 					answer = uq.RichOptions[0].Title

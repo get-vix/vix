@@ -18,20 +18,24 @@ type unattendedWorkflowRequest struct {
 }
 
 type unattendedRunRequest struct {
-	RunID     string
-	Model     string
-	CWD       string
-	Title     string
-	Trigger   *protocol.TriggerInfo
-	Prompt    string
-	Workflow  unattendedWorkflowRequest
-	AutoWrite bool
-	AutoDirs  bool
-	JobID     string
+	RunID                   string
+	Model                   string
+	CWD                     string
+	Title                   string
+	Trigger                 *protocol.TriggerInfo
+	Prompt                  string
+	Workflow                unattendedWorkflowRequest
+	AutoWrite               bool
+	AutoDirs                bool
+	JobID                   string
+	SuppressFinishBroadcast bool
 }
 
 type unattendedRunResult struct {
-	SessionID       string
+	SessionID string
+	// session is returned so callers can persist post-run metadata before their
+	// final session-list notification.
+	session         *Session
 	FinalText       string
 	AgentTurns      int
 	ConfirmRequests []string
@@ -83,6 +87,7 @@ func (s *Server) runUnattendedSession(ctx context.Context, req unattendedRunRequ
 		model = s.model
 	}
 	session := NewSession(runID, s, nil, model, req.CWD, "", false, req.AutoWrite, req.AutoDirs, true, ctx)
+	res.session = session
 	session.origin = "vix"
 	session.trigger = req.Trigger
 	session.title = req.Title
@@ -102,7 +107,9 @@ func (s *Server) runUnattendedSession(ctx context.Context, req unattendedRunRequ
 		delete(s.sessions, runID)
 		s.sessionMu.Unlock()
 		session.cancel()
-		s.broadcastSessionsChanged()
+		if !req.SuppressFinishBroadcast {
+			s.broadcastSessionsChanged()
+		}
 	}()
 
 	go session.Run()
@@ -135,19 +142,13 @@ func (s *Server) runUnattendedSession(ctx context.Context, req unattendedRunRequ
 				cr := decodeUnattendedEvent[protocol.EventConfirmRequest](ev.Data)
 				res.ConfirmRequests = append(res.ConfirmRequests, cr.ToolName)
 				if err := runUnattendedEventPolicy(ctx, session, ev, policy); err != nil {
-					res.HadError = true
-					res.Err = err.Error()
-					res.ErrSource = "policy"
-					res.FinalText = final.String()
+					res = unattendedPolicyErrorResult(ctx, res, final.String(), err)
 					session.persist()
 					return res
 				}
 			case "event.user_question", "event.plan_proposed":
 				if err := runUnattendedEventPolicy(ctx, session, ev, policy); err != nil {
-					res.HadError = true
-					res.Err = err.Error()
-					res.ErrSource = "policy"
-					res.FinalText = final.String()
+					res = unattendedPolicyErrorResult(ctx, res, final.String(), err)
 					session.persist()
 					return res
 				}
@@ -186,6 +187,17 @@ func cancelledUnattendedResult(res unattendedRunResult, final string, err error)
 	res.HadError = true
 	res.ErrSource = "timeout"
 	res.Err = "run cancelled: " + err.Error()
+	return res
+}
+
+func unattendedPolicyErrorResult(ctx context.Context, res unattendedRunResult, final string, err error) unattendedRunResult {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return cancelledUnattendedResult(res, final, ctxErr)
+	}
+	res.HadError = true
+	res.Err = err.Error()
+	res.ErrSource = "policy"
+	res.FinalText = final
 	return res
 }
 
