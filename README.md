@@ -111,6 +111,8 @@ flag and an allowlist in `~/.vix/settings.json`:
   "remote_control": {
     "enabled": true,
     "cwd": "/absolute/project/path",
+    "workflow": "",
+    "max_concurrent_runs": 1,
     "telegram": {
       "enabled": true,
       "bot_token": "<telegram bot token>",
@@ -122,6 +124,7 @@ flag and an allowlist in `~/.vix/settings.json`:
       "app_secret": "<meta app secret>",
       "phone_number_id": "<phone number id>",
       "verify_token": "<webhook verify token>",
+      "graph_api_version": "v20.0",
       "webhook_addr": "127.0.0.1:1340",
       "allowed_contacts": ["15551234567"]
     }
@@ -131,7 +134,20 @@ flag and an allowlist in `~/.vix/settings.json`:
 
 Telegram uses bot long-polling. WhatsApp exposes `GET/POST /whatsapp` on
 `webhook_addr` for Cloud API webhook verification and messages. Only allowlisted
-chat IDs/contacts can control vix.
+chat IDs/contacts can control vix. Leave `workflow` empty for a plain prompt, or
+set it to a workflow name to run that workflow for each remote prompt.
+
+Remote control is not a sandbox guarantee. A remote prompt uses the same
+agent/tooling path as vix, subject to unattended confirmation denial and the
+configured policy: the configured `cwd`, `$HOME`, and platform system paths may
+be auto-allowed, and output is sent back through the chat provider. Treat a
+compromised allowlisted account, or provider credentials capable of injecting
+trusted inbound messages, as host access within that policy. Treat bot/provider
+tokens as sensitive because they can expose traffic, disrupt service, or combine
+with sender compromise. Use a locked-down `cwd`, keep `max_concurrent_runs` low,
+and add deny-list entries for sensitive paths such as `~/.ssh`, `~/.aws`,
+`~/.kube`, password-manager data, and cloud credential directories. Remote runs
+deny confirmation prompts and cannot answer user questions or approve plans.
 
 <div align="center">
 
