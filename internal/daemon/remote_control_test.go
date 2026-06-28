@@ -52,6 +52,9 @@ func TestRemoteControlConfigHonorsOptionalFields(t *testing.T) {
 	if got := cfg.WhatsApp.graphAPIVersion(); got != "v21.0" {
 		t.Fatalf("graphAPIVersion() = %q, want v21.0", got)
 	}
+	if got := (WhatsAppRemoteConfig{GraphAPIVersion: " v21.0 "}).graphAPIVersion(); got != "v21.0" {
+		t.Fatalf("graphAPIVersion() = %q, want v21.0", got)
+	}
 }
 
 func TestRemoteUnattendedEventsDoNotAutoApprove(t *testing.T) {
@@ -127,6 +130,26 @@ func TestTelegramSendMessagePostsChatIDAndText(t *testing.T) {
 	}
 	if !strings.Contains(gotBody, "chat_id=42") || !strings.Contains(gotBody, "text=hello+vix") {
 		t.Fatalf("unexpected body %q", gotBody)
+	}
+}
+
+func TestWhatsAppSendMessageUsesConfiguredGraphAPIVersion(t *testing.T) {
+	var gotURL string
+	rc := &remoteControl{http: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		gotURL = req.URL.String()
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+	})}
+	cfg := WhatsAppRemoteConfig{
+		AccessToken:     "access",
+		PhoneNumberID:   "phone",
+		GraphAPIVersion: "v21.0",
+	}
+
+	if err := rc.sendWhatsAppMessage(context.Background(), cfg, "15551234567", "hello"); err != nil {
+		t.Fatalf("sendWhatsAppMessage: %v", err)
+	}
+	if gotURL != "https://graph.facebook.com/v21.0/phone/messages" {
+		t.Fatalf("url = %q", gotURL)
 	}
 }
 
