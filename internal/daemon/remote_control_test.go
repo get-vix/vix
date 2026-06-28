@@ -57,8 +57,8 @@ func TestRemoteControlConfigHonorsOptionalFields(t *testing.T) {
 	}
 }
 
-func TestRemoteUnattendedEventsDoNotAutoApprove(t *testing.T) {
-	cmd, err := remoteCommandForUnattendedEvent(protocol.SessionEvent{Type: "event.confirm_request"})
+func TestRemoteUnattendedPolicyDoesNotAutoApprove(t *testing.T) {
+	cmd, err := remoteUnattendedPolicyCommand(protocol.SessionEvent{Type: "event.confirm_request"})
 	if err != nil {
 		t.Fatalf("confirm request handling: %v", err)
 	}
@@ -66,14 +66,29 @@ func TestRemoteUnattendedEventsDoNotAutoApprove(t *testing.T) {
 		t.Fatalf("confirm request command = %+v data=%s, want denial", cmd, string(cmd.Data))
 	}
 
-	_, err = remoteCommandForUnattendedEvent(protocol.SessionEvent{Type: "event.plan_proposed"})
+	_, err = remoteUnattendedPolicyCommand(protocol.SessionEvent{Type: "event.plan_proposed"})
 	if err == nil || !strings.Contains(err.Error(), "requires interactive approval") {
 		t.Fatalf("plan proposal err = %v, want interactive approval error", err)
 	}
 
-	_, err = remoteCommandForUnattendedEvent(protocol.SessionEvent{Type: "event.user_question"})
+	_, err = remoteUnattendedPolicyCommand(protocol.SessionEvent{Type: "event.user_question"})
 	if err == nil || !strings.Contains(err.Error(), "requires an interactive answer") {
 		t.Fatalf("user question err = %v, want interactive answer error", err)
+	}
+}
+
+func TestRemotePromptResultKeepsFinalTextWhenAgentErrorHasOutput(t *testing.T) {
+	text, err := remotePromptResultFromUnattended(unattendedRunResult{
+		FinalText: "partial answer",
+		HadError:  true,
+		Err:       "late agent error",
+		ErrSource: "agent",
+	})
+	if err != nil {
+		t.Fatalf("remotePromptResultFromUnattended err = %v, want nil", err)
+	}
+	if text != "partial answer" {
+		t.Fatalf("remotePromptResultFromUnattended text = %q, want partial answer", text)
 	}
 }
 

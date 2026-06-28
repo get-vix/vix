@@ -133,77 +133,44 @@ func (rc *remoteControl) handleMessage(ctx context.Context, msg remoteMessage) {
 }
 
 func (s *Server) runRemotePrompt(ctx context.Context, cwd, workflow, prompt string) (string, error) {
-	runID := generateSessionID()
-	session := NewSession(runID, s, nil, s.model, cwd, "", false, false, false, true, ctx)
-	session.origin = "vix"
-	session.trigger = &protocol.TriggerInfo{Type: "remote_control", Ref: "remote"}
-	session.title = "Remote control - " + time.Now().Format(jobTitleTimeFormat)
-
-	s.sessionMu.Lock()
-	s.sessions[runID] = session
-	s.sessionMu.Unlock()
-	s.broadcastSessionsChanged()
-	defer func() {
-		s.sessionMu.Lock()
-		delete(s.sessions, runID)
-		s.sessionMu.Unlock()
-		session.cancel()
-		s.broadcastSessionsChanged()
-	}()
-
-	go session.Run()
-
-	var startCmd protocol.SessionCommand
+	req := unattendedRunRequest{
+		Model:     s.model,
+		CWD:       cwd,
+		Title:     "Remote control - " + time.Now().Format(jobTitleTimeFormat),
+		Trigger:   &protocol.TriggerInfo{Type: "remote_control", Ref: "remote"},
+		Prompt:    prompt,
+		AutoWrite: false,
+		AutoDirs:  false,
+	}
 	if workflow != "" {
-		data, _ := json.Marshal(protocol.SessionWorkflowData{Name: workflow, Text: prompt})
-		startCmd = protocol.SessionCommand{Type: "session.workflow", Data: data}
-	} else {
-		data, _ := json.Marshal(protocol.SessionInputData{Text: prompt})
-		startCmd = protocol.SessionCommand{Type: "session.input", Data: data}
+		req.Workflow.Name = workflow
 	}
-	if !session.pushCommand(ctx, startCmd) {
-		return "", fmt.Errorf("session refused start command")
-	}
-
-	var final strings.Builder
-	var hadError bool
-	var errMsg string
-	for {
-		select {
-		case ev := <-session.eventChan:
-			switch ev.Type {
-			case "event.stream_chunk":
-				final.WriteString(decodeRemoteEvent[protocol.EventStreamChunk](ev.Data).Text)
-			case "event.confirm_request", "event.user_question", "event.plan_proposed":
-				cmd, err := remoteCommandForUnattendedEvent(ev)
-				if err != nil {
-					session.persist()
-					return "", err
-				}
-				session.pushCommand(ctx, cmd)
-			case "event.error":
-				hadError = true
-				errMsg = decodeRemoteEvent[protocol.EventError](ev.Data).Message
-			case "event.agent_done":
-				if hadError && strings.TrimSpace(final.String()) == "" {
-					return "", errors.New(errMsg)
-				}
-				session.persist()
-				return final.String(), nil
-			}
-		case <-ctx.Done():
-			session.persist()
-			return "", ctx.Err()
-		case <-session.ctx.Done():
-			if hadError && strings.TrimSpace(final.String()) == "" {
-				return "", errors.New(errMsg)
-			}
-			return final.String(), nil
-		}
-	}
+	res := s.runUnattendedSession(ctx, req, remoteUnattendedPolicy)
+	return remotePromptResultFromUnattended(res)
 }
 
-func remoteCommandForUnattendedEvent(ev protocol.SessionEvent) (protocol.SessionCommand, error) {
+func remotePromptResultFromUnattended(res unattendedRunResult) (string, error) {
+	if res.HadError {
+		if strings.TrimSpace(res.FinalText) != "" && res.ErrSource == "agent" {
+			return res.FinalText, nil
+		}
+		if strings.TrimSpace(res.Err) == "" {
+			return res.FinalText, errors.New("remote control run failed")
+		}
+		return res.FinalText, errors.New(res.Err)
+	}
+	return res.FinalText, nil
+}
+
+func remoteUnattendedPolicy(ctx context.Context, session *Session, ev protocol.SessionEvent) (bool, error) {
+	cmd, err := remoteUnattendedPolicyCommand(ev)
+	if err != nil {
+		return true, err
+	}
+	return session.pushCommand(ctx, cmd), nil
+}
+
+func remoteUnattendedPolicyCommand(ev protocol.SessionEvent) (protocol.SessionCommand, error) {
 	switch ev.Type {
 	case "event.confirm_request":
 		data, _ := json.Marshal(protocol.SessionConfirmData{Approved: false})
@@ -215,13 +182,6 @@ func remoteCommandForUnattendedEvent(ev protocol.SessionEvent) (protocol.Session
 	default:
 		return protocol.SessionCommand{}, fmt.Errorf("unsupported unattended event: %s", ev.Type)
 	}
-}
-
-func decodeRemoteEvent[T any](data any) T {
-	var out T
-	raw, _ := json.Marshal(data)
-	_ = json.Unmarshal(raw, &out)
-	return out
 }
 
 func authorizedRemoteID(id string, allowed []string) bool {
