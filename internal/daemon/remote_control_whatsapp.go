@@ -15,6 +15,8 @@ import (
 	"time"
 )
 
+const defaultWhatsAppGraphAPIVersion = "v20.0"
+
 type whatsappWebhookPayload struct {
 	Entry []struct {
 		Changes []struct {
@@ -29,6 +31,14 @@ type whatsappWebhookPayload struct {
 			} `json:"value"`
 		} `json:"changes"`
 	} `json:"entry"`
+}
+
+func (cfg WhatsAppRemoteConfig) graphAPIVersion() string {
+	v := strings.TrimSpace(cfg.GraphAPIVersion)
+	if v == "" {
+		return defaultWhatsAppGraphAPIVersion
+	}
+	return v
 }
 
 func (rc *remoteControl) startWhatsApp(ctx context.Context) error {
@@ -148,7 +158,7 @@ func validWhatsAppSignature(body []byte, signature, appSecret string) bool {
 }
 
 func (rc *remoteControl) sendWhatsAppMessage(ctx context.Context, cfg WhatsAppRemoteConfig, to, text string) error {
-	endpoint := fmt.Sprintf("https://graph.facebook.com/v20.0/%s/messages", cfg.PhoneNumberID)
+	endpoint := fmt.Sprintf("https://graph.facebook.com/%s/%s/messages", cfg.graphAPIVersion(), cfg.PhoneNumberID)
 	payload := map[string]any{
 		"messaging_product": "whatsapp",
 		"to":                to,

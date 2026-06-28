@@ -19,11 +19,19 @@ import (
 
 // RemoteControlConfig configures opt-in remote control from chat services.
 type RemoteControlConfig struct {
-	Enabled  bool                 `json:"enabled"`
-	CWD      string               `json:"cwd"`
-	Workflow string               `json:"workflow,omitempty"`
-	Telegram TelegramRemoteConfig `json:"telegram,omitempty"`
-	WhatsApp WhatsAppRemoteConfig `json:"whatsapp,omitempty"`
+	Enabled           bool                 `json:"enabled"`
+	CWD               string               `json:"cwd"`
+	Workflow          string               `json:"workflow,omitempty"`
+	MaxConcurrentRuns int                  `json:"max_concurrent_runs,omitempty"`
+	Telegram          TelegramRemoteConfig `json:"telegram,omitempty"`
+	WhatsApp          WhatsAppRemoteConfig `json:"whatsapp,omitempty"`
+}
+
+func (cfg RemoteControlConfig) maxConcurrentRuns() int {
+	if cfg.MaxConcurrentRuns <= 0 {
+		return 1
+	}
+	return cfg.MaxConcurrentRuns
 }
 
 type TelegramRemoteConfig struct {
@@ -39,6 +47,7 @@ type WhatsAppRemoteConfig struct {
 	AppSecret       string   `json:"app_secret"`
 	PhoneNumberID   string   `json:"phone_number_id"`
 	VerifyToken     string   `json:"verify_token"`
+	GraphAPIVersion string   `json:"graph_api_version,omitempty"`
 	WebhookAddr     string   `json:"webhook_addr,omitempty"`
 	AllowedContacts []string `json:"allowed_contacts"`
 }
@@ -123,14 +132,9 @@ func (rc *remoteControl) handleMessage(ctx context.Context, msg remoteMessage) {
 	}
 }
 
-func remoteSessionAutomaticPermissions() (autoWrite, autoDirs bool) {
-	return false, false
-}
-
 func (s *Server) runRemotePrompt(ctx context.Context, cwd, workflow, prompt string) (string, error) {
 	runID := generateSessionID()
-	autoWrite, autoDirs := remoteSessionAutomaticPermissions()
-	session := NewSession(runID, s, nil, s.model, cwd, "", false, autoWrite, autoDirs, true, ctx)
+	session := NewSession(runID, s, nil, s.model, cwd, "", false, false, false, true, ctx)
 	session.origin = "vix"
 	session.trigger = &protocol.TriggerInfo{Type: "remote_control", Ref: "remote"}
 	session.title = "Remote control - " + time.Now().Format(jobTitleTimeFormat)

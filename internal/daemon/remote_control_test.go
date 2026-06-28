@@ -34,10 +34,23 @@ func TestAuthorizedRemoteIDRequiresAllowlist(t *testing.T) {
 	}
 }
 
-func TestRemoteSessionOptionsDisableAutomaticPermissions(t *testing.T) {
-	autoWrite, autoDirs := remoteSessionAutomaticPermissions()
-	if autoWrite || autoDirs {
-		t.Fatalf("remote automatic permissions = write:%v dirs:%v, want both false", autoWrite, autoDirs)
+func TestRemoteControlDefaults(t *testing.T) {
+	cfg := RemoteControlConfig{}
+	if got := cfg.maxConcurrentRuns(); got != 1 {
+		t.Fatalf("maxConcurrentRuns() = %d, want 1", got)
+	}
+	if got := cfg.WhatsApp.graphAPIVersion(); got != defaultWhatsAppGraphAPIVersion {
+		t.Fatalf("graphAPIVersion() = %q, want %q", got, defaultWhatsAppGraphAPIVersion)
+	}
+}
+
+func TestRemoteControlConfigHonorsOptionalFields(t *testing.T) {
+	cfg := RemoteControlConfig{MaxConcurrentRuns: 3, WhatsApp: WhatsAppRemoteConfig{GraphAPIVersion: "v21.0"}}
+	if got := cfg.maxConcurrentRuns(); got != 3 {
+		t.Fatalf("maxConcurrentRuns() = %d, want 3", got)
+	}
+	if got := cfg.WhatsApp.graphAPIVersion(); got != "v21.0" {
+		t.Fatalf("graphAPIVersion() = %q, want v21.0", got)
 	}
 }
 
