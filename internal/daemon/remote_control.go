@@ -65,10 +65,30 @@ type remoteHTTPClient interface {
 	Do(*http.Request) (*http.Response, error)
 }
 
+const remoteControlBusyMessage = "vix remote control is busy; try again after the current run finishes."
+
 type remoteControl struct {
-	server *Server
-	cfg    RemoteControlConfig
-	http   remoteHTTPClient
+	server    *Server
+	cfg       RemoteControlConfig
+	http      remoteHTTPClient
+	runs      chan struct{}
+	runPrompt func(context.Context, string, string, string) (string, error)
+}
+
+func newRemoteControl(server *Server, cfg RemoteControlConfig, hc remoteHTTPClient) *remoteControl {
+	if hc == nil {
+		hc = http.DefaultClient
+	}
+	rc := &remoteControl{
+		server: server,
+		cfg:    cfg,
+		http:   hc,
+		runs:   make(chan struct{}, cfg.maxConcurrentRuns()),
+	}
+	if server != nil {
+		rc.runPrompt = server.runRemotePrompt
+	}
+	return rc
 }
 
 func LoadRemoteControlConfig() (RemoteControlConfig, error) {
@@ -96,7 +116,7 @@ func (s *Server) StartRemoteControl(ctx context.Context, cfg RemoteControlConfig
 	if strings.TrimSpace(cfg.CWD) == "" {
 		return fmt.Errorf("remote control: missing cwd")
 	}
-	rc := &remoteControl{server: s, cfg: cfg, http: http.DefaultClient}
+	rc := newRemoteControl(s, cfg, nil)
 	started := false
 	if cfg.Telegram.Enabled {
 		if err := rc.startTelegram(ctx); err != nil {
@@ -121,14 +141,42 @@ func (rc *remoteControl) handleMessage(ctx context.Context, msg remoteMessage) {
 	if text == "" {
 		return
 	}
+	if !rc.tryAcquireRun() {
+		if err := msg.Reply(ctx, remoteControlBusyMessage); err != nil {
+			LogError("remote control: reply to %s %s failed: %v", msg.Provider, msg.SenderID, err)
+		}
+		return
+	}
+
 	LogInfo("remote control: received %s message from %s", msg.Provider, msg.SenderID)
-	result, err := rc.server.runRemotePrompt(ctx, rc.cfg.CWD, rc.cfg.Workflow, text)
+	var result string
+	var err error
+	func() {
+		defer rc.releaseRun()
+		result, err = rc.runPrompt(ctx, rc.cfg.CWD, rc.cfg.Workflow, text)
+	}()
 	if err != nil {
 		result = "vix remote control error: " + err.Error()
 		LogError("remote control: %s", err)
 	}
 	if err := msg.Reply(ctx, result); err != nil {
 		LogError("remote control: reply to %s %s failed: %v", msg.Provider, msg.SenderID, err)
+	}
+}
+
+func (rc *remoteControl) tryAcquireRun() bool {
+	select {
+	case rc.runs <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (rc *remoteControl) releaseRun() {
+	select {
+	case <-rc.runs:
+	default:
 	}
 }
 

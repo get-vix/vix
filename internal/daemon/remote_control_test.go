@@ -92,6 +92,70 @@ func TestRemotePromptResultKeepsFinalTextWhenAgentErrorHasOutput(t *testing.T) {
 	}
 }
 
+func TestRemoteControlRejectsMessageWhenConcurrencyLimitReached(t *testing.T) {
+	rc := newRemoteControl(nil, RemoteControlConfig{MaxConcurrentRuns: 1}, nil)
+	if !rc.tryAcquireRun() {
+		t.Fatal("tryAcquireRun() = false, want initial slot")
+	}
+	defer rc.releaseRun()
+
+	var replies []string
+	rc.handleMessage(context.Background(), remoteMessage{
+		Provider: "telegram",
+		SenderID: "42",
+		Text:     "run tests",
+		Reply: func(_ context.Context, text string) error {
+			replies = append(replies, text)
+			return nil
+		},
+	})
+
+	if len(replies) != 1 {
+		t.Fatalf("replies = %d, want 1", len(replies))
+	}
+	if replies[0] != remoteControlBusyMessage {
+		t.Fatalf("reply = %q, want %q", replies[0], remoteControlBusyMessage)
+	}
+}
+
+func TestRemoteControlReleasesRunSlotBeforeReplyReturns(t *testing.T) {
+	rc := newRemoteControl(nil, RemoteControlConfig{MaxConcurrentRuns: 1}, nil)
+	rc.runPrompt = func(context.Context, string, string, string) (string, error) {
+		return "done", nil
+	}
+
+	replyStarted := make(chan struct{})
+	releaseReply := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		rc.handleMessage(context.Background(), remoteMessage{
+			Provider: "telegram",
+			SenderID: "42",
+			Text:     "run tests",
+			Reply: func(_ context.Context, text string) error {
+				close(replyStarted)
+				<-releaseReply
+				return nil
+			},
+		})
+		close(done)
+	}()
+
+	select {
+	case <-replyStarted:
+	case <-time.After(time.Second):
+		t.Fatal("reply did not start")
+	}
+	if !rc.tryAcquireRun() {
+		close(releaseReply)
+		<-done
+		t.Fatal("run slot remained occupied while reply was blocked")
+	}
+	rc.releaseRun()
+	close(releaseReply)
+	<-done
+}
+
 func TestTelegramSendMessageRedactsBotTokenFromErrors(t *testing.T) {
 	secret := "123456:secret-token"
 	rc := &remoteControl{http: roundTripFunc(func(req *http.Request) (*http.Response, error) {
