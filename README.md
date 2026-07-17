@@ -74,7 +74,7 @@ All benchmarks are fully reproducible and include the full LLM transcripts and p
 </div>
 
 > [!WARNING]
-> Works only for macOS and Linus for now.
+> Works only for macOS and Linux for now.
 
 ```bash
 curl -fsSL https://getvix.dev/install.sh | bash
@@ -148,6 +148,21 @@ with sender compromise. Use a locked-down `cwd`, keep `max_concurrent_runs` low,
 and add deny-list entries for sensitive paths such as `~/.ssh`, `~/.aws`,
 `~/.kube`, password-manager data, and cloud credential directories. Remote runs
 deny confirmation prompts and cannot answer user questions or approve plans.
+
+<div align="center">
+
+## Providers & Configuration
+
+</div>
+
+Vix ships with built-in support for **Anthropic, OpenAI, OpenRouter, AWS Bedrock, Ollama, llama.cpp** and more.
+
+You can add your own provider — or override any setting on a built-in one — by dropping a
+`providers.json` file into `~/.vix/` or `./.vix/` (project-level). The file is merged on top
+of the embedded defaults: new providers are appended, existing ones are field-patched.
+
+See **[PROVIDERS.md](PROVIDERS.md)** for the full field reference, common recipes, model
+discovery, and OAuth configuration.
 
 <div align="center">
 

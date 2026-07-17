@@ -24,6 +24,8 @@ var managedDefaultFiles = []string{
 	"config/workflow.json",
 	"config/languages.json",
 	"skills/jobs/SKILL.md",
+	"skills/vix-help/SKILL.md",
+	"skills/vix-help/references/vix-manual.md",
 }
 
 // BootstrapHomeVixDir writes default config, agent, and prompt files into

@@ -104,19 +104,7 @@ func Init(cfg Config) {
 		lastEventTime = now
 		sessionMu.Unlock()
 
-		c, err := posthog.NewWithConfig(embeddedAPIKey, posthog.Config{
-			Endpoint:  posthogHost,
-			BatchSize: 20,
-			Interval:  30 * time.Second,
-			// Enable server-side GeoIP enrichment. The SDK disables it by
-			// default for Go (server-side assumption); pass false explicitly so
-			// PostHog derives location properties from the request IP.
-			DisableGeoIP: posthog.Ptr(false),
-			// Bound Close() so a flush-on-crash can't hang the dying
-			// process indefinitely on a dead network (Close waits forever
-			// when ShutdownTimeout is unset).
-			ShutdownTimeout: 3 * time.Second,
-		})
+		c, err := posthog.NewWithConfig(embeddedAPIKey, posthogClientConfig(posthogHost))
 		if err != nil {
 			logDebug("[telemetry] failed to create PostHog client: %v", err)
 			return
@@ -125,6 +113,35 @@ func Init(cfg Config) {
 		enabled = true
 		logDebug("[telemetry] initialized (device=%s, mode=%s)", deviceID, mode)
 	})
+}
+
+// posthogClientConfig returns the PostHog client configuration used by Init,
+// parameterized by endpoint so tests can point it at a local server. The retry
+// and backpressure settings keep telemetry fire-and-forget when the endpoint is
+// unreachable (e.g. PostHog blocked at the DNS/network level): the SDK defaults
+// would retry each failing batch 10 times, turning a blocked host into a steady
+// stream of requests that hammers the user's DNS resolver. We cap retries at one
+// extra attempt, fail the upload fast, and make batch submission non-blocking so
+// a saturated worker pool can never apply backpressure to Enqueue. Telemetry is
+// best-effort: dropping events on a dead network is the correct behaviour.
+func posthogClientConfig(endpoint string) posthog.Config {
+	return posthog.Config{
+		Endpoint:  endpoint,
+		BatchSize: 20,
+		Interval:  30 * time.Second,
+		// Enable server-side GeoIP enrichment. The SDK disables it by default
+		// for Go (server-side assumption); pass false explicitly so PostHog
+		// derives location properties from the request IP.
+		DisableGeoIP: posthog.Ptr(false),
+		// Bound Close() so a flush-on-crash can't hang the dying process
+		// indefinitely on a dead network (Close waits forever when
+		// ShutdownTimeout is unset).
+		ShutdownTimeout: 3 * time.Second,
+		// See the doc comment: keep telemetry quiet on an unreachable endpoint.
+		MaxRetries:         posthog.Ptr(1),
+		BatchUploadTimeout: 5 * time.Second,
+		BatchSubmitTimeout: -1,
+	}
 }
 
 // Shutdown flushes pending events and closes the client.

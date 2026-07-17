@@ -178,6 +178,9 @@ Scenarios in the suite, by area (subcategory IDs match `harness.Meta`):
   `wires.streaming_continuation` (#34).
 - **Session & context** — `session.persistence` (#22),
   `context.auto_compact` (#19), `context.manual` (`/clear`).
+- **Auth & credentials** — `models.oauth_no_keychain` (#53): activating an OAuth
+  "Create token" without a usable OS keychain surfaces an error instead of
+  freezing the TUI (skips where a keychain is present).
 - **Streaming & resilience** — `stream.chunks`, `stream.thinking`,
   `stream.retry` (retryable status matrix), `stream.error` (fail-fast matrix).
 - **Validation** — `tools.validation` (#21).

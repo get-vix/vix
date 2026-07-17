@@ -21,6 +21,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/mattn/go-isatty"
 
+	"github.com/get-vix/vix/internal/auth"
 	"github.com/get-vix/vix/internal/config"
 	"github.com/get-vix/vix/internal/daemon"
 	"github.com/get-vix/vix/internal/daemon/brain"
@@ -224,6 +225,12 @@ func main() {
 	if *prompt != "" {
 		appMode = "headless"
 	}
+	// Allow interactive OAuth logins to persist their token to the plaintext,
+	// home-global auth.json (shared with API-key credentials) only when the user
+	// has opted in via oauth_plaintext_fallback / VIX_ALLOW_PLAINTEXT_OAUTH, and
+	// only when the OS keychain is unusable. Off by default (keychain-only).
+	auth.EnablePlaintextFallback(config.OAuthPlaintextFallback(),
+		config.NewVixPaths("", config.HomeVixDir(), "").AuthFile())
 	telemetry.Init(telemetry.Config{Version: Version, Mode: appMode, Enabled: config.TelemetryEnabled()})
 	defer telemetry.Shutdown()
 	// Top-level crash handler: capture the panic as a PostHog exception and

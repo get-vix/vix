@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/get-vix/vix/internal/auth"
 	"github.com/get-vix/vix/internal/config"
 	"github.com/get-vix/vix/internal/daemon"
 	"github.com/get-vix/vix/internal/daemon/brain"
@@ -136,6 +137,12 @@ func main() {
 	}
 	telemetry.Init(telemetry.Config{Version: Version, Mode: "daemon", Enabled: config.TelemetryEnabled()})
 	defer telemetry.Shutdown()
+	// Allow interactive OAuth logins to persist their token to the plaintext,
+	// home-global auth.json (shared with API-key credentials) only when the user
+	// has opted in via oauth_plaintext_fallback / VIX_ALLOW_PLAINTEXT_OAUTH, and
+	// only when the OS keychain is unusable. Off by default (keychain-only).
+	auth.EnablePlaintextFallback(config.OAuthPlaintextFallback(),
+		config.NewVixPaths("", config.HomeVixDir(), "").AuthFile())
 	// Top-level crash handler: capture the panic as a PostHog exception and
 	// flush synchronously (Shutdown is bounded by ShutdownTimeout) before the
 	// process dies, then re-panic to preserve Go's crash output and exit code.

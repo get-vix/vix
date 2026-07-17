@@ -44,3 +44,42 @@ func TestLogRetentionDays(t *testing.T) {
 		})
 	}
 }
+
+func TestOAuthPlaintextFallback(t *testing.T) {
+	cases := []struct {
+		name     string
+		settings string
+		env      string
+		want     bool
+	}{
+		{"absent file defaults off", "", "", false},
+		{"absent key defaults off", `{"version":1}`, "", false},
+		{"explicit true", `{"features":{"oauth_plaintext_fallback":true}}`, "", true},
+		{"explicit false", `{"features":{"oauth_plaintext_fallback":false}}`, "", false},
+		{"env forces on over absent", "", "1", true},
+		{"env forces on over explicit false", `{"features":{"oauth_plaintext_fallback":false}}`, "true", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			writeHomeSettings(t, tc.settings)
+			t.Setenv("VIX_ALLOW_PLAINTEXT_OAUTH", tc.env)
+			if got := OAuthPlaintextFallback(); got != tc.want {
+				t.Errorf("OAuthPlaintextFallback() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSetOAuthPlaintextFallbackRoundTrips(t *testing.T) {
+	writeHomeSettings(t, "")
+	t.Setenv("VIX_ALLOW_PLAINTEXT_OAUTH", "")
+	if OAuthPlaintextFallback() {
+		t.Fatal("expected default false")
+	}
+	if err := SetOAuthPlaintextFallback(true); err != nil {
+		t.Fatalf("SetOAuthPlaintextFallback: %v", err)
+	}
+	if !OAuthPlaintextFallback() {
+		t.Error("expected true after Set")
+	}
+}

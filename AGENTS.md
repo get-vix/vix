@@ -255,6 +255,26 @@ Two invocation paths, both calling `LoadForTool` under the hood:
 
 `/skills` lists all loaded skills.
 
+### Bundled skills
+
+A few skills ship with vix under `internal/config/defaults/skills/` (embedded via
+`//go:embed defaults` and bootstrapped into `~/.vix` on startup): `jobs`,
+`hooks`, and `vix-help`. To make one refresh on upgrade, list its files in
+`managedDefaultFiles` (`internal/config/bootstrap.go`); first-run installs get
+the whole tree via `seedAllDefaults`.
+
+`vix-help` answers questions about vix itself from the official docs. Its
+primary source is the machine-readable manual published at
+`https://getvix.dev/manual/<section-id>.md` (fetched with `web_fetch`), with a
+bundled offline snapshot at
+`internal/config/defaults/skills/vix-help/references/vix-manual.md`. That manual
+is **generated** in the `vix-website` repo (`npm run generate:manual` renders
+`src/pages/Docs.tsx` to `public/manual/*.md`; a vitest staleness guard fails if
+it drifts). **Syncing the offline snapshot** is a manual/CI step: regenerate the
+website manual, then concatenate `public/manual/*.md` (in `index.md` order) into
+the vix `references/vix-manual.md`. Refresh it whenever the docs change so the
+offline fallback stays current.
+
 ## Default access policy
 
 The agent decides whether a path is accessible by default by checking, in order: cwd, `$HOME`, the host's system directories (per platform), or any entry in `allowed_directories`. Anything outside that set surfaces as a confirmation prompt (interactive sessions) or an error (headless). The `deny_list` always wins, even if the path matches one of the auto-allow categories.
@@ -274,7 +294,9 @@ The platform's system directories live in `internal/daemon/platform_policy.go` a
 }
 ```
 
-The legacy flat-array form (`"deny_list": ["./secrets"]`) still parses and is treated as paths-only. Deny takes precedence over `allowed_directories`: a path that matches both is blocked. Path entries may be absolute or relative to the config file that declares them. Both lists are unioned across layered configs (home + project).
+The legacy flat-array form (`"deny_list": ["./secrets"]`) still parses and is treated as paths-only. Deny takes precedence over `allowed_directories`: a path that matches both is blocked. Path entries may be absolute, `~`-prefixed (expanded to the user's home directory), or relative. A relative entry is resolved against **both** the directory of the config file that declares it **and** the session's working directory (project root), and both interpretations are added to the deny list. This dual resolution is why a `deny_list.paths` entry like `.envrc.private` in `./.vix/settings.json` blocks `<project>/.envrc.private` (the file the user means) rather than only the phantom `<project>/.vix/.envrc.private` that config-dir-relative resolution alone would produce. Both lists are unioned across layered configs (home + project).
+
+Resolution lives in `LoadProjectConfig` (`internal/daemon/workflow.go`): `~` expansion + config-dir-relative form + raw relative entries recorded in `ProjectConfig.DenyPathsRel`; the cwd-relative form is added when the session seeds its deny list via `combineDenyPaths` (`internal/daemon/deny_list.go`).
 
 **Path match semantics**: a target path is blocked iff (after symlink resolution and `Clean`) it equals a deny entry or is a descendant of one.
 

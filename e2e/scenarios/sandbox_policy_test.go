@@ -139,6 +139,45 @@ func TestDenyListBlocksPathTools(t *testing.T) {
 	}
 }
 
+// TestDenyListRelativeEntryBlocksProjectRoot pins the fix for issue #52: a
+// RELATIVE deny_list.paths entry declared in ./.vix/settings.json must block the
+// matching file at the PROJECT ROOT — not just the phantom ./.vix/<entry> that
+// config-dir-relative resolution produces. Before the fix the deny entry was
+// silently anchored under .vix/, so the secret at the workdir root was read and
+// leaked to the model despite being "denied".
+func TestDenyListRelativeEntryBlocksProjectRoot(t *testing.T) {
+	const sentinel = "TOPSECRET_ISSUE52_VALUE"
+
+	h := harness.Start(t, harness.Meta{
+		Category:    "sandbox",
+		Subcategory: "sandbox.deny_paths",
+		Description: "a relative deny_list.paths entry in ./.vix/settings.json blocks the file at the project root (issue #52)",
+		Wire:        harness.WireMessages,
+		Variant:     "relative-project-root",
+	}, harness.WithSettings(`{"deny_list":{"paths":[".envrc.private"]}}`))
+
+	if err := h.FS.Write(".envrc.private", "API_KEY="+sentinel+"\n"); err != nil {
+		t.Fatalf("seed .envrc.private: %v", err)
+	}
+	h.UI.WaitStable(400 * time.Millisecond)
+
+	h.Mock.Enqueue(
+		harness.ToolUse("read_file", `{"path":".envrc.private"}`),
+		harness.Text("The operation was blocked."),
+	)
+	h.UI.Type("read the private env file")
+	h.UI.Enter()
+	h.UI.ResolveToolPrompts("The operation was blocked.")
+	h.UI.Shot("after-deny-relative")
+
+	if requestsLeak(h, sentinel) {
+		t.Fatal("deny_list breach: secret leaked to the model despite relative deny entry (issue #52)")
+	}
+	if !anyToolResultContains(h, "blocked by deny_list") {
+		t.Fatal("no deny_list refusal returned to the model for the relative entry")
+	}
+}
+
 // TestDenyListFiltersSearchOutput proves grep/glob silently drop matches that
 // live inside a denied directory — the match (and any secret on it) never
 // reaches the model, and the result is filtered, not errored. T2.3.

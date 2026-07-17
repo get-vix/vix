@@ -136,6 +136,20 @@ func evalSymlinksComponents(p string) string {
 	return current
 }
 
+// combineDenyPaths returns the effective deny path list for a session: the
+// config-resolved absolute entries (denyPaths) plus each raw relative entry
+// (denyPathsRel) resolved against cwd, deduped. This is what makes a relative
+// `deny_list.paths` entry like ".envrc.private" in ./.vix/settings.json block
+// the file at the project root, in addition to the config-dir-relative form
+// that LoadProjectConfig already produced.
+func combineDenyPaths(cwd string, denyPaths, denyPathsRel []string) []string {
+	out := append([]string(nil), denyPaths...)
+	for _, rel := range denyPathsRel {
+		out = appendUniqueStr(out, filepath.Clean(filepath.Join(cwd, rel)))
+	}
+	return out
+}
+
 // isPathDenied reports whether absPath matches any deny_list entry.
 // Match means: the normalized (symlink-resolved) absPath equals or is under
 // the normalized (symlink-resolved) entry. Returns the matching entry for

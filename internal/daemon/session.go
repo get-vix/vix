@@ -771,10 +771,14 @@ func (s *Session) initBrain() {
 		s.allowedDirsMu.Unlock()
 	}
 
-	// Seed deny list (paths + urls) from config.
-	if len(projectConfig.DenyPaths) > 0 || len(projectConfig.DenyURLs) > 0 {
+	// Seed deny list (paths + urls) from config. Relative path entries are
+	// additionally resolved against the working directory so that, e.g., a
+	// `deny_list.paths` entry of ".envrc.private" in ./.vix/settings.json
+	// blocks the file at the project root — not just the phantom
+	// ./.vix/.envrc.private that config-dir-relative resolution produces.
+	if len(projectConfig.DenyPaths) > 0 || len(projectConfig.DenyURLs) > 0 || len(projectConfig.DenyPathsRel) > 0 {
 		s.denyListMu.Lock()
-		s.denyList = append([]string(nil), projectConfig.DenyPaths...)
+		s.denyList = combineDenyPaths(s.cwd, projectConfig.DenyPaths, projectConfig.DenyPathsRel)
 		s.denyURLs = append([]string(nil), projectConfig.DenyURLs...)
 		s.denyListMu.Unlock()
 	}

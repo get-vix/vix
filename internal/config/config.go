@@ -247,6 +247,24 @@ func RemoteControlEnabled() bool {
 	return feature("remote_control", false)
 }
 
+// OAuthPlaintextFallback reads the oauth_plaintext_fallback feature flag. It is
+// an opt-in escape hatch (default false): when true, interactive OAuth logins
+// may persist their tokens to the plaintext auth.json (0600) on machines with no
+// usable OS keychain, instead of hard-failing. The VIX_ALLOW_PLAINTEXT_OAUTH
+// environment variable forces it on, for headless/CI setups that never see a
+// keychain. Keep this off unless you understand that OAuth refresh tokens then
+// live unencrypted on disk.
+func OAuthPlaintextFallback() bool {
+	if v := os.Getenv("VIX_ALLOW_PLAINTEXT_OAUTH"); v == "1" || v == "true" {
+		return true
+	}
+	return feature("oauth_plaintext_fallback", false)
+}
+
+// SetOAuthPlaintextFallback writes the oauth_plaintext_fallback feature flag to
+// ~/.vix/settings.json.
+func SetOAuthPlaintextFallback(v bool) error { return setFeature("oauth_plaintext_fallback", v) }
+
 // JobsMaxConcurrentRuns reads jobs.max_concurrent_runs from
 // ~/.vix/settings.json. Returns 0 when absent/invalid, letting the scheduler
 // apply its default.

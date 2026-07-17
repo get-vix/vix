@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -242,5 +243,46 @@ func TestBootstrap_BakIsReplacedOnNextVersionChange(t *testing.T) {
 
 	if got := readFileT(t, filepath.Join(dir, "settings.json.bak")); got != "custom-v2-era" {
 		t.Errorf(".bak should hold the most recently replaced content, got %q", got)
+	}
+}
+
+// ── bundled vix-help skill ──
+
+// The vix-help skill (SKILL.md + its bundled offline manual) must be seeded on
+// first run and refreshed like any other managed default on a version change,
+// so existing installs pick it up on upgrade.
+func TestBootstrap_VixHelpSkillSeededAndManaged(t *testing.T) {
+	dir := t.TempDir()
+	if err := BootstrapHomeVixDir(dir, "v1"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	const skill = "skills/vix-help/SKILL.md"
+	const ref = "skills/vix-help/references/vix-manual.md"
+
+	for _, rel := range []string{skill, ref} {
+		if !exists(filepath.Join(dir, filepath.FromSlash(rel))) {
+			t.Fatalf("first run should seed %s", rel)
+		}
+	}
+
+	// The seeded SKILL.md must carry valid frontmatter naming the skill.
+	if got := readFileT(t, filepath.Join(dir, filepath.FromSlash(skill))); !strings.HasPrefix(got, "---\nname: vix-help") {
+		t.Errorf("vix-help SKILL.md should start with frontmatter naming the skill, got prefix %q", got[:min(40, len(got))])
+	}
+
+	// A user edit is refreshed back to the embedded default on version change,
+	// preserving the old copy as .bak.
+	skillPath := filepath.Join(dir, filepath.FromSlash(skill))
+	os.WriteFile(skillPath, []byte("my local tweak"), 0o644)
+
+	if err := BootstrapHomeVixDir(dir, "v2"); err != nil {
+		t.Fatalf("upgrade: %v", err)
+	}
+	if got, want := readFileT(t, skillPath), embeddedDefault(t, skill); got != want {
+		t.Error("vix-help SKILL.md should be refreshed to the embedded default on version change")
+	}
+	if got := readFileT(t, skillPath+".bak"); got != "my local tweak" {
+		t.Errorf("replaced SKILL.md should be backed up as .bak, got %q", got)
 	}
 }

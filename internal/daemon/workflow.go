@@ -453,12 +453,17 @@ type ProjectConfig struct {
 	Agent              string
 	AllowedDirectories []string
 	DenyPaths          []string
-	DenyURLs           []string
-	Features           map[string]bool
-	ToolTimeouts       ToolTimeouts
-	BashStepTimeouts   BashStepTimeouts
-	Compaction         Compaction
-	MCPServers         []mcp.ServerConfig
+	// DenyPathsRel holds the raw (tilde-expanded) relative deny_list.paths
+	// entries, preserved so the session can additionally resolve them against
+	// the working directory. See the resolution loop in LoadProjectConfig and
+	// the seeding logic in Session for why both interpretations are unioned.
+	DenyPathsRel     []string
+	DenyURLs         []string
+	Features         map[string]bool
+	ToolTimeouts     ToolTimeouts
+	BashStepTimeouts BashStepTimeouts
+	Compaction       Compaction
+	MCPServers       []mcp.ServerConfig
 }
 
 // HasFeature returns whether the named feature flag is enabled.
@@ -481,6 +486,34 @@ func resolveBashStepTimeout(stepTimeoutSec *int, cfg BashStepTimeouts) time.Dura
 		d = cfg.Max
 	}
 	return d
+}
+
+// expandTildePath expands a leading "~" (bare, or "~/…") to the user's home
+// directory. Other forms (including "~user") are returned unchanged. When the
+// home directory can't be determined the original string is returned so the
+// entry still resolves as a relative path rather than being silently dropped.
+func expandTildePath(p string) string {
+	if p != "~" && !strings.HasPrefix(p, "~/") {
+		return p
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return p
+	}
+	if p == "~" {
+		return home
+	}
+	return filepath.Join(home, p[2:])
+}
+
+// appendUniqueStr appends v to list only if it is not already present.
+func appendUniqueStr(list []string, v string) []string {
+	for _, existing := range list {
+		if existing == v {
+			return list
+		}
+	}
+	return append(list, v)
 }
 
 // LoadProjectConfig reads config from one or more paths (applied in order, later overrides earlier)
@@ -545,26 +578,24 @@ func LoadProjectConfig(configPaths ...string) ProjectConfig {
 				result.AllowedDirectories = append(result.AllowedDirectories, absDir)
 			}
 		}
-		// Merge deny list paths (union from all config files). Path entries
-		// resolve relative to the config file that declared them, matching
-		// the AllowedDirectories convention above.
-		for _, dir := range cfg.DenyList.Paths {
-			absDir := dir
-			if !filepath.IsAbs(absDir) {
-				absDir = filepath.Clean(filepath.Join(filepath.Dir(configPath), absDir))
-			} else {
-				absDir = filepath.Clean(absDir)
+		// Merge deny list paths (union from all config files). A leading `~`
+		// is expanded to the user's home directory. Absolute entries are used
+		// verbatim. Relative entries are resolved against the config file's
+		// directory (matching the AllowedDirectories convention above) AND
+		// recorded raw in DenyPathsRel so the session can additionally resolve
+		// them against the working directory. The dual resolution fixes the
+		// footgun where a `deny_list.paths` entry in `./.vix/settings.json`
+		// (e.g. ".envrc.private") was silently anchored under `.vix/` and never
+		// matched the file it was meant to protect at the project root.
+		for _, entry := range cfg.DenyList.Paths {
+			expanded := expandTildePath(entry)
+			if filepath.IsAbs(expanded) {
+				result.DenyPaths = appendUniqueStr(result.DenyPaths, filepath.Clean(expanded))
+				continue
 			}
-			found := false
-			for _, existing := range result.DenyPaths {
-				if existing == absDir {
-					found = true
-					break
-				}
-			}
-			if !found {
-				result.DenyPaths = append(result.DenyPaths, absDir)
-			}
+			result.DenyPaths = appendUniqueStr(result.DenyPaths,
+				filepath.Clean(filepath.Join(filepath.Dir(configPath), expanded)))
+			result.DenyPathsRel = appendUniqueStr(result.DenyPathsRel, expanded)
 		}
 		// Merge deny list URLs (union, normalized). URL entries are stored
 		// verbatim — the matcher in deny_list.go handles canonicalization at
