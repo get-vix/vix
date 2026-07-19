@@ -70,8 +70,8 @@ type SessionStartData struct {
 	AttachSessionID string `json:"attach_session_id,omitempty"`
 }
 
-// TriggerInfo records what fired a vix-initiated session: a scheduled job's
-// trigger type ("cron" | "at") and the job id.
+// TriggerInfo records what fired a vix-initiated session: a scheduled or manual
+// job, a lifecycle hook, or remote control.
 type TriggerInfo struct {
 	Type string `json:"type"`
 	Ref  string `json:"ref,omitempty"`

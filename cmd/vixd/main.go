@@ -194,6 +194,18 @@ func main() {
 		server.RegisterHandler(cmd, handler)
 	}, cred, ctx)
 	daemon.RegisterToolHandlers(server)
+	if config.RemoteControlEnabled() {
+		remoteCfg, err := daemon.LoadRemoteControlConfig()
+		if err != nil {
+			log.Printf("remote control: config load failed: %v", err)
+		} else if remoteCfg.Enabled {
+			if err := server.StartRemoteControl(ctx, remoteCfg); err != nil {
+				log.Printf("remote control: disabled: %v", err)
+			}
+		}
+	} else {
+		log.Printf("remote control: disabled (features.remote_control=false or VIX_DISABLE_REMOTE_CONTROL)")
+	}
 	if *webPort > 0 && !*noMissionControl {
 		go daemon.StartWebServer(ctx, server, *webPort)
 	}

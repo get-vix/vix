@@ -4,12 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 
-	"github.com/get-vix/vix/internal/config"
 	"github.com/get-vix/vix/internal/daemon/jobs"
 	"github.com/get-vix/vix/internal/protocol"
 )
@@ -39,168 +37,125 @@ func (s *Server) runJob(ctx context.Context, spec jobs.Spec, resolvedPrompt stri
 	if runID == "" {
 		runID = generateSessionID()
 	}
-	session := NewSession(runID, s, nil, s.model, spec.CWD, "", false,
-		spec.AutoWrite(), spec.AutoDirs(), true /*headless*/, ctx)
-	session.origin = "vix"
-	session.trigger = &protocol.TriggerInfo{Type: spec.Trigger.Type, Ref: spec.ID}
-	session.title = jobRunTitle(spec, time.Now())
-	// Expose the job's own directory (~/.vix/jobs/<id>) to workflow templates as
-	// $(workflow.dir), so a run can persist state (e.g. a memory file) alongside
-	// its spec. Empty when the home directory is unavailable. Also mark it
-	// allowed so the run can read/write there even when the jobs directory lives
-	// outside $HOME and cwd (e.g. under a --config-dir override) — this flows to
-	// the file-tool path checks and the bash sandbox's writable set alike.
-	if jobsRoot := config.NewVixPaths("", s.homeVixDir, "").Jobs(); jobsRoot != "" {
-		session.jobDir = filepath.Join(jobsRoot, spec.ID)
-		session.addAllowedDir(session.jobDir)
-	}
 
-	// Register so the web UI and session.list see the run while it's live.
-	s.sessionMu.Lock()
-	s.sessions[runID] = session
-	s.sessionMu.Unlock()
-	s.broadcastSessionsChanged()
-	defer func() {
-		s.sessionMu.Lock()
-		delete(s.sessions, runID)
-		s.sessionMu.Unlock()
-		session.cancel()
-		s.broadcastSessionsChanged()
-	}()
-
-	go session.Run()
-
-	// Dispatch exactly like headless, resolving the prompt as $(workflow.prompt)
-	// when a workflow is involved:
-	//   - inline workflow → session.workflow carrying the definition (the
-	//     session registers it transiently and runs it);
-	//   - named workflow_id → session.workflow by name;
-	//   - neither → plain chat turn.
-	var startCmd protocol.SessionCommand
-	switch {
-	case spec.Workflow != nil:
-		raw, _ := json.Marshal(spec.Workflow)
-		data, _ := json.Marshal(protocol.SessionWorkflowData{Name: spec.Workflow.Name, Text: resolvedPrompt, Workflow: raw})
-		startCmd = protocol.SessionCommand{Type: "session.workflow", Data: data}
-	case spec.WorkflowID != "":
-		data, _ := json.Marshal(protocol.SessionWorkflowData{Name: spec.WorkflowID, Text: resolvedPrompt})
-		startCmd = protocol.SessionCommand{Type: "session.workflow", Data: data}
-	default:
-		data, _ := json.Marshal(protocol.SessionInputData{Text: resolvedPrompt})
-		startCmd = protocol.SessionCommand{Type: "session.input", Data: data}
+	req := unattendedRunRequest{
+		RunID:                   runID,
+		Model:                   s.model,
+		CWD:                     spec.CWD,
+		Title:                   jobRunTitle(spec, time.Now()),
+		Trigger:                 &protocol.TriggerInfo{Type: spec.Trigger.Type, Ref: spec.ID},
+		Prompt:                  resolvedPrompt,
+		AutoWrite:               spec.AutoWrite(),
+		AutoDirs:                spec.AutoDirs(),
+		JobID:                   spec.ID,
+		SuppressFinishBroadcast: true,
 	}
-	if !session.pushCommand(ctx, startCmd) {
-		return jobs.RunResult{
-			Status: jobs.StatusError,
-			Err:    "session refused start command",
-			Errors: []jobs.RunError{{Source: "start_refused", Message: "session refused start command"}},
-		}
+	if spec.Workflow != nil {
+		req.Workflow.Inline = spec.Workflow
+	} else if spec.WorkflowID != "" {
+		req.Workflow.Name = spec.WorkflowID
 	}
-
-	// Consume the event stream (mandatory: emit blocks once eventChan fills
-	// with no reader), answering interactive events with unattended policy:
-	// confirmations are denied and recorded, questions take the first option,
-	// plans are approved — mirroring headless except for the deny.
-	var (
-		finalText  strings.Builder
-		agentTurns int
-		hadError   bool
-		errMsg     string
-		denials    []string
-	)
-
-consume:
-	for {
-		select {
-		case ev := <-session.eventChan:
-			switch ev.Type {
-			case "event.stream_chunk":
-				finalText.WriteString(decodeJobEvent[protocol.EventStreamChunk](ev.Data).Text)
-			case "event.stream_done":
-				agentTurns++
-			case "event.confirm_request":
-				cr := decodeJobEvent[protocol.EventConfirmRequest](ev.Data)
-				denials = append(denials, cr.ToolName)
-				data, _ := json.Marshal(protocol.SessionConfirmData{Approved: false})
-				session.pushCommand(ctx, protocol.SessionCommand{Type: "session.confirm", Data: data})
-			case "event.user_question":
-				uq := decodeJobEvent[protocol.EventUserQuestion](ev.Data)
-				answer := ""
-				if len(uq.RichOptions) > 0 {
-					answer = uq.RichOptions[0].Title
-				} else if len(uq.Options) > 0 {
-					answer = uq.Options[0]
-				}
-				data, _ := json.Marshal(protocol.SessionUserAnswerData{Answer: answer})
-				session.pushCommand(ctx, protocol.SessionCommand{Type: "session.user_answer", Data: data})
-			case "event.plan_proposed":
-				data, _ := json.Marshal(protocol.SessionPlanActionData{Action: "approve"})
-				session.pushCommand(ctx, protocol.SessionCommand{Type: "session.plan_action", Data: data})
-			case "event.error":
-				hadError = true
-				errMsg = decodeJobEvent[protocol.EventError](ev.Data).Message
-			case "event.agent_done":
-				break consume
-			}
-		case <-ctx.Done():
-			// Timeout or daemon shutdown: the session ctx (derived from ctx)
-			// is collapsing; persist what we have and report.
-			session.persist()
-			return jobs.RunResult{
-				Status:     jobs.StatusTimeout,
-				Err:        "run cancelled: " + ctx.Err().Error(),
-				SessionID:  runID,
-				AgentTurns: agentTurns,
-				Errors:     []jobs.RunError{{Source: "timeout", Message: "run cancelled: " + ctx.Err().Error()}},
-			}
-		case <-session.ctx.Done():
-			break consume
-		}
-	}
-
-	res := jobs.RunResult{Status: jobs.StatusOK, SessionID: runID, AgentTurns: agentTurns, Denials: denials}
-	if hadError {
-		res.Status = jobs.StatusError
-		res.Err = errMsg
-		res.Errors = append(res.Errors, jobs.RunError{Source: "agent", Message: errMsg})
-	}
-	if len(denials) > 0 && res.Err == "" {
-		res.Err = "needed approval for: " + strings.Join(denials, "; ")
-	}
-	if len(denials) > 0 {
-		res.Errors = append(res.Errors, jobs.RunError{Source: "denied", Message: "needed approval for: " + strings.Join(denials, "; ")})
-	}
+	run := s.runUnattendedSession(ctx, req, jobUnattendedPolicy)
+	res := jobRunResultFromUnattended(run)
 
 	// Skip rules — a skipped run leaves no trace:
 	//   cheap-poll: no agent step executed (a poll workflow whose execute_if
 	//   gate didn't pass — bash steps never call the LLM);
 	//   heartbeat OK: the model said nothing needs attention.
-	if res.Status == jobs.StatusOK && (agentTurns == 0 || isHeartbeatOK(finalText.String())) {
-		deleteSessionRecord(session.paths, runID)
-		return jobs.RunResult{Status: jobs.StatusSkipped, SessionID: runID, AgentTurns: agentTurns}
+	if res.Status == jobs.StatusOK && (run.AgentTurns == 0 || isHeartbeatOK(run.FinalText)) {
+		if run.session != nil {
+			deleteSessionRecord(run.session.paths, run.SessionID)
+			s.broadcastSessionsChanged()
+		}
+		return jobs.RunResult{Status: jobs.StatusSkipped, SessionID: run.SessionID, AgentTurns: run.AgentTurns}
 	}
 
 	// Every other finished run lands in open/: visible in the Vix-initiated
 	// sessions group until the user dismisses it (or retention sweeps it).
-	session.jobStatus = res.Status
-	// Successful GitHub-plan runs open their findings with a deterministic
-	// header line naming the item they picked; turn that into a per-item session
-	// title (e.g. "[Plan GitHub issues (get-vix/vix)] Addressing issue #29 — …").
-	// Other jobs (and the "nothing new"/error branches) keep the static title.
-	if res.Status == jobs.StatusOK {
-		if title, ok := issuePlanTitle(spec, finalText.String()); ok {
-			session.mu.Lock()
-			session.title = title
-			session.mu.Unlock()
+	if run.session != nil {
+		run.session.jobStatus = res.Status
+		// Successful GitHub-plan runs open their findings with a deterministic
+		// header line naming the item they picked; turn that into a per-item session
+		// title (e.g. "[Plan GitHub issues (get-vix/vix)] Addressing issue #29 — …").
+		// Other jobs (and the "nothing new"/error branches) keep the static title.
+		if res.Status == jobs.StatusOK {
+			if title, ok := issuePlanTitle(spec, run.FinalText); ok {
+				run.session.mu.Lock()
+				run.session.title = title
+				run.session.mu.Unlock()
+			}
 		}
+		run.session.persist()
+		sweepJobRunRecords(run.session.paths, spec.ID)
+		s.broadcastSessionsChanged()
 	}
-	session.persist()
-	sweepJobRunRecords(session.paths, spec.ID)
 
 	// Failures nobody saw get a synthetic explainer session on top of the run
 	// record, so the next TUI launch surfaces them.
 	if res.Status != jobs.StatusOK && !s.hasAttachedInstances() {
 		s.writeJobAlertSession(spec, res)
+	}
+	return res
+}
+
+func jobUnattendedPolicy(ctx context.Context, session *Session, ev protocol.SessionEvent) (bool, error) {
+	switch ev.Type {
+	case "event.confirm_request":
+		data, _ := json.Marshal(protocol.SessionConfirmData{Approved: false})
+		return session.pushCommand(ctx, protocol.SessionCommand{Type: "session.confirm", Data: data}), nil
+	case "event.user_question":
+		uq := decodeUnattendedEvent[protocol.EventUserQuestion](ev.Data)
+		answer := ""
+		if len(uq.RichOptions) > 0 {
+			answer = uq.RichOptions[0].Title
+		} else if len(uq.Options) > 0 {
+			answer = uq.Options[0]
+		}
+		data, _ := json.Marshal(protocol.SessionUserAnswerData{Answer: answer})
+		return session.pushCommand(ctx, protocol.SessionCommand{Type: "session.user_answer", Data: data}), nil
+	case "event.plan_proposed":
+		data, _ := json.Marshal(protocol.SessionPlanActionData{Action: "approve"})
+		return session.pushCommand(ctx, protocol.SessionCommand{Type: "session.plan_action", Data: data}), nil
+	default:
+		return false, nil
+	}
+}
+
+func jobRunResultFromUnattended(run unattendedRunResult) jobs.RunResult {
+	if run.TimedOut {
+		return jobs.RunResult{
+			Status:     jobs.StatusTimeout,
+			Err:        run.Err,
+			SessionID:  run.SessionID,
+			AgentTurns: run.AgentTurns,
+			Errors:     []jobs.RunError{{Source: "timeout", Message: run.Err}},
+		}
+	}
+
+	res := jobs.RunResult{
+		Status:     jobs.StatusOK,
+		SessionID:  run.SessionID,
+		AgentTurns: run.AgentTurns,
+		Denials:    run.ConfirmRequests,
+	}
+	if run.HadError {
+		errMsg := run.Err
+		if errMsg == "" {
+			errMsg = "agent run failed"
+		}
+		errSource := run.ErrSource
+		if errSource == "" {
+			errSource = "agent"
+		}
+		res.Status = jobs.StatusError
+		res.Err = errMsg
+		res.Errors = append(res.Errors, jobs.RunError{Source: errSource, Message: errMsg})
+	}
+	if len(run.ConfirmRequests) > 0 && res.Err == "" {
+		res.Err = "needed approval for: " + strings.Join(run.ConfirmRequests, "; ")
+	}
+	if len(run.ConfirmRequests) > 0 {
+		res.Errors = append(res.Errors, jobs.RunError{Source: "denied", Message: "needed approval for: " + strings.Join(run.ConfirmRequests, "; ")})
 	}
 	return res
 }
@@ -321,15 +276,4 @@ func isHeartbeatOK(text string) bool {
 	}
 	rest := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(t, heartbeatOKToken), heartbeatOKToken))
 	return len(rest) <= heartbeatOKSlop
-}
-
-// decodeJobEvent unmarshals an event payload into the given type.
-func decodeJobEvent[T any](data any) T {
-	var out T
-	raw, err := json.Marshal(data)
-	if err != nil {
-		return out
-	}
-	json.Unmarshal(raw, &out)
-	return out
 }

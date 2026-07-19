@@ -247,6 +247,16 @@ func HooksEnabled() bool {
 	return feature("hooks", true)
 }
 
+// RemoteControlEnabled reads the remote_control feature flag. Defaults to false
+// because chat-service control requires explicit credentials and sender allowlists.
+// VIX_DISABLE_REMOTE_CONTROL is an emergency kill switch.
+func RemoteControlEnabled() bool {
+	if v := os.Getenv("VIX_DISABLE_REMOTE_CONTROL"); v == "1" || v == "true" {
+		return false
+	}
+	return feature("remote_control", false)
+}
+
 // OAuthPlaintextFallback reads the oauth_plaintext_fallback feature flag. It is
 // an opt-in escape hatch (default false): when true, interactive OAuth logins
 // may persist their tokens to the plaintext auth.json (0600) on machines with no

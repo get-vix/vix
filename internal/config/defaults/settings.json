@@ -5,7 +5,29 @@
     "read_claude_md": true,
     "show_thinking": false,
     "telemetry": true,
-    "tool_orchestrator": false
+    "tool_orchestrator": false,
+    "remote_control": false
+  },
+  "remote_control": {
+    "enabled": false,
+    "cwd": "",
+    "workflow": "",
+    "max_concurrent_runs": 1,
+    "telegram": {
+      "enabled": false,
+      "bot_token": "",
+      "allowed_chat_ids": []
+    },
+    "whatsapp": {
+      "enabled": false,
+      "access_token": "",
+      "app_secret": "",
+      "phone_number_id": "",
+      "verify_token": "",
+      "graph_api_version": "v20.0",
+      "webhook_addr": "127.0.0.1:1340",
+      "allowed_contacts": []
+    }
   },
   "elevenlabs": {
     "agent_id": "agent_7501kqrztj1te17ssqz5wqpnvkf3",
