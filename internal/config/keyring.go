@@ -68,17 +68,16 @@ func (c Credential) RequestOptions() []option.RequestOption {
 	return opts
 }
 
-// ResolveEnvVar checks the environment and .env files for a variable.
+// ResolveEnvVar checks the environment and known .env files for a variable.
 // Returns the value and true if found, or empty string and false.
 func ResolveEnvVar(name string) (string, bool) {
 	if v := os.Getenv(name); v != "" {
 		return v, true
 	}
-	if v := loadKeyFromEnvFile(loadExeEnvFilePath(), name); v != "" {
-		return v, true
-	}
-	if v := loadKeyFromEnvFile(".env", name); v != "" {
-		return v, true
+	for _, path := range envFileSearchPaths() {
+		if v := loadKeyFromEnvFile(path, name); v != "" {
+			return v, true
+		}
 	}
 	return "", false
 }
@@ -113,14 +112,9 @@ func resolveKey(envVar, keyringUser string) (string, KeySource) {
 		}
 	}
 
-	// 3. .env next to executable
+	// 3. Known .env files (executable-adjacent, ~/.vix/.env, then CWD).
 	if envVar != "" {
-		if key := loadKeyFromEnvFile(loadExeEnvFilePath(), envVar); key != "" {
-			return key, KeySourceEnvFile
-		}
-
-		// 4. .env in CWD
-		if key := loadKeyFromEnvFile(".env", envVar); key != "" {
+		if key, ok := ResolveEnvVar(envVar); ok {
 			return key, KeySourceEnvFile
 		}
 	}
@@ -233,7 +227,7 @@ func reorderAuthMethods(methods []AuthMethod, pref string) []AuthMethod {
 // or env-provided base URL overrides the method's static BaseURL.
 func buildCredential(value string, src KeySource, m AuthMethod) Credential {
 	baseURL := m.BaseURL
-	if m.RequiresBaseURL {
+	if m.RequiresBaseURL || m.BaseURLEnv != "" {
 		if u := resolveMethodBaseURL(m); u != "" {
 			baseURL = u
 		}
@@ -246,15 +240,15 @@ func buildCredential(value string, src KeySource, m AuthMethod) Credential {
 }
 
 // resolveMethodBaseURL returns the user-supplied endpoint for a method: the
-// BaseURLEnv environment variable first, then the keychain entry stored next to
-// the key. Returns "" when neither is set.
+// BaseURLEnv value first, then (for RequiresBaseURL methods) the keychain entry
+// stored next to the key. Returns "" when neither is set.
 func resolveMethodBaseURL(m AuthMethod) string {
 	if m.BaseURLEnv != "" {
-		if v := os.Getenv(m.BaseURLEnv); v != "" {
+		if v, ok := ResolveEnvVar(m.BaseURLEnv); ok {
 			return v
 		}
 	}
-	if m.Keyring != "" {
+	if m.RequiresBaseURL && m.Keyring != "" {
 		if v, err := defaultStore().Get(methodBaseURLKeyringUser(m.Keyring)); err == nil && v != "" {
 			return v
 		}
@@ -581,6 +575,15 @@ func loadExeEnvFilePath() string {
 		return ""
 	}
 	return filepath.Join(filepath.Dir(exe), "..", "..", ".env")
+}
+
+func envFileSearchPaths() []string {
+	paths := []string{loadExeEnvFilePath()}
+	if home := HomeVixDir(); home != "" {
+		paths = append(paths, filepath.Join(home, ".env"))
+	}
+	paths = append(paths, ".env")
+	return paths
 }
 
 // loadKeyFromEnvFile reads a .env file and extracts the value of the given variable name.
