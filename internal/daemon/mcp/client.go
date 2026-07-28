@@ -13,7 +13,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 )
 
 // stdioClient manages a single MCP server subprocess communicating over stdio.
@@ -43,8 +42,7 @@ func newStdioClient(ctx context.Context, name, command string, args []string, en
 	for k, v := range env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
-	// Own process group so we can kill the whole tree on shutdown.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	configureStdioCommand(cmd)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -179,9 +177,7 @@ func (c *stdioClient) Alive() bool {
 func (c *stdioClient) Close() {
 	c.stdin.Close()
 	if c.cmd.Process != nil {
-		// Kill the entire process group.
-		pgid := -c.cmd.Process.Pid
-		syscall.Kill(pgid, syscall.SIGKILL)
+		killStdioProcess(c.cmd)
 	}
 	c.cmd.Wait()
 }

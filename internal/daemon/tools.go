@@ -16,7 +16,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/get-vix/vix/internal/config"
@@ -708,7 +707,7 @@ func runBashWithContext(ctx context.Context, command, cwd, input string, onLine 
 	cmd := exec.Command("bash", "-c", command)
 	cmd.Dir = cwd
 	cmd.Env = sanitizedBashEnv()
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	configureProcessGroup(cmd)
 	if input != "" {
 		cmd.Stdin = strings.NewReader(input)
 	}
@@ -733,7 +732,7 @@ func runBashWithContext(ctx context.Context, command, cwd, input string, onLine 
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			_ = killProcessGroup(cmd.Process.Pid)
 		case <-done:
 		}
 	}()
@@ -891,7 +890,7 @@ func bashBackgroundImpl(registry *BashJobRegistry, command, cwd string, extraDir
 	}
 	setOOMScore(cmd.Process.Pid, 1000)
 	pid := cmd.Process.Pid
-	pgid, _ := syscall.Getpgid(pid)
+	pgid, _ := processGroupID(pid)
 	if pgid <= 0 {
 		pgid = pid
 	}

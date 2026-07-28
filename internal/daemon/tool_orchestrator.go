@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/get-vix/vix/internal/protocol"
@@ -170,9 +169,9 @@ func toolOrchestratorImpl(ctx context.Context, server *Server, workflow, cwd str
 
 	cmd := exec.CommandContext(ctx, "python3", tmpFile.Name())
 	cmd.Dir = cwd
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	configureProcessGroup(cmd)
 	cmd.Cancel = func() error {
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		return killProcessGroup(cmd.Process.Pid)
 	}
 
 	stdin, err := cmd.StdinPipe()

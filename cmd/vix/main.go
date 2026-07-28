@@ -14,7 +14,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -1157,7 +1156,7 @@ func startDaemon(apiKey, logDir, socketPath, authTokenPath string) (*exec.Cmd, e
 	// signals (SIGHUP on terminal close, SIGINT/SIGTERM to the foreground
 	// group). The daemon is a shared, long-lived process that runs until
 	// signalled or stopped via `vix daemon stop`.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	configureDaemonCommand(cmd)
 	cmd.Env = daemonEnv(apiKey)
 	logFileDir := logDir
 	if logFileDir == "" {
