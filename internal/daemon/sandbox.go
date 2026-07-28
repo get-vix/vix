@@ -10,7 +10,6 @@ import (
 	"runtime"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -211,13 +210,13 @@ func sandboxedBashCmd(ctx context.Context, command, cwd string, extraDirs []stri
 		cmd := exec.CommandContext(ctx, "sandbox-exec", "-p", profile, "bash", "-c", command)
 		cmd.Dir = cwd
 		cmd.Env = sanitizedBashEnv()
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		configureProcessGroup(cmd)
 		cmd.WaitDelay = 2 * time.Second
 		cmd.Cancel = func() error {
 			pid := cmd.Process.Pid
 			logProcessChildren(pid)
 			log.Printf("[sandbox] sending SIGKILL to process group pgid=%d (mode=seatbelt)", pid)
-			err := syscall.Kill(-pid, syscall.SIGKILL)
+			err := killProcessGroup(pid)
 			if err != nil {
 				log.Printf("[sandbox] SIGKILL failed for pgid=%d: %v", pid, err)
 			}
@@ -239,13 +238,13 @@ func sandboxedBashCmd(ctx context.Context, command, cwd string, extraDirs []stri
 
 		cmd := exec.CommandContext(ctx, "bwrap", args...)
 		cmd.Dir = cwd
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		configureProcessGroup(cmd)
 		cmd.WaitDelay = 2 * time.Second
 		cmd.Cancel = func() error {
 			pid := cmd.Process.Pid
 			logProcessChildren(pid)
 			log.Printf("[sandbox] sending SIGKILL to process group pgid=%d (mode=bwrap)", pid)
-			err := syscall.Kill(-pid, syscall.SIGKILL)
+			err := killProcessGroup(pid)
 			if err != nil {
 				log.Printf("[sandbox] SIGKILL failed for pgid=%d: %v", pid, err)
 			}
@@ -259,13 +258,13 @@ func sandboxedBashCmd(ctx context.Context, command, cwd string, extraDirs []stri
 		cmd := exec.CommandContext(ctx, "bash", "-c", command)
 		cmd.Dir = cwd
 		cmd.Env = sanitizedBashEnv()
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		configureProcessGroup(cmd)
 		cmd.WaitDelay = 2 * time.Second
 		cmd.Cancel = func() error {
 			pid := cmd.Process.Pid
 			logProcessChildren(pid)
 			log.Printf("[sandbox] sending SIGKILL to process group pgid=%d (mode=none)", pid)
-			err := syscall.Kill(-pid, syscall.SIGKILL)
+			err := killProcessGroup(pid)
 			if err != nil {
 				log.Printf("[sandbox] SIGKILL failed for pgid=%d: %v", pid, err)
 			}

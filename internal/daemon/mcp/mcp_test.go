@@ -46,6 +46,7 @@ func TestStdioClient_ListTools(t *testing.T) {
 	pool := mcp.NewPool(context.Background(), []mcp.ServerConfig{
 		{Name: "mock", Command: bin},
 	})
+	t.Cleanup(pool.Shutdown)
 	if pool.ServerCount() != 1 {
 		t.Fatalf("expected 1 server, got %d", pool.ServerCount())
 	}
@@ -61,6 +62,7 @@ func TestStdioClient_ToolSchemas(t *testing.T) {
 	pool := mcp.NewPool(context.Background(), []mcp.ServerConfig{
 		{Name: "mock", Command: bin},
 	})
+	t.Cleanup(pool.Shutdown)
 	schemas := pool.ToolSchemas()
 	if len(schemas) != 2 {
 		t.Fatalf("expected 2 schemas, got %d", len(schemas))
@@ -82,6 +84,7 @@ func TestStdioClient_Call_Echo(t *testing.T) {
 	pool := mcp.NewPool(context.Background(), []mcp.ServerConfig{
 		{Name: "mock", Command: bin},
 	})
+	t.Cleanup(pool.Shutdown)
 	output, isError, err := pool.Call("mcp__mock__echo", map[string]any{"text": "hello mcp"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -100,6 +103,7 @@ func TestStdioClient_Call_Add(t *testing.T) {
 	pool := mcp.NewPool(context.Background(), []mcp.ServerConfig{
 		{Name: "mock", Command: bin},
 	})
+	t.Cleanup(pool.Shutdown)
 	output, isError, err := pool.Call("mcp__mock__add", map[string]any{"a": 3.0, "b": 4.0})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -118,6 +122,7 @@ func TestPool_AllowedTools(t *testing.T) {
 	pool := mcp.NewPool(context.Background(), []mcp.ServerConfig{
 		{Name: "mock", Command: bin, AllowedTools: []string{"echo"}},
 	})
+	t.Cleanup(pool.Shutdown)
 	if pool.ToolCount() != 1 {
 		t.Fatalf("expected 1 tool after filter, got %d", pool.ToolCount())
 	}
@@ -134,6 +139,7 @@ func TestPool_UnknownServer(t *testing.T) {
 	pool := mcp.NewPool(context.Background(), []mcp.ServerConfig{
 		{Name: "mock", Command: bin},
 	})
+	t.Cleanup(pool.Shutdown)
 	_, _, err := pool.Call("mcp__nosuchserver__tool", map[string]any{})
 	if err == nil {
 		t.Fatal("expected error for unknown server, got nil")
@@ -146,6 +152,7 @@ func TestPool_InvalidToolName(t *testing.T) {
 	pool := mcp.NewPool(context.Background(), []mcp.ServerConfig{
 		{Name: "mock", Command: bin},
 	})
+	t.Cleanup(pool.Shutdown)
 	_, _, err := pool.Call("notanmcpname", map[string]any{})
 	if err == nil {
 		t.Fatal("expected error for invalid tool name, got nil")
@@ -158,6 +165,7 @@ func TestPool_RequiresConfirmation(t *testing.T) {
 	pool := mcp.NewPool(context.Background(), []mcp.ServerConfig{
 		{Name: "mock", Command: bin, RequireConfirmation: true},
 	})
+	t.Cleanup(pool.Shutdown)
 	if !pool.RequiresConfirmation("mcp__mock__echo") {
 		t.Error("expected RequiresConfirmation=true for mock server")
 	}

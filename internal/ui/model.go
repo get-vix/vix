@@ -6,12 +6,10 @@ import (
 	"fmt"
 	"image"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"charm.land/bubbles/v2/textinput"
@@ -102,14 +100,6 @@ type clearStatusMsgMsg struct{ gen int }
 
 // startCursorBlinkMsg triggers cursor blink on startup.
 type startCursorBlinkMsg struct{}
-
-func waitForResume() tea.Msg {
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGCONT)
-	<-sigCh
-	signal.Stop(sigCh)
-	return resumeFromSleepMsg{}
-}
 
 // startSessionEventLoop launches a goroutine that reads daemon events for one
 // session and injects them into the Bubble Tea loop tagged with the daemon
