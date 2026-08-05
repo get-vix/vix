@@ -234,7 +234,7 @@ E2E_ARCH := $(shell uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
 test-e2e:
 	./script/build.sh --force
 	./e2e/build-e2e.sh $(E2E_ARCH)
-	docker build -t vix-e2e -f e2e/Dockerfile --build-arg TARGETARCH=$(E2E_ARCH) .
+	docker build -t vix-e2e -f e2e/Dockerfile .
 	mkdir -p e2e/out
 	@docker run --rm --network none \
 	  --security-opt seccomp=e2e/seccomp-landlock.json \
@@ -249,11 +249,11 @@ test-e2e:
 # host. Usage: make test-e2e-sharded SHARDS=4
 SHARDS ?= 2
 test-e2e-sharded:
-	./script/build.sh --force
 	./e2e/build-e2e.sh $(E2E_ARCH)
-	docker build -t vix-e2e -f e2e/Dockerfile --build-arg TARGETARCH=$(E2E_ARCH) .
+	docker build -t vix-e2e -f e2e/Dockerfile .
 	@rm -rf e2e/out/shard-* e2e/out/report e2e/out/e2e-report.zip
-	@for k in $$(seq 0 $$(($(SHARDS)-1))); do \
+	@pids=""; \
+	for k in $$(seq 0 $$(($(SHARDS)-1))); do \
 	  mkdir -p e2e/out/shard-$$k; \
 	  echo "==> launching shard $$k/$(SHARDS)"; \
 	  docker run --rm --network none \
@@ -261,8 +261,11 @@ test-e2e-sharded:
 	    -e SHARD_INDEX=$$k -e SHARD_TOTAL=$(SHARDS) \
 	    -e VIX_E2E_REPORT=/out/shard-$$k/report \
 	    -v "$(CURDIR)/e2e/out:/out" vix-e2e & \
+	  pids="$$pids $$!"; \
 	done; \
-	wait
+	rc=0; \
+	for pid in $$pids; do wait $$pid || rc=1; done; \
+	exit $$rc
 	cd e2e && go run ./cmd/report merge $(addprefix --in out/shard-,$(addsuffix /report,$(shell seq 0 $$(($(SHARDS)-1))))) --out out/report
 	cd e2e && go run ./cmd/report zip --in out/report --out out/e2e-report.zip
 	@echo "==> Merged report: e2e/out/report/index.html  (zip: e2e/out/e2e-report.zip)"

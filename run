@@ -17,8 +17,10 @@ command_check() {
   go vet ./...
   go test -p 1 ./...
   (cd apps/vix-mac && swift test)
-  make build
-  make test-e2e
+  # Four native-architecture containers keep the complete E2E suite inside
+  # Greenline's five-minute contract. The release gate separately proves all
+  # three shipping targets.
+  make test-e2e-sharded SHARDS=4
 }
 
 command_deploy() {

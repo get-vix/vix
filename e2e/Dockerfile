@@ -2,25 +2,32 @@
 #
 # vix end-to-end test image.
 #
-# Philosophy: BUILD ON HOST, COPY BINARIES IN. The product binaries (vix,
-# vixd) come from script/build.sh and the test binary + report CLI from
-# e2e/build-e2e.sh — all statically linked Linux binaries. The only thing built
-# in-image is `freeze` (for rendering screenshots to PNG), in a throwaway
-# builder stage. The runtime image has no Go toolchain.
+# The product binaries are built natively for the container architecture in a
+# throwaway stage. This keeps the ordinary E2E gate fast on Apple Silicon while
+# the release gate still proves all three shipping targets with build.sh.
 #
 # Run via `make test-e2e`, which passes the landlock-allowing seccomp profile
 # and bind-mounts /out for the report zip.
-
-ARG TARGETARCH=amd64
 
 # --- builder: just to obtain a static `freeze` binary -----------------------
 FROM golang:1.26-bookworm AS freeze-builder
 ENV CGO_ENABLED=0
 RUN go install github.com/charmbracelet/freeze@latest
 
+# --- builder: vix + vixd for the E2E container's native architecture --------
+FROM golang:1.26-bookworm AS vix-builder
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends build-essential \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=1 go build -trimpath -tags 'netgo osusergo' -o /out/vix ./cmd/vix \
+ && CGO_ENABLED=1 go build -trimpath -tags 'netgo osusergo' -o /out/vixd ./cmd/vixd
+
 # --- runtime ----------------------------------------------------------------
 FROM debian:bookworm-slim
-ARG TARGETARCH
 
 # bash + coreutils so the agent's bash tool (ls, cat, …) works inside the
 # container; grep + jq so lifecycle-hook commands can match/parse tool input the
@@ -34,9 +41,8 @@ RUN apt-get update \
 
 COPY --from=freeze-builder /go/bin/freeze /usr/local/bin/freeze
 
-# Prebuilt static binaries from the host (build context = repo root).
-COPY bin/vix-linux-${TARGETARCH}  /usr/local/bin/vix
-COPY bin/vixd-linux-${TARGETARCH} /usr/local/bin/vixd
+COPY --from=vix-builder /out/vix  /usr/local/bin/vix
+COPY --from=vix-builder /out/vixd /usr/local/bin/vixd
 COPY e2e/bin/e2e.test             /usr/local/bin/e2e.test
 COPY e2e/bin/report               /usr/local/bin/report
 COPY e2e/bin/daz-secrets           /usr/local/bin/daz-secrets
