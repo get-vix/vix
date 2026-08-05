@@ -13,6 +13,7 @@ type Command struct {
 	Name        string
 	Description string
 	Action      string // identifier returned when selected
+	Group       string // display section; "" sorts into a default group
 }
 
 // CommandPalette is a filterable overlay triggered by Ctrl+P.
@@ -202,4 +203,3 @@ func (c *CommandPalette) View(width, height int, s Styles) string {
 
 	return box
 }
-

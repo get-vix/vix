@@ -295,7 +295,7 @@ func buildChatCompletionMessages(system []SystemBlock, msgs []MessageParam) []op
 				case BlockText:
 					text += b.Text
 				case BlockToolUse:
-					args, _ := json.Marshal(b.Input)
+					args, _ := json.Marshal(normalizeToolInput(b.Input))
 					toolCalls = append(toolCalls, openai.ChatCompletionMessageToolCallParam{
 						ID: b.ID,
 						Function: openai.ChatCompletionMessageToolCallFunctionParam{

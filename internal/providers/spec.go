@@ -71,6 +71,9 @@ const (
 	CredOAuthMintKey = "oauth_mint_key"
 	// CredOAuthToken is an OAuth login yielding a refreshable access token.
 	CredOAuthToken = "oauth_token"
+	// CredNone marks a provider that needs no credential (local servers such as
+	// Ollama or llama.cpp). Resolution yields a fixed placeholder value.
+	CredNone = "none"
 )
 
 // OAuth flow names: select the compiled auth.Provider implementation.
@@ -110,6 +113,11 @@ type ProviderSpec struct {
 	Inference    InferenceSpec      `json:"inference"`
 	Credential   []CredentialMethod `json:"credential_methods"`
 	Models       []ModelSpec        `json:"models"`
+	// Local marks a provider backed by a user-run local server (Ollama,
+	// llama.cpp). Local providers may use a loopback http:// base URL, are
+	// grouped separately in the TUI, and their model list is discovered live
+	// from the server rather than from the static catalogue.
+	Local bool `json:"local,omitempty"`
 }
 
 // Prefix returns the model-spec prefix including the trailing slash.
@@ -130,13 +138,26 @@ type InferenceSpec struct {
 
 // CredentialMethod is one ordered way to obtain a credential for a provider.
 type CredentialMethod struct {
-	Kind                 string `json:"kind"` // api_key | oauth_mint_key | oauth_token
+	Kind                 string `json:"kind"` // api_key | oauth_mint_key | oauth_token | none
 	EnvVar               string `json:"env_var"`
 	Keyring              string `json:"keyring"`
 	LoginID              string `json:"login_id"`               // oauth_*: internal/auth login id
 	BaseURL              string `json:"base_url"`               // endpoint override implied by this method
 	HeaderStyle          string `json:"header_style"`           // "" | "bearer"
 	ExtraHeadersProducer string `json:"extra_headers_producer"` // "" | anthropic_oauth | codex_oauth
+	// Label is a human-readable name for this method, shown in the credential
+	// panel and used as the method's stable identity for the default-method
+	// marker when a provider exposes more than one method of the same kind
+	// (e.g. MiMo's pay-as-you-go key vs. its Token Plan key).
+	Label string `json:"label"`
+	// RequiresBaseURL marks a method whose endpoint is supplied by the user at
+	// credential-entry time (e.g. MiMo Token Plan's region-specific base URL),
+	// rather than baked into the provider spec. The UI prompts for it and it is
+	// stored alongside the key.
+	RequiresBaseURL bool `json:"requires_base_url"`
+	// BaseURLEnv, when set, is an environment variable that overrides the stored
+	// user-supplied base URL for a RequiresBaseURL method.
+	BaseURLEnv string `json:"base_url_env"`
 }
 
 // ModelSpec is one catalogue entry shown in the model picker.

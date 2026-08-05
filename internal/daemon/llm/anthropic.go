@@ -30,7 +30,7 @@ type anthropicClient struct {
 // NewAnthropic constructs an Anthropic adapter from cfg.
 func NewAnthropic(cfg Config) (Client, error) {
 	// Disable the SDK's built-in retry loop. Vix runs its own retry at a
-	// higher level (session.streamWithRetry / workflow retry), and the SDK's
+	// higher level (thread.streamWithRetry / workflow retry), and the SDK's
 	// retry uses an uninterruptible time.Sleep which delays cancellation.
 	allOpts := []option.RequestOption{option.WithMaxRetries(0)}
 	allOpts = append(allOpts, cfg.Credential.RequestOptions()...)
@@ -70,11 +70,11 @@ func NewAnthropic(cfg Config) (Client, error) {
 	}, nil
 }
 
-func (a *anthropicClient) Provider() ProviderID       { return ProviderAnthropic }
-func (a *anthropicClient) Model() string              { return a.model }
+func (a *anthropicClient) Provider() ProviderID          { return ProviderAnthropic }
+func (a *anthropicClient) Model() string                 { return a.model }
 func (a *anthropicClient) Credential() config.Credential { return a.cred }
-func (a *anthropicClient) MaxTokens() int64           { return a.maxTokens }
-func (a *anthropicClient) Effort() string             { return a.effort }
+func (a *anthropicClient) MaxTokens() int64              { return a.maxTokens }
+func (a *anthropicClient) Effort() string                { return a.effort }
 
 func (a *anthropicClient) StreamMessage(
 	ctx context.Context,
@@ -129,6 +129,13 @@ func (a *anthropicClient) StreamMessageWith(
 	effort := a.effort
 	if opts.EffortOverride != nil {
 		effort = *opts.EffortOverride
+	}
+	// Claude Haiku models don't support adaptive/extended thinking; the API
+	// rejects such requests with "Adaptive thinking not allowed for this
+	// model". The provider's default effort policy is "adaptive" for every
+	// Anthropic model, so force it off here for Haiku.
+	if !anthropicModelSupportsThinking(a.model) {
+		effort = ""
 	}
 	applyEffort(&params, effort)
 
@@ -316,6 +323,14 @@ func applyEffort(params *anthropic.MessageNewParams, effort string) {
 	}
 }
 
+// anthropicModelSupportsThinking reports whether a bare Anthropic model name
+// accepts adaptive/extended thinking. Claude Haiku models do not: enabling the
+// adaptive thinking config for them makes the API reject the request with
+// "Adaptive thinking not allowed for this model".
+func anthropicModelSupportsThinking(model string) bool {
+	return !strings.Contains(strings.ToLower(model), "haiku")
+}
+
 // toAnthropicSystem maps neutral SystemBlocks to anthropic.TextBlockParam.
 // CacheControl on the last block (when present) is translated; otherwise
 // the top-level MessageNewParams.CacheControl handles caching.
@@ -358,7 +373,7 @@ func toAnthropicMessages(messages []MessageParam) ([]anthropic.MessageParam, err
 				}
 				blocks = append(blocks, anthropic.NewThinkingBlock(b.Signature, b.Text))
 			case BlockToolUse:
-				blocks = append(blocks, anthropic.NewToolUseBlock(b.ID, b.Input, b.Name))
+				blocks = append(blocks, anthropic.NewToolUseBlock(b.ID, normalizeToolInput(b.Input), b.Name))
 			case BlockToolResult:
 				blocks = append(blocks, anthropic.NewToolResultBlock(b.ToolUseID, b.Output, b.IsError))
 			default:

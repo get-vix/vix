@@ -20,8 +20,9 @@ func TestOAuthLoginID(t *testing.T) {
 	}
 }
 
-// TestReorderAuthMethods checks that the preferred kind is promoted ahead of the
-// rest while preserving the declared order otherwise.
+// TestReorderAuthMethods checks that the method whose ID matches the preference
+// is promoted to the front, that legacy kind-level preferences still work, and
+// that an unknown/empty preference leaves the order unchanged.
 func TestReorderAuthMethods(t *testing.T) {
 	methods := AuthMethodsFor("anthropic") // [apikey, claude-oauth-token(bearer), oauth-token]
 
@@ -30,19 +31,32 @@ func TestReorderAuthMethods(t *testing.T) {
 		t.Errorf("no-pref reorder changed order")
 	}
 
-	// Prefer OAuth: the two OAuth methods come first, API key last.
-	oauthFirst := reorderAuthMethods(methods, AuthDefaultOAuth)
-	if isOAuthMethod(oauthFirst[len(oauthFirst)-1]) {
-		t.Errorf("prefer-oauth: expected API-key method last, got OAuth method")
+	// Prefer the OAuth login by its method ID: it leads.
+	oauthID := methods[len(methods)-1].ID()
+	oauthFirst := reorderAuthMethods(methods, oauthID)
+	if oauthFirst[0].ID() != oauthID {
+		t.Errorf("prefer-by-id: expected %q first, got %q", oauthID, oauthFirst[0].ID())
 	}
 	if !isOAuthMethod(oauthFirst[0]) {
-		t.Errorf("prefer-oauth: expected an OAuth method first")
+		t.Errorf("prefer-by-id: expected an OAuth method first")
 	}
 
-	// Prefer API key: an API-key (non-OAuth) method leads.
-	apiFirst := reorderAuthMethods(methods, AuthDefaultAPIKey)
-	if isOAuthMethod(apiFirst[0]) {
-		t.Errorf("prefer-api_key: expected an API-key method first")
+	// Prefer the API key by its method ID: it leads (already first here).
+	apiID := methods[0].ID()
+	apiFirst := reorderAuthMethods(methods, apiID)
+	if apiFirst[0].ID() != apiID {
+		t.Errorf("prefer-api-by-id: expected %q first, got %q", apiID, apiFirst[0].ID())
+	}
+
+	// Legacy kind-level preference still promotes the first method of that kind.
+	legacyOAuth := reorderAuthMethods(methods, AuthDefaultOAuth)
+	if !isOAuthMethod(legacyOAuth[0]) {
+		t.Errorf("legacy prefer-oauth: expected an OAuth method first")
+	}
+
+	// Unknown preference leaves order unchanged.
+	if got := reorderAuthMethods(methods, "does-not-exist"); !sameOrder(got, methods) {
+		t.Errorf("unknown-pref reorder changed order")
 	}
 
 	// Single-method provider is unaffected regardless of preference.
@@ -64,25 +78,32 @@ func sameOrder(a, b []AuthMethod) bool {
 	return true
 }
 
-// TestEffectiveDefault covers the default-method derivation when no explicit
-// preference is stored, and that an explicit preference wins.
-func TestEffectiveDefault(t *testing.T) {
+// TestEffectiveDefaultMethod covers default-method derivation across stored
+// state, explicit per-method preferences, and legacy kind-level preferences.
+func TestEffectiveDefaultMethod(t *testing.T) {
+	apiKey := MethodStatus{ID: "k", Label: "API Key"}
+	oauth := MethodStatus{ID: "o", Label: "OAuth", OAuth: true}
+	stored := func(m MethodStatus) MethodStatus { m.Stored = true; return m }
+
 	cases := []struct {
-		pref   string
-		apiKey bool
-		oauth  bool
-		want   string
+		name    string
+		methods []MethodStatus
+		pref    string
+		want    string
 	}{
-		{"", false, false, AuthDefaultAPIKey},
-		{"", true, false, AuthDefaultAPIKey},
-		{"", false, true, AuthDefaultOAuth},
-		{"", true, true, AuthDefaultAPIKey},
-		{AuthDefaultOAuth, true, false, AuthDefaultOAuth},
-		{AuthDefaultAPIKey, false, true, AuthDefaultAPIKey},
+		{"empty", nil, "", ""},
+		{"none-stored-falls-to-first", []MethodStatus{apiKey, oauth}, "", "k"},
+		{"first-stored-wins", []MethodStatus{stored(apiKey), oauth}, "", "k"},
+		{"only-oauth-stored", []MethodStatus{apiKey, stored(oauth)}, "", "o"},
+		{"both-stored-first-wins", []MethodStatus{stored(apiKey), stored(oauth)}, "", "k"},
+		{"explicit-id-stored", []MethodStatus{stored(apiKey), stored(oauth)}, "o", "o"},
+		{"explicit-id-not-stored-falls-through", []MethodStatus{stored(apiKey), oauth}, "o", "k"},
+		{"legacy-oauth", []MethodStatus{stored(apiKey), stored(oauth)}, AuthDefaultOAuth, "o"},
+		{"legacy-apikey", []MethodStatus{stored(apiKey), stored(oauth)}, AuthDefaultAPIKey, "k"},
 	}
 	for _, c := range cases {
-		if got := effectiveDefault(c.pref, c.apiKey, c.oauth); got != c.want {
-			t.Errorf("effectiveDefault(%q,%v,%v) = %q, want %q", c.pref, c.apiKey, c.oauth, got, c.want)
+		if got := effectiveDefaultMethod(c.methods, c.pref); got != c.want {
+			t.Errorf("%s: effectiveDefaultMethod(_, %q) = %q, want %q", c.name, c.pref, got, c.want)
 		}
 	}
 }

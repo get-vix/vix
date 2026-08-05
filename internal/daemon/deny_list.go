@@ -136,6 +136,20 @@ func evalSymlinksComponents(p string) string {
 	return current
 }
 
+// combineDenyPaths returns the effective deny path list for a thread: the
+// config-resolved absolute entries (denyPaths) plus each raw relative entry
+// (denyPathsRel) resolved against cwd, deduped. This is what makes a relative
+// `deny_list.paths` entry like ".envrc.private" in ./.vix/settings.json block
+// the file at the project root, in addition to the config-dir-relative form
+// that LoadProjectConfig already produced.
+func combineDenyPaths(cwd string, denyPaths, denyPathsRel []string) []string {
+	out := append([]string(nil), denyPaths...)
+	for _, rel := range denyPathsRel {
+		out = appendUniqueStr(out, filepath.Clean(filepath.Join(cwd, rel)))
+	}
+	return out
+}
+
 // isPathDenied reports whether absPath matches any deny_list entry.
 // Match means: the normalized (symlink-resolved) absPath equals or is under
 // the normalized (symlink-resolved) entry. Returns the matching entry for
@@ -170,7 +184,7 @@ var denyFileTools = map[string]bool{
 // checkDenyList gates a tool call against the deny list (paths + URLs).
 // Returns a short-circuit ToolResult when the call targets a denied path
 // or URL, or nil to let execution proceed. The function is pure (no
-// Session dep) to keep the logic testable in isolation.
+// Thread dep) to keep the logic testable in isolation.
 func checkDenyList(name string, params map[string]any, cwd string, denyPaths, denyURLs []string) *ToolResult {
 	if len(denyPaths) == 0 && len(denyURLs) == 0 {
 		return nil

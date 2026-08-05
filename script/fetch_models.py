@@ -81,11 +81,31 @@ def primary_api_key_method(provider):
     return None
 
 
+def bedrock_region(env):
+    """Resolve the AWS region for Bedrock, mirroring the Go client: AWS_REGION,
+    then AWS_DEFAULT_REGION (from the .env file or the process environment),
+    falling back to us-east-1."""
+    for name in ("AWS_REGION", "AWS_DEFAULT_REGION"):
+        val = env.get(name) or os.environ.get(name)
+        if val:
+            return val
+    return "us-east-1"
+
+
 def build_request(provider, key, env):
-    """Construct the urllib Request for a provider's /models endpoint."""
+    """Construct the urllib Request for a provider's model-listing endpoint."""
     inference = provider.get("inference", {})
-    base_url = interpolate(inference.get("base_url", ""), env).rstrip("/")
-    url = base_url + "/models"
+
+    if provider.get("id") == "bedrock":
+        # Bedrock's catalogue lives on the control-plane host (bedrock.<region>),
+        # not the bedrock-runtime host in inference.base_url, and the path is
+        # /foundation-models. Filter to text models; context windows aren't
+        # reported (handled by the existing-catalogue fallback).
+        url = ("https://bedrock.%s.amazonaws.com/foundation-models"
+               "?byOutputModality=TEXT" % bedrock_region(env))
+    else:
+        base_url = interpolate(inference.get("base_url", ""), env).rstrip("/")
+        url = base_url + "/models"
 
     headers = {"Accept": "application/json"}
     scheme = inference.get("auth_scheme", "bearer")
@@ -122,11 +142,12 @@ def model_context(item):
 
 def extract_models(payload):
     """Pull (model_id, context_window) pairs out of a parsed JSON response.
-    Handles the OpenAI-compatible {"data": [{"id": ...}]} shape and variants.
-    context_window is None when the provider doesn't report one."""
+    Handles the OpenAI-compatible {"data": [{"id": ...}]} shape, Bedrock's
+    {"modelSummaries": [{"modelId": ...}]} shape, and variants. context_window
+    is None when the provider doesn't report one."""
     items = None
     if isinstance(payload, dict):
-        for field in ("data", "models"):
+        for field in ("data", "models", "modelSummaries"):
             if isinstance(payload.get(field), list):
                 items = payload[field]
                 break
@@ -138,7 +159,7 @@ def extract_models(payload):
     out = []
     for it in items:
         if isinstance(it, dict):
-            mid = str(it.get("id") or it.get("name") or it)
+            mid = str(it.get("id") or it.get("name") or it.get("modelId") or it)
             out.append((mid, model_context(it)))
         else:
             out.append((str(it), None))
@@ -198,6 +219,10 @@ def fetch_models(provider, env):
         return ("error", "unrecognized response shape @ %s" % url, [])
     if provider.get("id") == "openai":
         models = [m for m in models if is_openai_chat_model(m[0])]
+    elif provider.get("id") == "mimo":
+        # Drop non-chat audio modalities (TTS, ASR, Omni); keep text chat models.
+        audio = ("tts", "asr", "omni")
+        models = [m for m in models if not any(a in m[0].lower() for a in audio)]
     return ("ok", url, sorted(models, key=lambda m: m[0]))
 
 

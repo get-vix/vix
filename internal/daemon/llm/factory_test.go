@@ -69,3 +69,30 @@ func TestOpenAIAuthOptions_ExtraHeaders(t *testing.T) {
 		t.Errorf("expected 2 options (api key + 1 header), got %d", len(opts))
 	}
 }
+
+// TestNewFromModel_LocalProvidersNeedNoCredential asserts the keyless local
+// providers construct a chat-completions client without ErrNoCredential when
+// no API key is configured anywhere.
+func TestNewFromModel_LocalProvidersNeedNoCredential(t *testing.T) {
+	t.Setenv("OLLAMA_API_KEY", "")
+	t.Setenv("LLAMACPP_API_KEY", "")
+	cases := []struct {
+		spec     string
+		provider ProviderID
+		model    string
+	}{
+		{"ollama/qwen3:8b", "ollama", "qwen3:8b"},
+		{"llamacpp/qwen2.5-coder-7b", "llamacpp", "qwen2.5-coder-7b"},
+	}
+	for _, c := range cases {
+		client, err := NewFromModel(c.spec, nil, "", 0)
+		if err != nil {
+			t.Errorf("NewFromModel(%q): unexpected error %v", c.spec, err)
+			continue
+		}
+		if client.Provider() != c.provider || client.Model() != c.model {
+			t.Errorf("NewFromModel(%q) = (%q, %q), want (%q, %q)",
+				c.spec, client.Provider(), client.Model(), c.provider, c.model)
+		}
+	}
+}

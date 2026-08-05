@@ -117,9 +117,21 @@ func renderAttachmentPanel(panel *AttachmentPanel, width int, s Styles) string {
 	// Build inner content
 	var b strings.Builder
 
+	var imgN, pdfN, fileN int
 	for i, att := range panel.attachments {
 		filename := filepath.Base(att.Path)
-		label := fmt.Sprintf("Image #%d: %s", i+1, filename)
+		var label string
+		switch {
+		case att.Type == "file" && strings.EqualFold(filepath.Ext(att.Path), ".pdf"):
+			pdfN++
+			label = fmt.Sprintf("PDF #%d: %s", pdfN, filename)
+		case att.Type == "file":
+			fileN++
+			label = fmt.Sprintf("File #%d: %s", fileN, filename)
+		default:
+			imgN++
+			label = fmt.Sprintf("Image #%d: %s", imgN, filename)
+		}
 		maxTextWidth := width - 8 // arrow/space prefix + border + padding
 		if maxTextWidth < 1 {
 			maxTextWidth = 1

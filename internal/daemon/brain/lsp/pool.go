@@ -45,10 +45,16 @@ type Pool struct {
 	clients    map[string]*Client
 	configs    map[string]*ServerConfig
 	formatters map[string]*FormatterConfig
-	extMap     map[string]string   // maps file extension (e.g. ".go") to language name (e.g. "go")
+	extMap     map[string]string    // maps file extension (e.g. ".go") to language name (e.g. "go")
 	failedAt   map[string]time.Time // languages that failed to start + when
 	rootDir    string
 	ctx        context.Context
+
+	// done is closed by Shutdown so the per-pool ctx watcher goroutine exits
+	// when the pool is replaced (InitPool is called on every brain.init);
+	// without it one watcher leaked per thread for the daemon's lifetime.
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 var (
@@ -62,6 +68,13 @@ var (
 func InitPool(ctx context.Context, rootDir string, settingsPaths ...string) {
 	globalPoolMu.Lock()
 	defer globalPoolMu.Unlock()
+
+	// Shut down any previously-initialized pool before replacing it so we don't
+	// leak running LSP subprocesses (the prior pool's ctx-cancel goroutine only
+	// fires on daemon shutdown, not on re-init / hot reload).
+	if globalPool != nil {
+		globalPool.Shutdown()
+	}
 
 	var merged []LanguageConfig
 	for _, p := range settingsPaths {
@@ -116,12 +129,18 @@ func InitPool(ctx context.Context, rootDir string, settingsPaths ...string) {
 		failedAt:   make(map[string]time.Time),
 		rootDir:    rootDir,
 		ctx:        ctx,
+		done:       make(chan struct{}),
 	}
 	globalPool = p
 
 	go func() {
-		<-ctx.Done()
-		p.Shutdown()
+		select {
+		case <-ctx.Done():
+			p.Shutdown()
+		case <-p.done:
+			// Pool replaced (Shutdown already ran); exit instead of parking
+			// on the daemon-lifetime ctx forever.
+		}
 	}()
 }
 
@@ -130,6 +149,21 @@ func GetPool() *Pool {
 	globalPoolMu.Lock()
 	defer globalPoolMu.Unlock()
 	return globalPool
+}
+
+// ReloadPool rebuilds the global pool from the given language config paths,
+// reusing the existing pool's context and root directory. It is a no-op if the
+// pool has not been initialized yet (a later brain.init will pick up the new
+// configs). Used by the daemon config watcher when config/languages.json
+// changes on disk.
+func ReloadPool(settingsPaths ...string) {
+	globalPoolMu.Lock()
+	prev := globalPool
+	globalPoolMu.Unlock()
+	if prev == nil {
+		return
+	}
+	InitPool(prev.ctx, prev.rootDir, settingsPaths...)
 }
 
 // LanguageForExt returns the language name for a file extension (e.g. ".go" → "go").
@@ -210,6 +244,8 @@ func (p *Pool) ConfiguredLanguages() []string {
 
 // Shutdown closes all running LSP clients.
 func (p *Pool) Shutdown() {
+	p.closeOnce.Do(func() { close(p.done) })
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 

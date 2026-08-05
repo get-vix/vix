@@ -2,10 +2,13 @@ package ui
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -22,6 +25,7 @@ import (
 	"github.com/get-vix/vix/internal/config"
 	"github.com/get-vix/vix/internal/daemon"
 	"github.com/get-vix/vix/internal/protocol"
+	"github.com/get-vix/vix/internal/telemetry"
 )
 
 // teaProgram holds the Bubble Tea program reference for event injection via Send().
@@ -32,31 +36,46 @@ func SetProgram(p *tea.Program) { teaProgram = p }
 
 // --- Internal message types ---
 
-// sessionEventMsg carries a daemon session event tagged with the daemon session
-// ID of the connection that produced it. Messages whose daemonSessionID no
-// longer matches the session's current daemonSessionID are silently dropped
+// threadEventMsg carries a daemon thread event tagged with the daemon thread
+// ID of the connection that produced it. Messages whose daemonThreadID no
+// longer matches the thread's current daemonThreadID are silently dropped
 // (they came from a superseded connection's goroutine).
-type sessionEventMsg struct {
-	daemonSessionID string
-	event           protocol.SessionEvent
+type threadEventMsg struct {
+	daemonThreadID string
+	event          protocol.ThreadEvent
 }
 
-// sessionDisconnectedMsg is sent when a session's daemon connection is lost.
-type sessionDisconnectedMsg struct {
-	daemonSessionID string
+// threadDisconnectedMsg is sent when a thread's daemon connection is lost.
+type threadDisconnectedMsg struct {
+	daemonThreadID string
+}
+
+// updateInstallDoneMsg is delivered after the in-app update install command
+// (run via tea.ExecProcess) finishes. A nil err means the new binaries are on
+// disk and the user can quit-all to apply them.
+type updateInstallDoneMsg struct {
+	err error
 }
 
 // reconnectSuccessMsg is sent when reconnection succeeds.
-// daemonSessionID is the ID of the session we were reconnecting for (the old
+// daemonThreadID is the ID of the thread we were reconnecting for (the old
 // one); client is the newly established connection with its own fresh ID.
 type reconnectSuccessMsg struct {
-	daemonSessionID string
-	client          *daemon.SessionClient
+	daemonThreadID string
+	client         *daemon.ThreadClient
 }
 
 // reconnectFailedMsg is sent when reconnection fails.
 type reconnectFailedMsg struct {
-	daemonSessionID string
+	daemonThreadID string
+}
+
+// threadOrphanedMsg is sent when an attach reconnect reports the thread no
+// longer exists on disk (lost in a daemon restart before its first flush). The
+// thread can't be continued; the handler orphans it and tells the user to
+// /copy the conversation.
+type threadOrphanedMsg struct {
+	daemonThreadID string
 }
 
 // resumeFromSleepMsg is sent when the process receives SIGCONT.
@@ -92,82 +111,328 @@ func waitForResume() tea.Msg {
 	return resumeFromSleepMsg{}
 }
 
-// startSessionEventLoop launches a goroutine that reads daemon events for one
-// session and injects them into the Bubble Tea loop tagged with the daemon
-// session ID captured at launch time. When a session reconnects it gets a new
-// daemon session ID, so any in-flight messages from the old goroutine are
+// startThreadEventLoop launches a goroutine that reads daemon events for one
+// thread and injects them into the Bubble Tea loop tagged with the daemon
+// thread ID captured at launch time. When a thread reconnects it gets a new
+// daemon thread ID, so any in-flight messages from the old goroutine are
 // naturally ignored by the handler's ID check — no generation counter needed.
-func startSessionEventLoop(client *daemon.SessionClient) tea.Cmd {
-	daemonSessionID := client.SessionID()
+func startThreadEventLoop(client *daemon.ThreadClient) tea.Cmd {
+	daemonThreadID := client.ThreadID()
 	return func() tea.Msg {
 		if teaProgram == nil {
-			return sessionDisconnectedMsg{daemonSessionID: daemonSessionID}
+			return threadDisconnectedMsg{daemonThreadID: daemonThreadID}
 		}
 		go func() {
 			for {
 				event, err := client.ReadEvent()
 				if err != nil {
-					teaProgram.Send(sessionDisconnectedMsg{daemonSessionID: daemonSessionID})
+					teaProgram.Send(threadDisconnectedMsg{daemonThreadID: daemonThreadID})
 					return
 				}
-				teaProgram.Send(sessionEventMsg{daemonSessionID: daemonSessionID, event: event})
+				teaProgram.Send(threadEventMsg{daemonThreadID: daemonThreadID, event: event})
 			}
 		}()
 		return nil
 	}
 }
 
-// attemptReconnect tries to reconnect a session to the daemon.
-// targetDaemonSessionID identifies which session this attempt is for; it is
+// instanceEventMsg carries a process-level event delivered over the window's
+// instance control channel (threads_changed, jobs_changed, quit). Unlike
+// threadEventMsg it is not tied to any chat thread — it is delivered once per
+// window, even to a launch-time draft with no thread yet.
+type instanceEventMsg struct {
+	event protocol.ThreadEvent
+}
+
+// startInstanceEventLoop launches a goroutine that reads process-level events
+// from the window's instance control channel and injects them into the Bubble
+// Tea loop. Mirrors startThreadEventLoop but is thread-independent: it runs
+// from launch and delivers threads_changed/jobs_changed/quit exactly once per
+// window. Returns nil (no message) when there is no control channel.
+func startInstanceEventLoop(ic *daemon.InstanceClient) tea.Cmd {
+	return func() tea.Msg {
+		if teaProgram == nil || ic == nil {
+			return nil
+		}
+		go func() {
+			for {
+				event, err := ic.ReadEvent()
+				if err != nil {
+					return
+				}
+				teaProgram.Send(instanceEventMsg{event: event})
+			}
+		}()
+		return nil
+	}
+}
+
+// draftConnectedMsg is sent when a draft thread's deferred connection (opened
+// on its first message) succeeds. The handler wires the client, marks the
+// thread live, and flushes the queued first message.
+type draftConnectedMsg struct {
+	clientKey string
+	client    *daemon.ThreadClient
+}
+
+// draftConnectFailedMsg is sent when a draft's deferred connection fails. The
+// thread stays a draft so the user can retry (or change the directory).
+type draftConnectFailedMsg struct {
+	clientKey string
+	err       error
+}
+
+// connectDraft opens the daemon connection for a draft thread on its first
+// message, in the chosen working directory. Unlike attemptReconnect it never
+// attaches by ID (a draft has no daemon-side record yet) and echoes back the
+// stable clientKey so the Update loop can match the result to the right draft.
+func connectDraft(socketPath, clientKey, cwd, configDir, model, authToken string, forceInit, enableWrite, enableDir bool) tea.Cmd {
+	return func() tea.Msg {
+		client := daemon.NewClient(socketPath)
+		client.SetAuthToken(authToken)
+		if !client.Ping() {
+			return draftConnectFailedMsg{clientKey: clientKey, err: fmt.Errorf("daemon is not responding")}
+		}
+		thread := daemon.NewThreadClient(socketPath)
+		thread.SetAuthToken(authToken)
+		if err := thread.Connect(cwd, configDir, model, forceInit, enableWrite, enableDir, false); err != nil {
+			return draftConnectFailedMsg{clientKey: clientKey, err: err}
+		}
+		return draftConnectedMsg{clientKey: clientKey, client: thread}
+	}
+}
+
+// fileAttachmentValidatedMsg carries the daemon's verdict for a drag-dropped
+// text/PDF file. Matched back to its thread by clientKey.
+type fileAttachmentValidatedMsg struct {
+	clientKey string
+	cand      fileCandidate
+	status    string // "ok", "invalid", "error"
+	reason    string
+}
+
+// validateFileAttachmentCmd asks the daemon (attachment.validate) whether a
+// drag-dropped file can be attached, without blocking the UI loop.
+func validateFileAttachmentCmd(socketPath, authToken, threadID, clientKey string, cand fileCandidate) tea.Cmd {
+	return func() tea.Msg {
+		client := daemon.NewClient(socketPath)
+		client.SetAuthToken(authToken)
+		status, reason, err := client.ValidateAttachment(threadID, cand.Path)
+		if err != nil {
+			return fileAttachmentValidatedMsg{clientKey: clientKey, cand: cand, status: "invalid", reason: err.Error()}
+		}
+		return fileAttachmentValidatedMsg{clientKey: clientKey, cand: cand, status: status, reason: reason}
+	}
+}
+
+// attemptReconnect tries to reconnect a thread to the daemon.
+// targetDaemonThreadID identifies which thread this attempt is for; it is
 // echoed back in the result message so the handler can match it to the right
-// session. Pass an empty string for a session that has never connected — the
+// thread. Pass an empty string for a thread that has never connected — the
 // handler will not retry on failure in that case.
-func attemptReconnect(socketPath, cwd, configDir, model, authToken string, forceInit, enableWrite, enableDir bool, targetDaemonSessionID string) tea.Cmd {
+func attemptReconnect(socketPath, cwd, configDir, model, authToken string, forceInit, enableWrite, enableDir bool, targetDaemonThreadID string) tea.Cmd {
 	return func() tea.Msg {
 		client := daemon.NewClient(socketPath)
 		client.SetAuthToken(authToken)
 		if !client.Ping() {
 			time.Sleep(2 * time.Second)
-			return reconnectFailedMsg{daemonSessionID: targetDaemonSessionID}
+			return reconnectFailedMsg{daemonThreadID: targetDaemonThreadID}
 		}
-		session := daemon.NewSessionClient(socketPath)
-		session.SetAuthToken(authToken)
-		if err := session.Connect(cwd, configDir, model, forceInit, enableWrite, enableDir, false); err != nil {
+		thread := daemon.NewThreadClient(socketPath)
+		thread.SetAuthToken(authToken)
+		// A thread that has connected before is resumed by ID (attach), so a
+		// restarted daemon rebuilds it from disk. An empty target ID is a
+		// brand-new thread that has never connected — start it fresh.
+		var err error
+		if targetDaemonThreadID == "" {
+			err = thread.Connect(cwd, configDir, model, forceInit, enableWrite, enableDir, false)
+		} else {
+			err = thread.Attach(cwd, configDir, model, forceInit, enableWrite, enableDir, false, targetDaemonThreadID)
+			if errors.Is(err, daemon.ErrThreadNotFound) {
+				// The daemon restarted and lost this thread before it was
+				// flushed. It can't be continued; orphan it (offer /copy).
+				return threadOrphanedMsg{daemonThreadID: targetDaemonThreadID}
+			}
+		}
+		if err != nil {
 			time.Sleep(2 * time.Second)
-			return reconnectFailedMsg{daemonSessionID: targetDaemonSessionID}
+			return reconnectFailedMsg{daemonThreadID: targetDaemonThreadID}
 		}
-		return reconnectSuccessMsg{daemonSessionID: targetDaemonSessionID, client: session}
+		return reconnectSuccessMsg{daemonThreadID: targetDaemonThreadID, client: thread}
 	}
 }
 
-// connectFork starts a new forked session seeded from forkSessionID at forkTurnIdx.
-func connectFork(socketPath, cwd, configDir, model, authToken string, enableWrite, enableDir bool, forkSessionID string, forkTurnIdx int, targetDaemonSessionID string) tea.Cmd {
+// threadRestoredMsg is sent when a persisted open thread is successfully
+// re-attached on launch. The handler adds a new ThreadState for it.
+type threadRestoredMsg struct {
+	summary protocol.ThreadSummary
+	client  *daemon.ThreadClient
+}
+
+// threadRestoreFailedMsg is sent when reopening a persisted thread fails (the
+// daemon is gone or the record vanished). The thread is simply not restored.
+type threadRestoreFailedMsg struct {
+	id string
+}
+
+// attachRestoreThread reopens a persisted thread on launch by attaching to it
+// by ID. Used for the open threads beyond the first (which main attaches as the
+// initial client).
+func attachRestoreThread(socketPath, cwd, configDir, model, authToken string, enableWrite, enableDir bool, summary protocol.ThreadSummary) tea.Cmd {
+	return func() tea.Msg {
+		client := daemon.NewClient(socketPath)
+		client.SetAuthToken(authToken)
+		if !client.Ping() {
+			return threadRestoreFailedMsg{id: summary.ID}
+		}
+		sc := daemon.NewThreadClient(socketPath)
+		sc.SetAuthToken(authToken)
+		if err := sc.Attach(cwd, configDir, model, false, enableWrite, enableDir, false, summary.ID); err != nil {
+			return threadRestoreFailedMsg{id: summary.ID}
+		}
+		return threadRestoredMsg{summary: summary, client: sc}
+	}
+}
+
+// recentDirsMsg carries the ranked working directories fetched from the daemon
+// for the welcome screen's recent-directories list.
+type recentDirsMsg struct {
+	dirs []protocol.DirUsage
+}
+
+// fetchRecentDirs asks the daemon for the working directories used by open user
+// threads, ranked for the welcome screen. A failure yields an empty list.
+func fetchRecentDirs(socketPath, cwd, configDir, authToken string) tea.Cmd {
+	return func() tea.Msg {
+		client := daemon.NewClient(socketPath)
+		client.SetAuthToken(authToken)
+		dirs, err := client.ListThreadDirs(cwd, configDir)
+		if err != nil {
+			return recentDirsMsg{}
+		}
+		return recentDirsMsg{dirs: dirs}
+	}
+}
+
+// connectFork starts a new forked thread seeded from forkThreadID at forkTurnIdx.
+func connectFork(socketPath, cwd, configDir, model, authToken string, enableWrite, enableDir bool, forkThreadID string, forkTurnIdx int, targetDaemonThreadID string) tea.Cmd {
 	return func() tea.Msg {
 		client := daemon.NewClient(socketPath)
 		client.SetAuthToken(authToken)
 		if !client.Ping() {
 			time.Sleep(2 * time.Second)
-			return reconnectFailedMsg{daemonSessionID: targetDaemonSessionID}
+			return reconnectFailedMsg{daemonThreadID: targetDaemonThreadID}
 		}
-		session := daemon.NewSessionClient(socketPath)
-		session.SetAuthToken(authToken)
-		if err := session.ConnectFork(cwd, configDir, model, false, enableWrite, enableDir, false, forkSessionID, forkTurnIdx); err != nil {
+		thread := daemon.NewThreadClient(socketPath)
+		thread.SetAuthToken(authToken)
+		if err := thread.ConnectFork(cwd, configDir, model, false, enableWrite, enableDir, false, forkThreadID, forkTurnIdx); err != nil {
 			time.Sleep(2 * time.Second)
-			return reconnectFailedMsg{daemonSessionID: targetDaemonSessionID}
+			return reconnectFailedMsg{daemonThreadID: targetDaemonThreadID}
 		}
-		return reconnectSuccessMsg{daemonSessionID: targetDaemonSessionID, client: session}
+		return reconnectSuccessMsg{daemonThreadID: targetDaemonThreadID, client: thread}
 	}
 }
 
-// findSessionByDaemonID returns the index and pointer of the session with the
-// given daemon session ID, or (-1, nil) if not found.
-func (m *Model) findSessionByDaemonID(id string) (int, *SessionState) {
-	for i, s := range m.sessions {
-		if s.daemonSessionID == id {
+// findThreadByDaemonID returns the index and pointer of the thread with the
+// given daemon thread ID, or (-1, nil) if not found.
+func (m *Model) findThreadByDaemonID(id string) (int, *ThreadState) {
+	for i, s := range m.threads {
+		if s.daemonThreadID == id {
 			return i, s
 		}
 	}
 	return -1, nil
+}
+
+// findThreadByClientKey locates a thread by its stable client-side handle.
+// Used to match async draft-connect results, since a draft's daemonThreadID is
+// empty until it commits (and several drafts may coexist).
+func (m *Model) findThreadByClientKey(key string) (int, *ThreadState) {
+	for i, s := range m.threads {
+		if s.clientKey == key {
+			return i, s
+		}
+	}
+	return -1, nil
+}
+
+// pickCWD returns primary when it is non-blank, else fallback. Used to prefer a
+// thread's own working directory over the model-global launch cwd.
+func pickCWD(primary, fallback string) string {
+	if strings.TrimSpace(primary) != "" {
+		return primary
+	}
+	return fallback
+}
+
+// maxRecentDirs bounds the recent-directories list rendered on the welcome
+// screen.
+const maxRecentDirs = 5
+
+// topRecentDirs returns the highest-ranked recent working directories, trimmed
+// to maxRecentDirs, for the welcome screen.
+func (m *Model) topRecentDirs() []protocol.DirUsage {
+	if len(m.recentDirs) <= maxRecentDirs {
+		return m.recentDirs
+	}
+	return m.recentDirs[:maxRecentDirs]
+}
+
+// latestWorkDir returns the working directory a fresh draft thread should
+// default to: the most-recently-active recorded directory, falling back to the
+// launch cwd when there is no history.
+func (m *Model) latestWorkDir() string {
+	best := ""
+	bestTS := ""
+	for _, d := range m.recentDirs {
+		if d.Path == "" {
+			continue
+		}
+		// recentDirs is ranked by count, so scan for the most recent activity.
+		if best == "" || d.LastRequestAt > bestTS {
+			best = d.Path
+			bestTS = d.LastRequestAt
+		}
+	}
+	if best != "" {
+		return best
+	}
+	return m.cwd
+}
+
+// welcomeDirNav handles up/down/enter for the recent-directories list on a
+// focused draft welcome. A draft with an empty transcript shows the welcome
+// screen; when its area is focused (Tab), up/down move the highlighted
+// directory and enter applies it to the working directory. The guard mirrors
+// the Ctrl+O picker: only before the thread starts connecting. It returns true
+// when it consumed the key.
+func (m *Model) welcomeDirNav(sess *ThreadState, key string) bool {
+	if sess == nil || sess.focus != FocusChat || sess.phase != phaseDraft ||
+		sess.client != nil || sess.reconnecting || len(sess.chatMessages) != 0 {
+		return false
+	}
+	recent := m.topRecentDirs()
+	if len(recent) == 0 {
+		return false
+	}
+	switch key {
+	case "up", "k":
+		if sess.recentDirSelected > 0 {
+			sess.recentDirSelected--
+		}
+		return true
+	case "down", "j":
+		if sess.recentDirSelected < len(recent)-1 {
+			sess.recentDirSelected++
+		}
+		return true
+	case "enter":
+		if sess.recentDirSelected >= 0 && sess.recentDirSelected < len(recent) {
+			sess.workDir = recent[sess.recentDirSelected].Path
+		}
+		return true
+	}
+	return false
 }
 
 // AppState represents the current state of the application.
@@ -183,7 +448,7 @@ const (
 	StateUserQuestion
 	StateQuitConfirm
 	StateTrimConfirm
-	StateSessionCloseConfirm
+	StateThreadCloseConfirm
 	StateKeyDeleteConfirm
 )
 
@@ -209,34 +474,77 @@ type pendingPlanAction struct {
 	text   string
 }
 
+func markCancelledReadyForInput(sess *ThreadState) {
+	sess.thinkingAnim.Stop()
+	sess.pendingInput = nil
+	sess.cancelAckPending = true
+	sess.agentState = StateWaitingForInput
+	sess.focus = FocusEditor
+	sess.input.Focus()
+}
+
 // Model is the root Bubble Tea model.
 type Model struct {
 	width, height int
 
-	// Two visible tabs: Sessions list and Chat display.
+	// Two visible tabs: Threads list and Chat display.
 	activeTab TabKind
 
-	// All active sessions. Each accumulates messages independently.
-	sessions        []*SessionState
-	selectedSession int // index into sessions; which session the Chat tab shows
+	// All active threads. Each accumulates messages independently.
+	threads        []*ThreadState
+	selectedThread int // index into threads; which thread the Chat tab shows
 
-	// Global overlay dialog state (quit confirm, session close confirm).
+	// Global overlay dialog state (quit confirm, thread close confirm).
 	// Normal operation = StateWaitingForInput (no overlay).
-	state                AppState
-	quitSelected         int
-	sessionCloseIdx      int
-	sessionCloseSelected int
+	state               AppState
+	quitSelected        int
+	quitCloseAll        bool // quit-dialog checkbox: close all threads on quit
+	threadCloseIdx      int
+	threadCloseSelected int
+	// vixDismissID, when non-empty, marks that the close dialog targets a
+	// persisted vix-initiated record (dismissed, not closed) with that ID.
+	vixDismissID string
 
-	// Sessions tab UI
-	sessionsSelected int
+	// Threads tab UI
+	threadsSelected int
+	// vixThreads are the persisted vix-initiated records (job runs, alerts),
+	// rendered as their own group below the user-initiated threads.
+	// Refreshed on Init, on entering the tab, and on event.threads_changed.
+	vixThreads []protocol.ThreadSummary
+	// userThreadRecords are the persisted, not-currently-attached
+	// user-initiated threads across every working directory. The Threads tab
+	// groups them by directory alongside the live threads (the current cwd's
+	// threads are auto-attached on launch, so they appear as live rows and are
+	// excluded here by the Attached filter). Refreshed alongside vixThreads.
+	userThreadRecords []protocol.ThreadSummary
+
+	// Jobs & Triggers tab UI: the scheduled jobs and lifecycle hooks, refreshed
+	// on entering the tab and on event.jobs_changed. jobsSelected is a single
+	// cursor spanning the Jobs group then the Triggers group.
+	jobs         []protocol.JobSummary
+	hooks        []protocol.HookSummary
+	jobsSelected int
+	// MCP tab UI: the configured MCP servers, refreshed on entering the tab and
+	// on event.mcp_changed. mcpSelected is the row cursor.
+	mcpServers  []protocol.MCPServerSummary
+	mcpSelected int
+	// focusRestoredID, when set, names a thread the user just opened from
+	// the Threads tab (enter on a vix-initiated row): the matching
+	// threadRestoredMsg focuses it instead of restoring in the background.
+	focusRestoredID string
+	// vixSeeded guards the one-shot launch seeding of threadsTabUnseen from
+	// persisted unread vix records (first vixThreadsMsg only).
+	vixSeeded bool
 
 	// Models tab UI
 	modelsLoggedIn         []string                             // providers with a stored credential
 	modelsAvailable        []string                             // providers without one
+	modelsLocal            []string                             // local providers (Ollama, llama.cpp), own group
+	modelsLocalUI          map[string]LocalProviderUI           // live probe state per local provider
 	modelsStatus           map[string]config.ProviderAuthStatus // per-provider auth status (refreshed on change)
-	modelsProviderSel      int                                  // index into modelsLoggedIn ++ modelsAvailable
+	modelsProviderSel      int                                  // index into modelsLoggedIn ++ modelsAvailable ++ modelsLocal
 	modelsFocus            modelsFocusArea                      // which Models-tab area has the cursor
-	modelsAuthRow          int                                  // authRowAPIKey | authRowOAuth (focus == auth)
+	modelsAuthRow          int                                  // credential-method row index (focus == auth)
 	modelsAuthBtn          int                                  // button index within the focused auth row
 	modelsModelSel         int                                  // index into the filtered model list for the selected provider
 	modelsModelScroll      int                                  // index of the top visible grid row (windowed scrolling)
@@ -244,32 +552,64 @@ type Model struct {
 	modelsModelPending     string                               // model spec awaiting a credential
 	modelsInKeyInput       bool                                 // key-entry popup open
 	modelsKeyInputProvider string                               // provider the popup is entering a key for
-	modelsKeyInput         textinput.Model                      // popup text input (holds the real value)
+	modelsKeyInputMethodID string                               // credential method the popup is entering a key for
+	modelsKeyInputLabel    string                               // method label for the popup title
+	modelsKeyInput         textinput.Model                      // popup text input (holds the real key value)
+	modelsKeyInputBaseURL  bool                                 // popup also collects a user-supplied base URL
+	modelsBaseURLInput     textinput.Model                      // popup base-URL input (RequiresBaseURL methods)
+	modelsKeyInputFocus    int                                  // 0 = key field, 1 = base-URL field
 	modelsLoginStatus      string                               // transient OAuth login progress/result text
 
 	// Models tab credential-delete confirmation (driven by StateKeyDeleteConfirm)
 	keyDeleteProvider string
 	keyDeleteKind     string // "api_key" | "oauth"
+	keyDeleteMethodID string // credential method id (api_key deletes)
 	keyDeleteSelected int    // 0 = Yes, 1 = No
 
 	// Shared rendering
 	mdRenderer     *MarkdownRenderer
 	commandPalette CommandPalette
 
+	// whiteboardBase is the local web UI origin (e.g. "http://localhost:1337")
+	// reported by the daemon in thread_started and captured by ThreadClient. It
+	// is a cache of the last non-empty value read from the session's client in
+	// syncMermaidCtx. Empty when the web UI is disabled. Used to build whiteboard
+	// links for mermaid diagrams.
+	whiteboardBase string
+
 	// lastChatWidth records the effective (panel-aware) chat width the markdown
 	// renderer and cached messages were last reconciled at. reconcileChatWidth
-	// uses it to detect panel/session/resize transitions and re-flow once.
+	// uses it to detect panel/thread/resize transitions and re-flow once.
 	lastChatWidth int
 
-	// Tab alert blink (Chat tab label pulses when a session needs attention)
+	// Tab alert blink (Chat tab label pulses when a thread needs attention)
 	tabAlertActive   bool
 	tabAlertBlinkOn  bool
 	tabAlertBlinkGen int
 
+	// Threads-list loading spinner. A single shared ticker animates the
+	// per-row indicator for threads that are actively working. It runs only
+	// while the Threads tab is the active view AND at least one thread is
+	// busy, so it never animates for threads the user can't see.
+	threadsSpinnerActive bool
+	threadsSpinnerStep   int
+	threadsSpinnerGen    int // bumped on stop; invalidates in-flight ticks
+
+	// threadsTabUnseen marks that a message arrived while the Threads tab was
+	// not focused; it tints the Threads tab title secondary (static, not
+	// blinking) and is cleared when the user visits the Threads tab.
+	threadsTabUnseen bool
+
 	// Transient status bar message (second line)
 	statusMsg StatusMessage
 
-	// Connection parameters (for reconnect / new sessions)
+	// alertPopup holds the text of a persistent, centered error popup. When
+	// non-empty it renders as a modal overlay that stays until the user
+	// dismisses it with a key press. Error-kind status messages route here
+	// instead of the transient status bar.
+	alertPopup string
+
+	// Connection parameters (for reconnect / new threads)
 	socketPath                     string
 	cwd                            string
 	authToken                      string
@@ -283,25 +623,84 @@ type Model struct {
 	kittySupported bool
 	cfg            *config.Config
 	testMode       bool
+	settingsCursor int // selected row in the Settings tab
+
+	// Search-tool backends resolved by the daemon (via event.tool_backends),
+	// shown read-only in the Settings tab. The *Effective values reflect PATH
+	// fallback; the *Configured values flag when the requested backend wasn't
+	// available.
+	grepBackendEffective  string
+	grepBackendConfigured string
+	globBackendEffective  string
+	globBackendConfigured string
+
+	// Update status (from the daemon's daily release check, via
+	// event.update_available) and in-app upgrade flow state.
+	updateCurrent   string // running version
+	updateLatest    string // newer release tag, "" when up-to-date/unknown
+	updateURL       string
+	updateMethod    string // "brew" | "script" | "unknown"
+	updateInstalled bool   // install command completed successfully
+	updateErr       string // last install error, if any
+
+	// restoreThreads holds persisted open threads (beyond the first, which is
+	// the initial client) to reopen on Init.
+	restoreThreads []protocol.ThreadSummary
+
+	// recentDirs holds the working directories used by open user threads,
+	// ranked by thread count (then recency). Fetched from the daemon on Init
+	// and refreshed on event.threads_changed. Powers the welcome screen's
+	// recent-directories list and the default cwd for new draft threads.
+	recentDirs []protocol.DirUsage
+
+	// instanceClient is the window's long-lived control channel to the daemon.
+	// Its read loop (startInstanceEventLoop) delivers process-level events
+	// (threads_changed, jobs_changed, quit) once per window, independent of any
+	// chat thread — so a launch-time draft still refreshes live. nil in test
+	// mode and when instance registration failed.
+	instanceClient *daemon.InstanceClient
 }
 
-// currentSession returns the selected session, or nil if there is none.
-func (m *Model) currentSession() *SessionState {
-	if m.selectedSession < 0 || m.selectedSession >= len(m.sessions) {
+// SetInstanceClient records the window's daemon control channel. Called once by
+// main before the program starts; Init launches its read loop.
+func (m *Model) SetInstanceClient(ic *daemon.InstanceClient) {
+	m.instanceClient = ic
+}
+
+// SetRestoreThreads records the persisted open threads the TUI should reopen
+// on launch (attached lazily from Init). Called once by main before the program
+// starts.
+func (m *Model) SetRestoreThreads(s []protocol.ThreadSummary) {
+	m.restoreThreads = s
+}
+
+// SetInitialAwaitingReplay marks the initial thread as one that was attached
+// (restored) on launch and is still waiting for its event.replay. While true the
+// chat area shows a "Restoring conversation…" placeholder instead of the welcome
+// screen. Called once by main before the program starts.
+func (m *Model) SetInitialAwaitingReplay(awaiting bool) {
+	if awaiting && len(m.threads) > 0 {
+		m.threads[0].awaitingReplay = true
+	}
+}
+
+// currentThread returns the selected thread, or nil if there is none.
+func (m *Model) currentThread() *ThreadState {
+	if m.selectedThread < 0 || m.selectedThread >= len(m.threads) {
 		return nil
 	}
-	return m.sessions[m.selectedSession]
+	return m.threads[m.selectedThread]
 }
 
 // NewModel creates a new root Model.
-func NewModel(cfg *config.Config, client *daemon.SessionClient, testMode bool, authToken string, enableWrite, enableDir bool) Model {
-	initialSession := newSessionState(cfg, client)
+func NewModel(cfg *config.Config, client *daemon.ThreadClient, testMode bool, authToken string, enableWrite, enableDir bool) Model {
+	initialThread := newThreadState(cfg, client)
 
 	m := Model{
 		state:                          StateWaitingForInput,
 		activeTab:                      TabKindChat,
-		sessions:                       []*SessionState{initialSession},
-		selectedSession:                0,
+		threads:                        []*ThreadState{initialThread},
+		selectedThread:                 0,
 		commandPalette:                 NewCommandPalette(),
 		hasDarkBG:                      true,
 		styles:                         NewStyles(true),
@@ -330,9 +729,28 @@ func (m Model) Init() tea.Cmd {
 	}
 	var cmds []tea.Cmd
 	cmds = append(cmds, func() tea.Msg { return startCursorBlinkMsg{} })
-	if sess := m.currentSession(); sess != nil && sess.client != nil {
-		cmds = append(cmds, startSessionEventLoop(sess.client))
+	// Start the window's control-channel read loop unconditionally, before and
+	// independent of any thread, so process-level events (threads_changed,
+	// jobs_changed, quit) are received even while the window is still a draft.
+	if m.instanceClient != nil {
+		cmds = append(cmds, startInstanceEventLoop(m.instanceClient))
 	}
+	if sess := m.currentThread(); sess != nil && sess.client != nil {
+		cmds = append(cmds, startThreadEventLoop(sess.client))
+		// A restored initial thread shows the "Restoring conversation…"
+		// placeholder until its replay arrives; animate its spinner.
+		if sess.awaitingReplay {
+			cmds = append(cmds, sess.thinkingAnim.Start())
+		}
+	}
+	// Reopen any persisted open threads beyond the initial one.
+	for _, sum := range m.restoreThreads {
+		cmds = append(cmds, attachRestoreThread(m.socketPath, pickCWD(sum.CWD, m.cwd), m.cfg.ConfigDir, m.cfg.Model, m.authToken, m.enableAutomaticWritePermission, m.enableAutomaticDirectoryAccess, sum))
+	}
+	// Populate the Vix-initiated group of the Threads tab.
+	cmds = append(cmds, fetchVixThreads(m.socketPath, m.cwd, m.cfg.ConfigDir, m.authToken))
+	// Populate the welcome screen's recent-directories list.
+	cmds = append(cmds, fetchRecentDirs(m.socketPath, m.cwd, m.cfg.ConfigDir, m.authToken))
 	cmds = append(cmds, waitForResume, tea.RequestBackgroundColor)
 	return tea.Batch(cmds...)
 }
@@ -340,7 +758,7 @@ func (m Model) Init() tea.Cmd {
 // Update implements tea.Model.
 // Update is the central tea.Model update entry point. It delegates to updateInner
 // (the real message handler) and then reconciles the panel-aware chat width on
-// the resulting model, so panel open/close, session switches, and resizes all
+// the resulting model, so panel open/close, thread switches, and resizes all
 // re-flow width-cached content without each transition remembering to do so.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	model, cmd := m.updateInner(msg)
@@ -359,7 +777,7 @@ func (m Model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		sess := m.currentSession()
+		sess := m.currentThread()
 		if sess != nil {
 			sess.input.SetWidth(m.width - 4)
 			sess.questionPanel.SetWidth(m.width)
@@ -371,26 +789,30 @@ func (m Model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// --- Global quit confirm overlay ---
 		if msg.String() == "ctrl+c" || msg.String() == "ctrl+d" {
 			if m.state == StateQuitConfirm {
-				sess := m.currentSession()
-				if sess != nil && sess.client != nil {
-					sess.client.SendCancel()
-					sess.client.SendClose()
-				}
+				m.closeThreadsForQuit(m.quitCloseAll)
 				return m, tea.Quit
 			}
+			m.alertPopup = ""
 			m.state = StateQuitConfirm
 			m.quitSelected = 0
+			m.quitCloseAll = config.CloseAllThreadsOnQuit()
 			return m, nil
 		}
 
-		// --- Quit / SessionClose / Trim dialogs intercept all keys ---
-		if m.state == StateQuitConfirm || m.state == StateSessionCloseConfirm {
+		// --- Error alert popup intercepts all keys (dismiss on any key) ---
+		if m.alertPopup != "" {
+			m.alertPopup = ""
+			return m, nil
+		}
+
+		// --- Quit / ThreadClose / Trim dialogs intercept all keys ---
+		if m.state == StateQuitConfirm || m.state == StateThreadCloseConfirm {
 			return m.handleDialogKey(msg)
 		}
 		if m.state == StateKeyDeleteConfirm {
 			return m.handleKeyDeleteKey(msg)
 		}
-		sess := m.currentSession()
+		sess := m.currentThread()
 		if sess != nil && sess.agentState == StateTrimConfirm {
 			return m.handleTrimKey(msg)
 		}
@@ -424,35 +846,11 @@ func (m Model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				sess.input.Focus()
 				return m, nil
 			}
-			action, payload := sess.rightPanel.HandleKey(msg)
-			switch action {
-			case rpActionClose:
+			if sess.rightPanel.HandleKey(msg) == rpActionClose {
 				sess.rightPanel.Close()
 				m.updateChatWidth()
 				sess.input.Focus()
 				sess.focus = FocusEditor
-			case rpActionNeedKey:
-				parts := strings.SplitN(payload, ":", 2)
-				if len(parts) == 2 {
-					sess.rightPanel.OpenKeyInput(parts[0], m.height)
-				}
-			case rpActionKeyStored:
-				parts := strings.SplitN(payload, ":", 2)
-				if len(parts) == 2 {
-					provider, key := parts[0], parts[1]
-					_ = config.StoreProviderKey(provider, key)
-					if sess.client != nil && sess.modelName != "" {
-						_ = sess.client.SendSetModel(sess.modelName)
-					}
-					sess.rightPanel.OpenKeyManager(m.height)
-					sess.focus = FocusRightPanel
-					sess.input.Blur()
-				}
-			case rpActionKeyDeleted:
-				_ = config.DeleteProviderKey(payload)
-				sess.rightPanel.OpenKeyManager(m.height)
-				sess.focus = FocusRightPanel
-				sess.input.Blur()
 			}
 			return m, nil
 		}
@@ -461,118 +859,124 @@ func (m Model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.commandPalette.IsVisible() {
 			action, _ := m.commandPalette.Update(msg)
 			cmds = append(cmds, m.handleCommandAction(action, sess)...)
-			if !m.commandPalette.IsVisible() && sess != nil && sess.focus != FocusRightPanel && m.activeTab != TabKindSessions && m.activeTab != TabKindModels && m.activeTab != TabKindSettings {
+			if !m.commandPalette.IsVisible() && sess != nil && sess.focus != FocusRightPanel && m.activeTab != TabKindThreads && m.activeTab != TabKindModels && m.activeTab != TabKindJobs && m.activeTab != TabKindSettings {
 				sess.input.Focus()
 				sess.focus = FocusEditor
 			}
 			return m, tea.Batch(cmds...)
 		}
 
+		// --- Tab switching (F1–F6), shared across all tabs/focus ---
+		switch msg.String() {
+		case "f1":
+			return m, m.switchTab(TabKindThreads)
+		case "f2":
+			return m, m.switchTab(TabKindChat)
+		case "f3":
+			return m, m.switchTab(TabKindModels)
+		case "f4":
+			return m, m.switchTab(TabKindMcp)
+		case "f5":
+			return m, m.switchTab(TabKindJobs)
+		case "f6":
+			return m, m.switchTab(TabKindSettings)
+		}
+
 		// --- Global workspace shortcuts ---
 		switch msg.String() {
 		case "ctrl+n":
-			if m.selectedSession < len(m.sessions)-1 {
-				m.selectedSession++
-				m.activeTab = TabKindChat
-				selSess := m.sessions[m.selectedSession]
-				selSess.unreadCount = 0
-				selSess.input.SetWidth(m.width - 4)
-				if selSess.client == nil && !selSess.reconnecting {
-					selSess.reconnecting = true
-					cmds = append(cmds, attemptReconnect(m.socketPath, m.cwd, m.cfg.ConfigDir, m.cfg.Model, m.authToken, false, m.enableAutomaticWritePermission, m.enableAutomaticDirectoryAccess, selSess.daemonSessionID))
-				}
-				cmds = append(cmds, selSess.thinkingAnim.Resume())
-				if !m.hasAlertSessions() {
-					m.stopTabAlertBlink()
-				}
-			} else if curSess := m.currentSession(); curSess != nil {
-				return m, m.emitStatusMsg("No next session", StatusMsgWarning)
+			if stepCmds, ok := m.stepWorkspaceThread(1); ok {
+				cmds = append(cmds, stepCmds...)
+			} else if curSess := m.currentThread(); curSess != nil {
+				return m, m.emitStatusMsg("No next thread", StatusMsgWarning)
 			}
 			return m, tea.Batch(cmds...)
 
 		case "ctrl+p":
-			if m.selectedSession > 0 {
-				m.selectedSession--
-				m.activeTab = TabKindChat
-				selSess := m.sessions[m.selectedSession]
-				selSess.unreadCount = 0
-				selSess.input.SetWidth(m.width - 4)
-				if selSess.client == nil && !selSess.reconnecting {
-					selSess.reconnecting = true
-					cmds = append(cmds, attemptReconnect(m.socketPath, m.cwd, m.cfg.ConfigDir, m.cfg.Model, m.authToken, false, m.enableAutomaticWritePermission, m.enableAutomaticDirectoryAccess, selSess.daemonSessionID))
-				}
-				cmds = append(cmds, selSess.thinkingAnim.Resume())
-				if !m.hasAlertSessions() {
-					m.stopTabAlertBlink()
-				}
-			} else if curSess := m.currentSession(); curSess != nil {
-				return m, m.emitStatusMsg("No previous session", StatusMsgWarning)
+			if stepCmds, ok := m.stepWorkspaceThread(-1); ok {
+				cmds = append(cmds, stepCmds...)
+			} else if curSess := m.currentThread(); curSess != nil {
+				return m, m.emitStatusMsg("No previous thread", StatusMsgWarning)
 			}
 			return m, tea.Batch(cmds...)
 
 		case "ctrl+t":
-			newSess := newSessionState(m.cfg, nil)
+			newSess := newThreadState(m.cfg, nil)
+			newSess.workDir = m.latestWorkDir()
 			newSess.input.SetWidth(m.width - 4)
-			newSess.reconnecting = true
-			newIdx := len(m.sessions)
-			m.sessions = append(m.sessions, newSess)
-			m.selectedSession = newIdx
+			newIdx := len(m.threads)
+			m.threads = append(m.threads, newSess)
+			m.selectedThread = newIdx
 			m.activeTab = TabKindChat
-			cmds = append(cmds, attemptReconnect(m.socketPath, m.cwd, m.cfg.ConfigDir, m.cfg.Model, m.authToken, false, m.enableAutomaticWritePermission, m.enableAutomaticDirectoryAccess, newSess.daemonSessionID))
+			// A ctrl+t tab starts as a draft (no connection) so the user can
+			// pick its working directory before committing on the first message.
+			// It defaults to the most-recently-used working directory.
+			cmds = append(cmds, armCursorBlink(newSess))
 			return m, tea.Batch(cmds...)
 
 		}
 
-		// --- Sessions tab key handling ---
-		if m.activeTab == TabKindSessions {
+		// --- Threads tab key handling ---
+		if m.activeTab == TabKindThreads {
 			switch msg.String() {
 			case "up":
-				if m.sessionsSelected > 0 {
-					m.sessionsSelected--
+				if m.threadsSelected > 0 {
+					m.threadsSelected--
 				}
 				return m, nil
 			case "down":
-				if n := m.sessionsVisibleCount(); m.sessionsSelected < n-1 {
-					m.sessionsSelected++
+				if n := len(m.threadRowTargets()); m.threadsSelected < n-1 {
+					m.threadsSelected++
 				}
 				return m, nil
 			case "enter":
-				if idx, ok := m.sessionsSelectedIdx(); ok {
-					m.selectedSession = idx
+				if sum, ok := m.vixSelectedSummary(); ok {
+					// Open a vix-initiated record: attach it like a restored
+					// thread; the replay rebuilds the conversation and the
+					// matching threadRestoredMsg focuses it.
+					m.focusRestoredID = sum.ID
+					return m, attachRestoreThread(m.socketPath, pickCWD(sum.CWD, m.cwd), m.cfg.ConfigDir, m.cfg.Model, m.authToken, m.enableAutomaticWritePermission, m.enableAutomaticDirectoryAccess, sum)
+				}
+				if idx, ok := m.threadsSelectedIdx(); ok {
+					m.selectedThread = idx
 					m.activeTab = TabKindChat
-					selSess := m.sessions[idx]
-					selSess.unreadCount = 0
+					selSess := m.threads[idx]
+					m.markThreadRead(selSess)
 					selSess.input.SetWidth(m.width - 4)
-					if selSess.client == nil && !selSess.reconnecting {
+					if selSess.client == nil && !selSess.reconnecting && selSess.daemonThreadID != "" {
 						selSess.reconnecting = true
-						cmds = append(cmds, attemptReconnect(m.socketPath, m.cwd, m.cfg.ConfigDir, m.cfg.Model, m.authToken, false, m.enableAutomaticWritePermission, m.enableAutomaticDirectoryAccess, selSess.daemonSessionID))
+						cmds = append(cmds, attemptReconnect(m.socketPath, pickCWD(selSess.workDir, m.cwd), m.cfg.ConfigDir, m.cfg.Model, m.authToken, false, m.enableAutomaticWritePermission, m.enableAutomaticDirectoryAccess, selSess.daemonThreadID))
 					}
 					cmds = append(cmds, selSess.thinkingAnim.Resume())
-					if !m.hasAlertSessions() {
+					cmds = append(cmds, armCursorBlink(selSess))
+					if !m.hasAlertThreads() {
 						m.stopTabAlertBlink()
 					}
 				}
 				return m, tea.Batch(cmds...)
 			case "t":
-				// Add a new session
-				newSess := newSessionState(m.cfg, nil)
+				// Add a new thread (draft — connects on first message).
+				newSess := newThreadState(m.cfg, nil)
+				newSess.workDir = m.latestWorkDir()
 				newSess.input.SetWidth(m.width - 4)
-				newSess.reconnecting = true
-				newIdx := len(m.sessions)
-				m.sessions = append(m.sessions, newSess)
-				m.selectedSession = newIdx
+				newIdx := len(m.threads)
+				m.threads = append(m.threads, newSess)
+				m.selectedThread = newIdx
 				m.activeTab = TabKindChat
-				cmds = append(cmds, attemptReconnect(m.socketPath, m.cwd, m.cfg.ConfigDir, m.cfg.Model, m.authToken, false, m.enableAutomaticWritePermission, m.enableAutomaticDirectoryAccess, newSess.daemonSessionID))
+				cmds = append(cmds, armCursorBlink(newSess))
 				return m, tea.Batch(cmds...)
 			case "d":
-				// Duplicate the selected session into a new one.
-				idx, ok := m.sessionsSelectedIdx()
+				// Duplicate the selected thread into a new one.
+				if _, ok := m.vixSelectedSummary(); ok {
+					return m, m.emitStatusMsg("Open the run first to duplicate it", StatusMsgWarning)
+				}
+				idx, ok := m.threadsSelectedIdx()
 				if !ok {
 					return m, nil
 				}
-				srcSess := m.sessions[idx]
+				srcSess := m.threads[idx]
 				if srcSess.client == nil {
-					return m, m.emitStatusMsg("Session is still connecting; cannot duplicate", StatusMsgWarning)
+					return m, m.emitStatusMsg("Thread is still connecting; cannot duplicate", StatusMsgWarning)
 				}
 				seps := turnSeparatorInfos(srcSess.chatMessages, m.styles, m.mdRenderer.width)
 				if len(seps) == 0 {
@@ -582,23 +986,20 @@ func (m Model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				nm, c := m.doDuplicate(srcSess, lastSep)
 				return nm, c
 			case "x":
-				if idx, ok := m.sessionsSelectedIdx(); ok {
-					m.sessionCloseIdx = idx
-					m.sessionCloseSelected = 1 // default No
-					m.state = StateSessionCloseConfirm
+				if sum, ok := m.vixSelectedSummary(); ok {
+					// Dismiss a vix-initiated record: same confirmation dialog
+					// as closing a live thread.
+					m.vixDismissID = sum.ID
+					m.threadCloseSelected = 1 // default No
+					m.state = StateThreadCloseConfirm
+					return m, nil
+				}
+				if idx, ok := m.threadsSelectedIdx(); ok {
+					m.threadCloseIdx = idx
+					m.threadCloseSelected = 1 // default No
+					m.state = StateThreadCloseConfirm
 				}
 				return m, nil
-			case "f1":
-				return m, nil // already on Sessions tab
-			case "f2":
-				cmds = append(cmds, m.switchTab(TabKindChat))
-				return m, tea.Batch(cmds...)
-			case "f3":
-				cmds = append(cmds, m.switchTab(TabKindModels))
-				return m, tea.Batch(cmds...)
-			case "f4":
-				cmds = append(cmds, m.switchTab(TabKindSettings))
-				return m, tea.Batch(cmds...)
 			}
 		}
 
@@ -607,30 +1008,115 @@ func (m Model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleModelsKey(msg)
 		}
 
+		// --- MCP tab key handling ---
+		if m.activeTab == TabKindMcp {
+			switch msg.String() {
+			case "up", "k":
+				if m.mcpSelected > 0 {
+					m.mcpSelected--
+				}
+				return m, nil
+			case "down", "j":
+				if m.mcpSelected < len(m.mcpServers)-1 {
+					m.mcpSelected++
+				}
+				return m, nil
+			case "space", " ":
+				if m.mcpSelected >= 0 && m.mcpSelected < len(m.mcpServers) {
+					srv := m.mcpServers[m.mcpSelected]
+					return m, setMCPEnabled(m.socketPath, m.authToken, srv.Name, !srv.Enabled)
+				}
+				return m, nil
+			case "a":
+				// Authenticate the selected OAuth server (needs_auth).
+				if m.mcpSelected >= 0 && m.mcpSelected < len(m.mcpServers) {
+					srv := m.mcpServers[m.mcpSelected]
+					if srv.Auth == "needs_auth" {
+						return m, authorizeMCP(m.socketPath, m.authToken, srv.Name)
+					}
+				}
+				return m, nil
+			case "o":
+				// Sign out of the selected authenticated OAuth server.
+				if m.mcpSelected >= 0 && m.mcpSelected < len(m.mcpServers) {
+					srv := m.mcpServers[m.mcpSelected]
+					if srv.Auth == "authenticated" {
+						return m, logoutMCP(m.socketPath, m.authToken, srv.Name)
+					}
+				}
+				return m, nil
+			}
+			return m, nil
+		}
+
+		// --- Jobs & Triggers tab key handling ---
+		if m.activeTab == TabKindJobs {
+			switch msg.String() {
+			case "up", "k":
+				if m.jobsSelected > 0 {
+					m.jobsSelected--
+				}
+				return m, nil
+			case "down", "j":
+				if n := len(m.jobs) + len(m.hooks); m.jobsSelected < n-1 {
+					m.jobsSelected++
+				}
+				return m, nil
+			case "space", " ":
+				// Toggle enabled on the selected job or hook. The cursor indexes
+				// jobs first, then hooks.
+				if m.jobsSelected < len(m.jobs) {
+					j := m.jobs[m.jobsSelected]
+					return m, setJobEnabled(m.socketPath, m.authToken, j.ID, !j.Enabled)
+				}
+				hi := m.jobsSelected - len(m.jobs)
+				if hi >= 0 && hi < len(m.hooks) {
+					h := m.hooks[hi]
+					return m, setHookEnabled(m.socketPath, m.authToken, h.ID, !h.Enabled)
+				}
+				return m, nil
+			}
+			return m, nil
+		}
+
 		// --- Settings tab key handling ---
 		if m.activeTab == TabKindSettings {
 			switch msg.String() {
-			case "enter":
-				if sess := m.currentSession(); sess != nil {
-					sess.showThinking = !sess.showThinking
-					if sess.showThinking && sess.thinkingBuf != "" {
-						sess.thinkingRendered = renderThinkingText(sess.thinkingBuf, m.styles, m.mdRenderer.width+4)
-					} else {
-						sess.thinkingRendered = ""
-					}
-					_ = config.SetShowThinking(sess.showThinking)
+			case "up", "k":
+				if m.settingsCursor > 0 {
+					m.settingsCursor--
 				}
-			case "f1":
-				cmds = append(cmds, m.switchTab(TabKindSessions))
-			case "f2":
-				cmds = append(cmds, m.switchTab(TabKindChat))
-			case "f3":
-				cmds = append(cmds, m.switchTab(TabKindModels))
+			case "down", "j":
+				if m.settingsCursor < int(settingsItemCount)-1 {
+					m.settingsCursor++
+				}
+			case "enter", " ":
+				if settingsItem(m.settingsCursor) == settingUpdateAction {
+					if cmd := m.handleUpdateAction(); cmd != nil {
+						cmds = append(cmds, cmd)
+					}
+				} else {
+					m.toggleSetting(settingsItem(m.settingsCursor))
+				}
+			case "left", "h":
+				if settingsItem(m.settingsCursor) == settingCompactionThreshold {
+					m.adjustCompactionThreshold(-0.05)
+				}
+				if settingsItem(m.settingsCursor) == settingClosedRetention {
+					m.adjustClosedRetention(-1)
+				}
+			case "right", "l":
+				if settingsItem(m.settingsCursor) == settingCompactionThreshold {
+					m.adjustCompactionThreshold(0.05)
+				}
+				if settingsItem(m.settingsCursor) == settingClosedRetention {
+					m.adjustClosedRetention(1)
+				}
 			}
 			return m, tea.Batch(cmds...)
 		}
 
-		// --- Chat tab key handling (session-specific) ---
+		// --- Chat tab key handling (thread-specific) ---
 		if sess == nil {
 			return m, nil
 		}
@@ -663,6 +1149,70 @@ func (m Model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	processKey:
 
+		// Directory picker (draft welcome screen, Ctrl+O). Intercepts keys while
+		// open so navigation doesn't leak into the input.
+		if sess.dirPicker.IsVisible() {
+			switch msg.String() {
+			case "up":
+				sess.dirPicker.MoveUp()
+				return m, nil
+			case "down":
+				sess.dirPicker.MoveDown()
+				return m, nil
+			case "esc":
+				sess.dirPicker.Close()
+				return m, nil
+			case "right", "tab":
+				if entry := sess.dirPicker.SelectedEntry(); entry != nil && entry.IsDir() {
+					sess.dirPicker.Descend(entry)
+				}
+				return m, nil
+			case "left":
+				sess.dirPicker.Parent()
+				return m, nil
+			case "backspace":
+				if sess.dirPicker.query != "" {
+					sess.dirPicker.Refresh(strings.TrimSuffix(sess.dirPicker.query, sess.dirPicker.query[len(sess.dirPicker.query)-1:]))
+				} else {
+					sess.dirPicker.Parent()
+				}
+				return m, nil
+			case "enter":
+				// Choose the highlighted directory, or the listed directory
+				// itself when the listing is empty.
+				if entry := sess.dirPicker.SelectedEntry(); entry != nil && entry.IsDir() {
+					sess.workDir = sess.dirPicker.SelectedPath()
+				} else {
+					sess.workDir = sess.dirPicker.CurrentDir()
+				}
+				sess.dirPicker.Close()
+				return m, nil
+			default:
+				if s := msg.String(); len(s) == 1 && s >= " " {
+					sess.dirPicker.Refresh(sess.dirPicker.query + s)
+				}
+				return m, nil
+			}
+		}
+
+		// Ctrl+O opens the working-directory picker on a draft thread that has
+		// not started connecting yet. Once committing/live the cwd is frozen.
+		if msg.String() == "ctrl+o" {
+			if sess.phase == phaseDraft && sess.client == nil && !sess.reconnecting {
+				sess.dirPicker.OpenDir(sess.workDir)
+			}
+			return m, nil
+		}
+
+		// Recent-directories selection on a focused draft welcome (see
+		// welcomeDirNav). up/down move the highlighted directory; enter applies
+		// it as the thread's working directory. Handled here — before the
+		// editor keymap that binds enter to sending a message — so enter on the
+		// recent list switches the directory instead of committing the draft.
+		if m.welcomeDirNav(sess, msg.String()) {
+			return m, nil
+		}
+
 		// Slash menu
 		if sess.slashMenu.IsVisible() {
 			switch msg.String() {
@@ -685,7 +1235,7 @@ func (m Model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 					sess.input.SetValue(insert)
 					sess.input.MoveToEnd()
 					sess.input.SetHeight(1)
-					if sess.focus != FocusRightPanel && m.activeTab != TabKindSessions && m.activeTab != TabKindModels && m.activeTab != TabKindSettings {
+					if sess.focus != FocusRightPanel && m.activeTab != TabKindThreads && m.activeTab != TabKindModels && m.activeTab != TabKindJobs && m.activeTab != TabKindSettings {
 						sess.input.Focus()
 						sess.focus = FocusEditor
 					}
@@ -696,7 +1246,7 @@ func (m Model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if action != "" {
 					cmds = append(cmds, m.handleCommandAction(action, sess)...)
 				}
-				if sess.focus != FocusRightPanel && m.activeTab != TabKindSessions && m.activeTab != TabKindModels && m.activeTab != TabKindSettings {
+				if sess.focus != FocusRightPanel && m.activeTab != TabKindThreads && m.activeTab != TabKindModels && m.activeTab != TabKindJobs && m.activeTab != TabKindSettings {
 					sess.input.Focus()
 					sess.focus = FocusEditor
 				}
@@ -861,26 +1411,6 @@ func (m Model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 
-		case "f1":
-			m.activeTab = TabKindSessions
-			m.syncSessionsSelected()
-			return m, tea.Batch(cmds...)
-
-		case "f2":
-			m.activeTab = TabKindChat
-			if sess := m.currentSession(); sess != nil {
-				sess.unreadCount = 0
-			}
-			return m, tea.Batch(cmds...)
-
-		case "f3":
-			cmds = append(cmds, m.switchTab(TabKindModels))
-			return m, tea.Batch(cmds...)
-
-		case "f4":
-			cmds = append(cmds, m.switchTab(TabKindSettings))
-			return m, tea.Batch(cmds...)
-
 		case "shift+tab":
 			if sess.agentState == StateWaitingForInput && len(sess.workflows) > 0 {
 				sess.activeWorkflow = m.nextWorkflow(sess)
@@ -908,12 +1438,11 @@ func (m Model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "esc":
 			if sess.agentState == StateStreaming || sess.agentState == StateToolExecuting || sess.agentState == StatePlanExecuting {
-				sess.thinkingAnim.Stop()
-				sess.pendingInput = nil
+				markCancelledReadyForInput(sess)
 				if sess.client != nil {
 					sess.client.SendCancel()
 				}
-				m.flushSessionBuf(sess)
+				m.flushThreadBuf(sess)
 				sess.chatMessages = append(sess.chatMessages, renderSystemMessage("Cancelled.", m.styles))
 				return m, nil
 			}
@@ -957,7 +1486,7 @@ func (m Model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "pgdown", "f":
 				sess.chatScrollOffset -= 20
 			case "home", "g":
-				sess.chatScrollOffset = m.sessionMaxScrollOffset(sess)
+				sess.chatScrollOffset = m.threadMaxScrollOffset(sess)
 			case "end", "G":
 				sess.chatScrollOffset = 0
 			}
@@ -977,7 +1506,7 @@ func (m Model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			query, found := extractAtQuery(sess.input.Value())
 			if found {
-				dir, prefix := resolveAtDir(query, m.cwd)
+				dir, prefix := resolveAtDir(query, pickCWD(sess.workDir, m.cwd))
 				if sess.fileCompleter.IsVisible() && dir == sess.fileCompleter.currentDir {
 					sess.fileCompleter.Refresh(prefix)
 				} else {
@@ -992,7 +1521,7 @@ func (m Model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if sess.slashMenu.IsVisible() {
 					sess.slashMenu.Refresh(slashQuery)
 				} else {
-					sess.slashMenu.Open(sessionSlashCommands(sess), slashQuery)
+					sess.slashMenu.Open(threadSlashCommands(sess), slashQuery)
 				}
 			} else {
 				sess.slashMenu.Close()
@@ -1007,13 +1536,45 @@ func (m Model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		return m, nil
 
-	// --- Session daemon events ---
-	case sessionEventMsg:
-		idx, sess := m.findSessionByDaemonID(msg.daemonSessionID)
+	// --- Thread daemon events ---
+	case threadEventMsg:
+		idx, sess := m.findThreadByDaemonID(msg.daemonThreadID)
 		if sess != nil {
-			evCmds := m.applyEventToSession(idx, msg.event)
+			evCmds := m.applyEventToThread(idx, msg.event)
 			cmds = append(cmds, evCmds...)
 			cmds = append(cmds, m.maybeStartTabAlertBlink())
+			cmds = append(cmds, m.maybeStartThreadsSpinner())
+		}
+		return m, tea.Batch(cmds...)
+
+	case instanceEventMsg:
+		// Process-level events delivered once per window over the control
+		// channel, independent of any chat thread (so a draft still refreshes).
+		switch msg.event.Type {
+		case "event.threads_changed":
+			// The persisted threads list changed outside this window (a job run
+			// was persisted or swept): refresh the Vix-initiated group and the
+			// set of open working directories.
+			cmds = append(cmds, fetchVixThreads(m.socketPath, m.cwd, m.cfg.ConfigDir, m.authToken))
+			cmds = append(cmds, fetchRecentDirs(m.socketPath, m.cwd, m.cfg.ConfigDir, m.authToken))
+		case "event.jobs_changed":
+			// A job/hook started, finished, was enabled/disabled, or the spec
+			// directory was reloaded: refresh the Jobs & Triggers tab when it is
+			// the active view so the running indicator and last-run stay current.
+			if m.activeTab == TabKindJobs {
+				cmds = append(cmds, fetchJobsAndHooks(m.socketPath, m.authToken))
+			}
+		case "event.mcp_changed":
+			// An MCP server was enabled/disabled: refresh the MCP tab when it is
+			// the active view.
+			if m.activeTab == TabKindMcp {
+				cmds = append(cmds, fetchMCPServers(m.socketPath, m.authToken))
+			}
+		case "event.quit":
+			// Daemon-driven quit-all (post-update restart). Intentionally no
+			// closeThreadsForQuit: the bare disconnect leaves every record in
+			// open/ so all threads restore on relaunch.
+			cmds = append(cmds, tea.Quit)
 		}
 		return m, tea.Batch(cmds...)
 
@@ -1039,24 +1600,44 @@ func (m Model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case sessionDisconnectedMsg:
-		_, sess := m.findSessionByDaemonID(msg.daemonSessionID)
+	case updateInstallDoneMsg:
+		if msg.err != nil {
+			m.updateErr = msg.err.Error()
+			m.updateInstalled = false
+		} else {
+			m.updateInstalled = true
+			m.updateErr = ""
+		}
+		return m, nil
+
+	case threadDisconnectedMsg:
+		_, sess := m.findThreadByDaemonID(msg.daemonThreadID)
 		if sess != nil {
+			if sess.closing {
+				// Expected disconnect: the TUI sent thread.close (quit flow).
+				// Don't reconnect — attaching again would resurrect the
+				// thread the daemon just closed.
+				return m, nil
+			}
 			sess.reconnecting = true
 			sess.pendingInput = nil
+			// If the connection dropped before the replay arrived, abandon the
+			// restoring placeholder so we don't spin forever.
+			sess.awaitingReplay = false
+			sess.thinkingAnim.Stop()
 			sess.chatMessages = append(sess.chatMessages, renderErrorMessage(fmt.Errorf("daemon connection lost")))
 			if sess.agentState != StatePlanReview {
 				sess.agentState = StateWaitingForInput
 			}
-			cmds = append(cmds, attemptReconnect(m.socketPath, m.cwd, m.cfg.ConfigDir, m.cfg.Model, m.authToken, m.forceInit, m.enableAutomaticWritePermission, m.enableAutomaticDirectoryAccess, msg.daemonSessionID))
+			cmds = append(cmds, attemptReconnect(m.socketPath, pickCWD(sess.workDir, m.cwd), m.cfg.ConfigDir, m.cfg.Model, m.authToken, m.forceInit, m.enableAutomaticWritePermission, m.enableAutomaticDirectoryAccess, msg.daemonThreadID))
 		}
 		return m, tea.Batch(cmds...)
 
 	case reconnectSuccessMsg:
-		_, sess := m.findSessionByDaemonID(msg.daemonSessionID)
+		_, sess := m.findThreadByDaemonID(msg.daemonThreadID)
 		if sess == nil {
-			// Session was closed while the reconnect goroutine was in flight.
-			// Close the new client to avoid leaking a daemon-side session.
+			// Thread was closed while the reconnect goroutine was in flight.
+			// Close the new client to avoid leaking a daemon-side thread.
 			msg.client.Close()
 			return m, nil
 		}
@@ -1066,8 +1647,17 @@ func (m Model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			sess.client.Close()
 		}
 		sess.client = msg.client
-		sess.daemonSessionID = msg.client.SessionID()
+		sess.daemonThreadID = msg.client.ThreadID()
 		sess.reconnecting = false
+		if t := msg.client.StartedAt(); !t.IsZero() {
+			sess.startedAt = t
+		}
+		// A (re)connected thread is live, never a draft. Fork/duplicate creates
+		// the new thread as phaseDraft and connects it through this path; without
+		// promoting it here, its first message would fall into the draft-commit
+		// branch and connectDraft a fresh, empty daemon thread — discarding the
+		// fork-seeded history.
+		sess.phase = phaseLive
 		if len(sess.chatMessages) > 0 {
 			sess.chatMessages = append(sess.chatMessages, renderSystemSuccessMessage("Reconnected to daemon."))
 		}
@@ -1076,34 +1666,230 @@ func (m Model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			sess.pendingPlanAction = nil
 			sess.client.SendPlanAction(pending.action, pending.text)
 			sess.agentState = StateStreaming
-			return m, tea.Batch(startSessionEventLoop(msg.client), sess.thinkingAnim.Start())
+			return m, tea.Batch(startThreadEventLoop(msg.client), sess.thinkingAnim.Start())
 		}
-		return m, startSessionEventLoop(msg.client)
+		return m, startThreadEventLoop(msg.client)
 
 	case reconnectFailedMsg:
-		// Don't retry if the session has never successfully connected — there
-		// is no stable daemonSessionID to match against, and a brand-new
-		// session that failed its first attempt should not loop indefinitely.
-		if msg.daemonSessionID == "" {
+		// Don't retry if the thread has never successfully connected — there
+		// is no stable daemonThreadID to match against, and a brand-new
+		// thread that failed its first attempt should not loop indefinitely.
+		if msg.daemonThreadID == "" {
 			return m, nil
 		}
-		_, sess := m.findSessionByDaemonID(msg.daemonSessionID)
+		_, sess := m.findThreadByDaemonID(msg.daemonThreadID)
 		if sess != nil && sess.reconnecting {
-			return m, attemptReconnect(m.socketPath, m.cwd, m.cfg.ConfigDir, m.cfg.Model, m.authToken, m.forceInit, m.enableAutomaticWritePermission, m.enableAutomaticDirectoryAccess, msg.daemonSessionID)
+			return m, attemptReconnect(m.socketPath, pickCWD(sess.workDir, m.cwd), m.cfg.ConfigDir, m.cfg.Model, m.authToken, m.forceInit, m.enableAutomaticWritePermission, m.enableAutomaticDirectoryAccess, msg.daemonThreadID)
 		}
+		return m, nil
+
+	case draftConnectedMsg:
+		_, sess := m.findThreadByClientKey(msg.clientKey)
+		if sess == nil {
+			// The draft was closed while the connect goroutine was in flight.
+			msg.client.Close()
+			return m, nil
+		}
+		sess.client = msg.client
+		sess.daemonThreadID = msg.client.ThreadID()
+		sess.phase = phaseLive
+		sess.reconnecting = false
+		if t := msg.client.StartedAt(); !t.IsZero() {
+			sess.startedAt = t
+		}
+		cmds = append(cmds, startThreadEventLoop(msg.client))
+		// Flush the message that triggered the commit.
+		if pending := sess.pendingFirstInput; pending != nil {
+			sess.pendingFirstInput = nil
+			telemetry.TrackTurn(sess.modelName)
+			msg.client.SendInput(pending.text, pending.attachments)
+		}
+		return m, tea.Batch(cmds...)
+
+	case draftConnectFailedMsg:
+		_, sess := m.findThreadByClientKey(msg.clientKey)
+		if sess == nil {
+			return m, nil
+		}
+		// Keep the thread a draft so the user can retry (or change directory).
+		sess.reconnecting = false
+		sess.pendingFirstInput = nil
+		sess.agentState = StateWaitingForInput
+		sess.thinkingAnim.Stop()
+		sess.chatMessages = append(sess.chatMessages, renderErrorMessage(fmt.Errorf("couldn't start thread: %w", msg.err)))
+		sess.chatScrollOffset = 0
+		return m, nil
+
+	case threadOrphanedMsg:
+		_, sess := m.findThreadByDaemonID(msg.daemonThreadID)
+		if sess == nil {
+			return m, nil
+		}
+		sess.reconnecting = false
+		sess.orphaned = true
+		sess.awaitingReplay = false
+		sess.client = nil
+		sess.pendingInput = nil
+		sess.pendingPlanAction = nil
+		sess.agentState = StateWaitingForInput
+		sess.thinkingAnim.Stop()
+		sess.chatMessages = append(sess.chatMessages, renderErrorMessage(fmt.Errorf("This conversation was lost when the daemon restarted and can't be continued. Use /copy to save it before it's gone.")))
+		return m, nil
+
+	case threadRestoredMsg:
+		// A persisted open thread was re-attached (launch restore, or a
+		// vix-initiated record opened from the Threads tab). Add it as a new
+		// thread; its viewport is rebuilt from the daemon's event.replay.
+		if _, existing := m.findThreadByDaemonID(msg.summary.ID); existing != nil {
+			msg.client.Close()
+			return m, nil
+		}
+		restored := newThreadState(m.cfg, msg.client)
+		restored.workDir = pickCWD(msg.summary.CWD, m.cwd)
+		if msg.summary.Model != "" {
+			restored.setModel(msg.summary.Model)
+		}
+		// A vix-initiated record (job run, alert) keeps its provenance: the
+		// summary tag keeps it rendered in the Threads tab's "Vix-initiated"
+		// group while attached. Drop it from the persisted-records group so it
+		// doesn't show twice (the daemon doesn't broadcast on attach).
+		if msg.summary.Origin == "vix" {
+			sum := msg.summary
+			restored.vixSummary = &sum
+			for i, vs := range m.vixThreads {
+				if vs.ID == sum.ID {
+					m.vixThreads = append(m.vixThreads[:i], m.vixThreads[i+1:]...)
+					break
+				}
+			}
+		}
+		// Seed the unread indicator from the persisted flag so activity that
+		// happened while vix was closed (job runs, alerts) survives restarts.
+		// Only a background restore raises the Threads-tab "unseen" latch: a
+		// user explicitly opening (or stepping onto) a record sets
+		// focusRestoredID to its ID and is marked read below, so re-tinting the
+		// tab title for it — or leaving it tinted because another record is still
+		// unread — would be wrong. The per-row ● dot still tracks unread.
+		if msg.summary.Unread {
+			restored.unreadCount = 1
+			if m.focusRestoredID != msg.summary.ID {
+				m.threadsTabUnseen = true
+			}
+		}
+		// Restored threads are waiting for their replay; show the placeholder
+		// (with an animated spinner) until it arrives.
+		restored.awaitingReplay = true
+		// Restore attaches run concurrently and complete in arbitrary order, so
+		// insert by creation time instead of appending: place the thread before
+		// the first one that started later, keeping the list in the order the
+		// user started the conversations.
+		idx := len(m.threads)
+		for i, s := range m.threads {
+			if s.client != nil && s.client.StartedAt().After(msg.client.StartedAt()) {
+				idx = i
+				break
+			}
+		}
+		m.threads = append(m.threads, nil)
+		copy(m.threads[idx+1:], m.threads[idx:])
+		m.threads[idx] = restored
+		if idx <= m.selectedThread {
+			m.selectedThread++
+		}
+		// A record the user explicitly opened from the Threads tab gets
+		// focused immediately (launch restores stay in the background).
+		var focusCmd tea.Cmd
+		if m.focusRestoredID != "" && m.focusRestoredID == msg.summary.ID {
+			m.focusRestoredID = ""
+			m.selectedThread = idx
+			m.activeTab = TabKindChat
+			restored.input.SetWidth(m.width - 4)
+			m.markThreadRead(restored)
+			focusCmd = armCursorBlink(restored)
+		}
+		m.syncThreadsSelected()
+		return m, tea.Batch(startThreadEventLoop(msg.client), restored.thinkingAnim.Start(), focusCmd)
+
+	case threadRestoreFailedMsg:
+		// Best-effort: a persisted thread could not be reopened. Leave it on
+		// disk; it will be offered again on the next launch.
+		return m, nil
+
+	case localProvidersMsg:
+		if m.modelsLocalUI == nil {
+			m.modelsLocalUI = map[string]LocalProviderUI{}
+		}
+		for id, st := range msg.states {
+			m.modelsLocalUI[id] = localProviderUIFromState(st)
+		}
+		// Re-anchor the model cursor: the grid for a local provider may have
+		// just gone from empty to populated.
+		if m.activeTab == TabKindModels {
+			prov := m.modelsSelectedProvider()
+			if IsLocalProvider(prov) && m.modelsFocus != modelsFocusModels {
+				m.modelsModelSel = m.modelIndexForActive(prov, m.activeModelSpec())
+				m.clampModelsScroll()
+			}
+		}
+		return m, nil
+
+	case vixThreadsMsg:
+		m.vixThreads = msg.sums
+		m.userThreadRecords = msg.userSums
+		// One-shot launch seeding: unread job runs/alerts that accumulated
+		// while vix was closed tint the Threads tab. Live arrivals re-latch
+		// via event.job_done; refreshes after the first don't, so a visited
+		// tab stays calm.
+		if !m.vixSeeded {
+			m.vixSeeded = true
+			if m.activeTab != TabKindThreads {
+				for _, sum := range msg.sums {
+					if sum.Unread {
+						m.threadsTabUnseen = true
+						break
+					}
+				}
+			}
+		}
+		if n := len(m.threadRowTargets()); m.threadsSelected >= n && n > 0 {
+			m.threadsSelected = n - 1
+		}
+		return m, nil
+
+	case recentDirsMsg:
+		m.recentDirs = msg.dirs
+		// Keep each draft thread's welcome selection within bounds as the list
+		// changes underneath it.
+		n := len(m.topRecentDirs())
+		for _, s := range m.threads {
+			if s.recentDirSelected >= n {
+				s.recentDirSelected = max(0, n-1)
+			}
+		}
+		return m, nil
+
+	case jobsListMsg:
+		m.jobs = msg.jobs
+		m.hooks = msg.hooks
+		m.clampJobsSelected()
+		return m, m.maybeStartThreadsSpinner()
+
+	case mcpListMsg:
+		m.mcpServers = msg.servers
+		m.clampMCPSelected()
 		return m, nil
 
 	case tea.PasteMsg:
 		if m.activeTab == TabKindModels && m.modelsInKeyInput {
-			m.modelsKeyInput, _ = m.modelsKeyInput.Update(msg)
+			if m.modelsKeyInputBaseURL && m.modelsKeyInputFocus == 1 {
+				m.modelsBaseURLInput, _ = m.modelsBaseURLInput.Update(msg)
+			} else {
+				m.modelsKeyInput, _ = m.modelsKeyInput.Update(msg)
+			}
 			return m, nil
 		}
-		sess := m.currentSession()
+		sess := m.currentThread()
 		if sess == nil {
-			return m, nil
-		}
-		if sess.rightPanel.IsVisible() && sess.focus == FocusRightPanel && sess.rightPanel.mode == rpModeKeyInput {
-			sess.rightPanel.keyInput, _ = sess.rightPanel.keyInput.Update(msg)
 			return m, nil
 		}
 		if sess.agentState == StateWaitingForInput || sess.agentState == StatePlanReview ||
@@ -1119,6 +1905,22 @@ func (m Model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				stripped := imagePathPattern.ReplaceAllString(val, "")
 				stripped = strings.TrimSpace(stripped)
 				sess.input.SetValue(stripped)
+				val = stripped
+			}
+			// Text/PDF files: when connected, the daemon validates before a
+			// chip appears. While still connecting (no client yet) there's no
+			// daemon to ask, so add the chip optimistically — the file is
+			// re-validated at send time.
+			cmds := []tea.Cmd{cmd}
+			for _, cand := range detectFileCandidates(val) {
+				if sess.client != nil {
+					cmds = append(cmds, validateFileAttachmentCmd(m.socketPath, m.authToken, sess.client.ThreadID(), sess.clientKey, cand))
+					continue
+				}
+				sess.attachmentPanel.Add(protocol.Attachment{Type: "file", Path: cand.Path})
+				stripped := strings.TrimSpace(strings.ReplaceAll(sess.input.Value(), cand.Raw, ""))
+				sess.input.SetValue(stripped)
+				val = stripped
 			}
 			newHeight := m.visualLineCount()
 			if newHeight != sess.input.Height() {
@@ -1126,12 +1928,34 @@ func (m Model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			sess.input.MoveToBegin()
 			sess.input.MoveToEnd()
-			return m, cmd
+			return m, tea.Batch(cmds...)
 		}
+
+	case fileAttachmentValidatedMsg:
+		_, sess := m.findThreadByClientKey(msg.clientKey)
+		if sess == nil {
+			return m, nil
+		}
+		switch msg.status {
+		case "ok":
+			sess.attachmentPanel.Add(protocol.Attachment{Type: "file", Path: msg.cand.Path})
+			stripped := strings.TrimSpace(strings.ReplaceAll(sess.input.Value(), msg.cand.Raw, ""))
+			sess.input.SetValue(stripped)
+		default: // "invalid" / "error"
+			stripped := strings.TrimSpace(strings.ReplaceAll(sess.input.Value(), msg.cand.Raw, ""))
+			sess.input.SetValue(stripped)
+			return m, m.emitStatusMsg(fmt.Sprintf("Attachment skipped (%s): %s", filepath.Base(msg.cand.Path), msg.reason), StatusMsgError)
+		}
+		if sess == m.currentThread() {
+			newHeight := m.visualLineCount()
+			if newHeight != sess.input.Height() {
+				sess.input.SetHeight(newHeight)
+			}
+		}
+		return m, nil
 
 	case tea.KeyboardEnhancementsMsg:
 		m.kittySupported = msg.SupportsKeyDisambiguation()
-
 	case tea.BackgroundColorMsg:
 		m.hasDarkBG = msg.IsDark()
 		m.styles = NewStyles(m.hasDarkBG)
@@ -1148,7 +1972,7 @@ func (m Model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case startCursorBlinkMsg:
-		sess := m.currentSession()
+		sess := m.currentThread()
 		if sess != nil {
 			blinkCmd := sess.input.Focus()
 			return m, blinkCmd
@@ -1156,8 +1980,8 @@ func (m Model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case animStepMsg:
-		// Route to whichever session owns this generation tick.
-		for _, sess := range m.sessions {
+		// Route to whichever thread owns this generation tick.
+		for _, sess := range m.threads {
 			if cmd := sess.thinkingAnim.Advance(msg); cmd != nil {
 				cmds = append(cmds, cmd)
 			}
@@ -1169,17 +1993,30 @@ func (m Model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.tabAlertBlinkOn = !m.tabAlertBlinkOn
-		if m.hasAlertSessions() {
+		if m.hasAlertThreads() {
 			return m, m.tabBlinkTick()
 		}
 		m.tabAlertActive = false
 		m.tabAlertBlinkOn = false
 		m.tabAlertBlinkGen++
 		return m, nil
+
+	case threadsSpinnerMsg:
+		if msg.gen != m.threadsSpinnerGen {
+			return m, nil
+		}
+		m.threadsSpinnerStep++
+		// Re-gate every frame: keep ticking only while the list is visible and
+		// work is ongoing, otherwise stop (and bump gen so this loop dies).
+		if m.spinnerShouldRun() {
+			return m, m.threadsSpinnerTick()
+		}
+		m.stopThreadsSpinner()
+		return m, nil
 	}
 
 	// Forward unhandled messages to the active input for cursor blink
-	sess := m.currentSession()
+	sess := m.currentThread()
 	if sess != nil {
 		var cmd tea.Cmd
 		sess.input, cmd = sess.input.Update(msg)
@@ -1190,22 +2027,96 @@ func (m Model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// hasUnreadThreads reports whether any unread conversation remains: a live
+// thread with unread agent activity, or a persisted vix-initiated record
+// still flagged unread.
+func (m *Model) hasUnreadThreads() bool {
+	for _, s := range m.threads {
+		if s.unreadCount > 0 {
+			return true
+		}
+	}
+	for _, sum := range m.vixThreads {
+		if sum.Unread {
+			return true
+		}
+	}
+	return false
+}
+
+// markThreadRead clears a thread's unread counter and, once no thread has
+// unread activity left, lowers the Threads-tab highlight latch. This lets the
+// highlight clear when the last unread conversation is opened directly, without
+// having to visit the Threads tab. When something was actually cleared, the
+// daemon is told too (thread.mark_read) so the persisted unread flag — the
+// one that survives restarts — drops with it.
+func (m *Model) markThreadRead(sess *ThreadState) {
+	if sess.unreadCount > 0 && sess.client != nil {
+		sess.client.SendMarkRead()
+	}
+	sess.unreadCount = 0
+	if !m.hasUnreadThreads() {
+		m.threadsTabUnseen = false
+	}
+}
+
 // switchTab changes the active tab and performs per-tab entry side effects,
 // returning any command to run (e.g. resuming the chat thinking animation).
 func (m *Model) switchTab(k TabKind) tea.Cmd {
 	m.activeTab = k
+	if k != TabKindThreads && k != TabKindJobs {
+		// Leaving the list tabs: no reason to animate a list nobody sees.
+		m.stopThreadsSpinner()
+	}
 	switch k {
-	case TabKindSessions:
-		m.syncSessionsSelected()
+	case TabKindThreads:
+		m.threadsTabUnseen = false
+		m.syncThreadsSelected()
+		return tea.Batch(
+			m.maybeStartThreadsSpinner(),
+			fetchVixThreads(m.socketPath, m.cwd, m.cfg.ConfigDir, m.authToken),
+		)
 	case TabKindChat:
-		if sess := m.currentSession(); sess != nil {
-			sess.unreadCount = 0
+		if sess := m.currentThread(); sess != nil {
+			m.markThreadRead(sess)
 			return sess.thinkingAnim.Resume()
 		}
 	case TabKindModels:
 		m.enterModelsTab()
+		return fetchLocalProviders(m.socketPath, m.authToken)
+	case TabKindMcp:
+		m.clampMCPSelected()
+		return fetchMCPServers(m.socketPath, m.authToken)
+	case TabKindJobs:
+		m.clampJobsSelected()
+		return tea.Batch(
+			m.maybeStartThreadsSpinner(),
+			fetchJobsAndHooks(m.socketPath, m.authToken),
+		)
 	}
 	return nil
+}
+
+// clampJobsSelected keeps the Jobs & Triggers cursor within the current row
+// count (jobs followed by hooks).
+func (m *Model) clampJobsSelected() {
+	n := len(m.jobs) + len(m.hooks)
+	if m.jobsSelected >= n {
+		m.jobsSelected = n - 1
+	}
+	if m.jobsSelected < 0 {
+		m.jobsSelected = 0
+	}
+}
+
+// clampMCPSelected keeps the MCP tab cursor within the current server count.
+func (m *Model) clampMCPSelected() {
+	if m.mcpSelected >= len(m.mcpServers) {
+		m.mcpSelected = len(m.mcpServers) - 1
+	}
+	if m.mcpSelected < 0 {
+		m.mcpSelected = 0
+	}
 }
 
 // enterModelsTab initializes Models-tab state on entry: refreshes provider
@@ -1213,7 +2124,7 @@ func (m *Model) switchTab(k TabKind) tea.Cmd {
 // model.
 func (m *Model) enterModelsTab() {
 	m.modelsFocus = modelsFocusProviders
-	m.modelsAuthRow = authRowAPIKey
+	m.modelsAuthRow = 0
 	m.modelsAuthBtn = 0
 	m.modelsModelPending = ""
 	m.modelsInKeyInput = false
@@ -1224,28 +2135,70 @@ func (m *Model) enterModelsTab() {
 	active := m.activeModelSpec()
 	prov := ProviderOf(active)
 	m.modelsProviderSel = m.providerFlatIndex(prov)
-	m.modelsModelSel = modelIndexForActive(prov, active)
+	m.modelsModelSel = m.modelIndexForActive(prov, active)
 	m.clampModelsScroll()
 }
 
+// credClient returns a connection-level daemon client for credential RPCs.
+// Credentials are daemon-owned: the TUI never touches the keychain/auth.json
+// directly, it asks the daemon to store/read them (config_dir-agnostic, since
+// credentials are user-global).
+func (m *Model) credClient() *daemon.Client {
+	c := daemon.NewClient(m.socketPath)
+	c.SetAuthToken(m.authToken)
+	return c
+}
+
+// providerHasCredential reports whether a provider has any stored/available
+// credential, preferring the cached status and falling back to a fresh daemon
+// query on a cache miss.
+func (m *Model) providerHasCredential(provider string) bool {
+	if st, ok := m.modelsStatus[provider]; ok {
+		return st.HasCredential()
+	}
+	if cs, err := m.credClient().ProviderCredStatus(); err == nil {
+		m.modelsStatus = cs.Providers
+		return cs.Providers[provider].HasCredential()
+	}
+	return false
+}
+
 // refreshModelsProviders recomputes the logged-in / available provider split and
-// per-provider auth status, clamping the provider cursor to the new bounds.
+// per-provider auth status, clamping the provider cursor to the new bounds. The
+// status is read from the daemon (the credential owner); on RPC failure the
+// last-known status is reused so the panel doesn't flicker to "no credential".
 func (m *Model) refreshModelsProviders() {
+	// Snapshot the provider under the cursor before the split is rebuilt.
+	// Granting or removing a credential moves a provider between the
+	// logged-in and available groups, which reorders the flat list; without
+	// re-anchoring, the positional cursor would land on a different provider.
+	prevProvider := m.modelsSelectedProvider()
+
 	m.modelsLoggedIn = m.modelsLoggedIn[:0]
 	m.modelsAvailable = m.modelsAvailable[:0]
+	m.modelsLocal = m.modelsLocal[:0]
 	if m.modelsStatus == nil {
 		m.modelsStatus = map[string]config.ProviderAuthStatus{}
 	}
+	if cs, err := m.credClient().ProviderCredStatus(); err == nil {
+		m.modelsStatus = cs.Providers
+	}
 	for _, p := range AvailableProviders() {
-		st := config.GetProviderAuthStatus(p.Name)
-		m.modelsStatus[p.Name] = st
-		if st.APIKeyStored || st.OAuthStored {
+		if p.Local {
+			m.modelsLocal = append(m.modelsLocal, p.Name)
+			continue
+		}
+		st := m.modelsStatus[p.Name]
+		if st.HasCredential() {
 			m.modelsLoggedIn = append(m.modelsLoggedIn, p.Name)
 		} else {
 			m.modelsAvailable = append(m.modelsAvailable, p.Name)
 		}
 	}
-	total := len(m.modelsLoggedIn) + len(m.modelsAvailable)
+	if prevProvider != "" {
+		m.modelsProviderSel = m.providerFlatIndex(prevProvider)
+	}
+	total := len(m.modelsLoggedIn) + len(m.modelsLocal) + len(m.modelsAvailable)
 	if m.modelsProviderSel >= total {
 		m.modelsProviderSel = total - 1
 	}
@@ -1255,9 +2208,12 @@ func (m *Model) refreshModelsProviders() {
 }
 
 // modelsFlat returns the provider names in display order (logged in, then
-// available) — the order the provider cursor navigates.
+// available, then local last) — the order the provider cursor navigates.
+// Must stay in lockstep with renderModelsView's flat/group order.
 func (m *Model) modelsFlat() []string {
-	return append(append([]string{}, m.modelsLoggedIn...), m.modelsAvailable...)
+	out := append([]string{}, m.modelsLoggedIn...)
+	out = append(out, m.modelsAvailable...)
+	return append(out, m.modelsLocal...)
 }
 
 // modelsSelectedProvider returns the provider name under the provider cursor.
@@ -1280,10 +2236,20 @@ func (m *Model) providerFlatIndex(provider string) int {
 	return 0
 }
 
+// displayModelsForProvider returns the models shown in the grid for a
+// provider: the live-discovered list for local providers (empty until the
+// daemon probe answers), the static catalogue otherwise.
+func (m *Model) displayModelsForProvider(provider string) []ModelInfo {
+	if IsLocalProvider(provider) {
+		return m.modelsLocalUI[provider].Models
+	}
+	return DisplayModelsForProvider(provider)
+}
+
 // modelIndexForActive returns the grid index of spec within a provider's models,
 // or 0 when absent.
-func modelIndexForActive(provider, spec string) int {
-	for i, mod := range DisplayModelsForProvider(provider) {
+func (m *Model) modelIndexForActive(provider, spec string) int {
+	for i, mod := range m.displayModelsForProvider(provider) {
 		if mod.Spec == spec {
 			return i
 		}
@@ -1292,20 +2258,20 @@ func modelIndexForActive(provider, spec string) int {
 }
 
 // activeModelSpec returns the model spec currently in effect for the active
-// session, falling back to the configured default.
+// thread, falling back to the configured default.
 func (m *Model) activeModelSpec() string {
 	spec := m.cfg.Model
-	if sess := m.currentSession(); sess != nil && sess.modelName != "" {
+	if sess := m.currentThread(); sess != nil && sess.modelName != "" {
 		spec = sess.modelName
 	}
 	return spec
 }
 
 // applyModelSelection makes spec the default chat model and pushes it to the
-// active session (and daemon) when connected.
+// active thread (and daemon) when connected.
 func (m *Model) applyModelSelection(spec string) {
 	m.cfg.Model = spec
-	if sess := m.currentSession(); sess != nil {
+	if sess := m.currentThread(); sess != nil {
 		sess.setModel(spec)
 		if sess.client != nil {
 			_ = sess.client.SendSetModel(spec)
@@ -1313,27 +2279,68 @@ func (m *Model) applyModelSelection(spec string) {
 	}
 }
 
-// openModelsKeyInput opens the credential-entry popup for a provider.
-func (m *Model) openModelsKeyInput(provider string) {
+// openModelsKeyInput opens the credential-entry popup for a specific credential
+// method of a provider. When the method carries a user-supplied endpoint
+// (RequiresBaseURL), the popup also collects a base URL, prefilled with any
+// stored value for update.
+func (m *Model) openModelsKeyInput(provider, methodID string) {
+	st := m.modelsStatus[provider]
+	var ms config.MethodStatus
+	for _, c := range st.Methods {
+		if c.ID == methodID {
+			ms = c
+			break
+		}
+	}
+
 	ti := textinput.New()
-	ti.Placeholder = "Paste your " + provider + " API key..."
+	ti.Placeholder = "Paste your " + DisplayNameForProvider(provider) + " API key..."
 	ti.Focus()
 	m.modelsKeyInput = ti
 	m.modelsKeyInputProvider = provider
+	m.modelsKeyInputMethodID = methodID
+	m.modelsKeyInputLabel = ms.Label
+	if m.modelsKeyInputLabel == "" {
+		m.modelsKeyInputLabel = "API Key"
+	}
+	m.modelsKeyInputBaseURL = ms.RequiresBaseURL
+	m.modelsKeyInputFocus = 0
+	if ms.RequiresBaseURL {
+		bi := textinput.New()
+		bi.Placeholder = "https://…/v1 (from your subscription page)"
+		bi.SetValue(ms.BaseURL)
+		m.modelsBaseURLInput = bi
+	}
 	m.modelsInKeyInput = true
 }
 
-// clampModelsAuth keeps the focused auth button index within range after the
-// button set changes (e.g. a credential was added/removed or made default).
+// clampModelsAuth keeps the focused auth row and button index within range after
+// the method/button set changes (e.g. a credential was added/removed or made
+// default).
 func (m *Model) clampModelsAuth() {
 	st := m.modelsStatus[m.modelsSelectedProvider()]
-	btns := authButtonsFor(st, m.modelsAuthRow)
+	if m.modelsAuthRow >= len(st.Methods) {
+		m.modelsAuthRow = len(st.Methods) - 1
+	}
+	if m.modelsAuthRow < 0 {
+		m.modelsAuthRow = 0
+	}
+	btns := m.authButtonsForRow(st, m.modelsAuthRow)
 	if m.modelsAuthBtn >= len(btns) {
 		m.modelsAuthBtn = len(btns) - 1
 	}
 	if m.modelsAuthBtn < 0 {
 		m.modelsAuthBtn = 0
 	}
+}
+
+// authButtonsForRow returns the buttons for the credential-method row at index
+// row, or nil when out of range.
+func (m *Model) authButtonsForRow(st config.ProviderAuthStatus, row int) []authButton {
+	if row < 0 || row >= len(st.Methods) {
+		return nil
+	}
+	return authButtonsFor(st.Methods[row])
 }
 
 // handleModelsKey handles all key input for the Models tab.
@@ -1346,37 +2353,53 @@ func (m Model) handleModelsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case "esc":
 			m.modelsInKeyInput = false
 			m.modelsModelPending = ""
+		case "tab", "shift+tab":
+			if m.modelsKeyInputBaseURL {
+				m.modelsKeyInputFocus ^= 1
+				if m.modelsKeyInputFocus == 1 {
+					m.modelsKeyInput.Blur()
+					m.modelsBaseURLInput.Focus()
+				} else {
+					m.modelsBaseURLInput.Blur()
+					m.modelsKeyInput.Focus()
+				}
+			}
 		case "enter":
 			val := strings.TrimSpace(m.modelsKeyInput.Value())
-			if val != "" {
-				_ = config.StoreProviderKey(m.modelsKeyInputProvider, val)
+			baseURL := ""
+			if m.modelsKeyInputBaseURL {
+				baseURL = strings.TrimSpace(m.modelsBaseURLInput.Value())
 			}
+			if val == "" {
+				m.modelsLoginStatus = "API key is required."
+				return m, tea.Batch(cmds...)
+			}
+			if m.modelsKeyInputBaseURL && baseURL == "" {
+				m.modelsLoginStatus = "Base URL is required for this plan."
+				return m, tea.Batch(cmds...)
+			}
+			if _, err := m.credClient().StoreProviderMethodKey(m.modelsKeyInputProvider, m.modelsKeyInputMethodID, val, baseURL); err != nil {
+				m.modelsLoginStatus = "Could not store credential: " + err.Error()
+				m.modelsInKeyInput = false
+				return m, tea.Batch(cmds...)
+			}
+			m.modelsLoginStatus = ""
 			m.modelsInKeyInput = false
 			m.refreshModelsProviders()
-			if m.modelsModelPending != "" && val != "" {
+			m.clampModelsAuth()
+			if m.modelsModelPending != "" {
 				m.applyModelSelection(m.modelsModelPending)
 			}
 			m.modelsModelPending = ""
 		default:
 			var cmd tea.Cmd
-			m.modelsKeyInput, cmd = m.modelsKeyInput.Update(msg)
+			if m.modelsKeyInputBaseURL && m.modelsKeyInputFocus == 1 {
+				m.modelsBaseURLInput, cmd = m.modelsBaseURLInput.Update(msg)
+			} else {
+				m.modelsKeyInput, cmd = m.modelsKeyInput.Update(msg)
+			}
 			cmds = append(cmds, cmd)
 		}
-		return m, tea.Batch(cmds...)
-	}
-
-	// F-keys switch tabs regardless of focus.
-	switch msg.String() {
-	case "f1":
-		cmds = append(cmds, m.switchTab(TabKindSessions))
-		return m, tea.Batch(cmds...)
-	case "f2":
-		cmds = append(cmds, m.switchTab(TabKindChat))
-		return m, tea.Batch(cmds...)
-	case "f3":
-		return m, nil // already on Models tab
-	case "f4":
-		cmds = append(cmds, m.switchTab(TabKindSettings))
 		return m, tea.Batch(cmds...)
 	}
 
@@ -1389,9 +2412,12 @@ func (m Model) handleModelsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.modelsModelSel = 0
 				m.modelsModelScroll = 0
 				m.modelsFilter = ""
-				m.modelsAuthRow = authRowAPIKey
+				m.modelsAuthRow = 0
 				m.modelsAuthBtn = 0
 				m.modelsLoginStatus = ""
+				if IsLocalProvider(m.modelsSelectedProvider()) {
+					cmds = append(cmds, fetchLocalProviders(m.socketPath, m.authToken))
+				}
 			}
 		case "down", "j":
 			if m.modelsProviderSel < len(m.modelsFlat())-1 {
@@ -1399,13 +2425,16 @@ func (m Model) handleModelsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.modelsModelSel = 0
 				m.modelsModelScroll = 0
 				m.modelsFilter = ""
-				m.modelsAuthRow = authRowAPIKey
+				m.modelsAuthRow = 0
 				m.modelsAuthBtn = 0
 				m.modelsLoginStatus = ""
+				if IsLocalProvider(m.modelsSelectedProvider()) {
+					cmds = append(cmds, fetchLocalProviders(m.socketPath, m.authToken))
+				}
 			}
 		case "right", "l", "enter", "tab":
 			m.modelsFocus = modelsFocusAuth
-			m.modelsAuthRow = authRowAPIKey
+			m.modelsAuthRow = 0
 			m.modelsAuthBtn = 0
 		}
 	case modelsFocusAuth:
@@ -1418,19 +2447,19 @@ func (m Model) handleModelsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.modelsFocus = modelsFocusProviders
 			}
 		case "right", "l":
-			if btns := authButtonsFor(st, m.modelsAuthRow); m.modelsAuthBtn < len(btns)-1 {
+			if btns := m.authButtonsForRow(st, m.modelsAuthRow); m.modelsAuthBtn < len(btns)-1 {
 				m.modelsAuthBtn++
 			}
 		case "up", "k":
-			if m.modelsAuthRow == authRowOAuth {
-				m.modelsAuthRow = authRowAPIKey
+			if m.modelsAuthRow > 0 {
+				m.modelsAuthRow--
 				m.modelsAuthBtn = 0
 			} else {
 				m.modelsFocus = modelsFocusProviders
 			}
 		case "down", "j":
-			if m.modelsAuthRow == authRowAPIKey && len(authButtonsFor(st, authRowOAuth)) > 0 {
-				m.modelsAuthRow = authRowOAuth
+			if m.modelsAuthRow < len(st.Methods)-1 {
+				m.modelsAuthRow++
 				m.modelsAuthBtn = 0
 			} else {
 				m.modelsFocus = modelsFocusModels
@@ -1443,7 +2472,7 @@ func (m Model) handleModelsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m.activateAuthButton()
 		}
 	case modelsFocusModels:
-		models := FilterModels(DisplayModelsForProvider(m.modelsSelectedProvider()), m.modelsFilter)
+		models := FilterModels(m.displayModelsForProvider(m.modelsSelectedProvider()), m.modelsFilter)
 		switch msg.String() {
 		case "up":
 			if m.modelsModelSel >= modelGridCols {
@@ -1500,8 +2529,9 @@ func (m Model) handleModelsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // stays within the visible window. It mirrors the renderer's row math via the
 // shared modelsGridRows helper.
 func (m *Model) clampModelsScroll() {
-	st := m.modelsStatus[m.modelsSelectedProvider()]
-	gridRows := modelsGridRows(m.modelsViewportHeight(), st, m.modelsLoginStatus)
+	provider := m.modelsSelectedProvider()
+	st := m.modelsStatus[provider]
+	gridRows := modelsGridRows(m.modelsViewportHeight(), st, m.modelsLoginStatus, IsLocalProvider(provider))
 	selRow := m.modelsModelSel / modelGridCols
 	if selRow < m.modelsModelScroll {
 		m.modelsModelScroll = selRow
@@ -1526,14 +2556,21 @@ func (m Model) modelsViewportHeight() int {
 }
 
 // selectModel applies the chosen model when its provider has a resolvable
-// credential, otherwise opens the key popup and remembers the pending model.
+// credential, otherwise opens the key popup (for the provider's default method)
+// and remembers the pending model. Local providers are always selectable: they
+// resolve a keyless placeholder credential.
 func (m Model) selectModel(mod ModelInfo) (tea.Model, tea.Cmd) {
-	if key, _ := config.ResolveProviderKey(mod.Provider); key != "" {
+	if IsLocalProvider(mod.Provider) || m.providerHasCredential(mod.Provider) {
 		m.applyModelSelection(mod.Spec)
 		return m, nil
 	}
 	m.modelsModelPending = mod.Spec
-	m.openModelsKeyInput(mod.Provider)
+	st := m.modelsStatus[mod.Provider]
+	methodID := st.Default()
+	if methodID == "" && len(st.Methods) > 0 {
+		methodID = st.Methods[0].ID
+	}
+	m.openModelsKeyInput(mod.Provider, methodID)
 	return m, nil
 }
 
@@ -1544,34 +2581,44 @@ func (m Model) activateAuthButton() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	st := m.modelsStatus[provider]
-	btns := authButtonsFor(st, m.modelsAuthRow)
+	if m.modelsAuthRow < 0 || m.modelsAuthRow >= len(st.Methods) {
+		return m, nil
+	}
+	method := st.Methods[m.modelsAuthRow]
+	btns := authButtonsFor(method)
 	if m.modelsAuthBtn < 0 || m.modelsAuthBtn >= len(btns) {
 		return m, nil
 	}
 	switch btns[m.modelsAuthBtn].id {
 	case "set_key":
-		m.openModelsKeyInput(provider)
+		m.openModelsKeyInput(provider, method.ID)
 	case "del_key":
 		m.keyDeleteProvider = provider
 		m.keyDeleteKind = "api_key"
+		m.keyDeleteMethodID = method.ID
 		m.keyDeleteSelected = 1
 		m.state = StateKeyDeleteConfirm
 	case "default_key":
-		_ = config.SetProviderAuthDefault(provider, config.AuthDefaultAPIKey)
+		_, _ = m.credClient().SetProviderAuthDefault(provider, method.ID)
 		m.refreshModelsProviders()
 		m.clampModelsAuth()
 	case "set_token":
 		if ProviderSupportsLogin(provider) {
-			m.modelsLoginStatus = "Starting " + provider + " login…"
-			startProviderLogin(provider)
+			if !auth.KeychainAvailable() {
+				m.modelsLoginStatus = "Starting " + provider + " login… (token will be stored in plaintext auth.json)"
+			} else {
+				m.modelsLoginStatus = "Starting " + provider + " login…"
+			}
+			return m, startProviderLogin(provider)
 		}
 	case "del_token":
 		m.keyDeleteProvider = provider
 		m.keyDeleteKind = "oauth"
+		m.keyDeleteMethodID = method.ID
 		m.keyDeleteSelected = 1
 		m.state = StateKeyDeleteConfirm
 	case "default_token":
-		_ = config.SetProviderAuthDefault(provider, config.AuthDefaultOAuth)
+		_, _ = m.credClient().SetProviderAuthDefault(provider, method.ID)
 		m.refreshModelsProviders()
 		m.clampModelsAuth()
 	}
@@ -1606,18 +2653,18 @@ func (m Model) handleKeyDeleteKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (m *Model) doKeyDelete() {
 	switch m.keyDeleteKind {
 	case "api_key":
-		_ = config.DeleteProviderKey(m.keyDeleteProvider)
+		_, _ = m.credClient().DeleteProviderMethodKey(m.keyDeleteProvider, m.keyDeleteMethodID)
 	case "oauth":
 		if loginID, ok := oauthLoginID(m.keyDeleteProvider); ok {
 			_ = auth.DefaultStorage().Remove(loginID)
 		}
-		_ = config.ClearProviderAuthDefault(m.keyDeleteProvider)
+		_, _ = m.credClient().SetProviderAuthDefault(m.keyDeleteProvider, "")
 	}
 	m.refreshModelsProviders()
 	m.clampModelsAuth()
 }
 
-// handleDialogKey handles keys for the global quit/session-close dialogs.
+// handleDialogKey handles keys for the global quit/thread-close dialogs.
 func (m Model) handleDialogKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "left", "right", "tab":
@@ -1628,50 +2675,62 @@ func (m Model) handleDialogKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.quitSelected = 0
 			}
 		} else {
-			if m.sessionCloseSelected == 0 {
-				m.sessionCloseSelected = 1
+			if m.threadCloseSelected == 0 {
+				m.threadCloseSelected = 1
 			} else {
-				m.sessionCloseSelected = 0
+				m.threadCloseSelected = 0
 			}
 		}
 	case "enter":
 		if m.state == StateQuitConfirm {
 			if m.quitSelected == 0 {
-				sess := m.currentSession()
-				if sess != nil && sess.client != nil {
-					sess.client.SendCancel()
-					sess.client.SendClose()
-				}
+				m.closeThreadsForQuit(m.quitCloseAll)
 				return m, tea.Quit
 			}
 			m.state = StateWaitingForInput
 		} else {
-			if m.sessionCloseSelected == 0 {
-				return m.doCloseSession(m.sessionCloseIdx)
+			if m.threadCloseSelected == 0 {
+				return m.confirmThreadClose()
 			}
+			m.vixDismissID = ""
 			m.state = StateWaitingForInput
+		}
+	case "space", " ":
+		if m.state == StateQuitConfirm {
+			m.quitCloseAll = !m.quitCloseAll
+			_ = config.SetCloseAllThreadsOnQuit(m.quitCloseAll)
 		}
 	case "y", "Y":
 		if m.state == StateQuitConfirm {
-			sess := m.currentSession()
-			if sess != nil && sess.client != nil {
-				sess.client.SendCancel()
-				sess.client.SendClose()
-			}
+			m.closeThreadsForQuit(m.quitCloseAll)
 			return m, tea.Quit
 		}
-		if m.state == StateSessionCloseConfirm {
-			return m.doCloseSession(m.sessionCloseIdx)
+		if m.state == StateThreadCloseConfirm {
+			return m.confirmThreadClose()
 		}
 	case "n", "N", "esc":
+		m.vixDismissID = ""
 		m.state = StateWaitingForInput
 	}
 	return m, nil
 }
 
-// handleTrimKey handles keys for the per-session trim confirm dialog.
+// confirmThreadClose runs the action behind the close-confirmation dialog:
+// dismissing a persisted vix-initiated record, or closing the live thread at
+// threadCloseIdx.
+func (m Model) confirmThreadClose() (tea.Model, tea.Cmd) {
+	if m.vixDismissID != "" {
+		id := m.vixDismissID
+		m.vixDismissID = ""
+		m.state = StateWaitingForInput
+		return m, dismissVixThread(m.socketPath, m.cwd, m.cfg.ConfigDir, m.authToken, id)
+	}
+	return m.doCloseThread(m.threadCloseIdx)
+}
+
+// handleTrimKey handles keys for the per-thread trim confirm dialog.
 func (m Model) handleTrimKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	sess := m.currentSession()
+	sess := m.currentThread()
 	if sess == nil {
 		return m, nil
 	}
@@ -1696,7 +2755,7 @@ func (m Model) handleTrimKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 // handleEnter handles the Enter key in the Chat tab.
-func (m Model) handleEnter(sess *SessionState) (tea.Model, tea.Cmd) {
+func (m Model) handleEnter(sess *ThreadState) (tea.Model, tea.Cmd) {
 	if sess.agentState == StateConfirmPending {
 		if sess.client != nil {
 			sess.client.SendConfirm(true, false)
@@ -1751,9 +2810,10 @@ func (m Model) handleEnter(sess *SessionState) (tea.Model, tea.Cmd) {
 		for _, e := range imgErrs {
 			sess.chatMessages = append(sess.chatMessages, renderErrorMessage(fmt.Errorf("%s", e)))
 		}
-		attachments := append(panelAtts, textAtts...)
+		displayText, fileAtts := extractFileAttachments(displayText)
+		attachments := append(append(panelAtts, textAtts...), fileAtts...)
 
-		sess.chatMessages = append(sess.chatMessages, renderUserMessage(displayText, m.mdRenderer.width))
+		sess.chatMessages = append(sess.chatMessages, renderUserMessage(displayText, m.mdRenderer.width, attachments...))
 		sess.chatScrollOffset = 0
 
 		if sess.activeWorkflow != "" && !strings.HasPrefix(displayText, "/") && sess.agentState != StatePlanExecuting {
@@ -1781,6 +2841,14 @@ func (m Model) handleEnter(sess *SessionState) (tea.Model, tea.Cmd) {
 			return model, cmd
 		}
 
+		// Orphaned threads have no daemon-side history and can't be continued.
+		// Local commands above (e.g. /copy) still work; anything else is refused
+		// with a reminder rather than spinning forever with no daemon.
+		if sess.orphaned {
+			sess.chatMessages = append(sess.chatMessages, renderSystemMessage("This conversation can't be continued. Use /copy to save it.", m.styles))
+			return m, nil
+		}
+
 		if text != "" {
 			sess.history.Save(text)
 		}
@@ -1792,15 +2860,37 @@ func (m Model) handleEnter(sess *SessionState) (tea.Model, tea.Cmd) {
 		for _, e := range imgErrs {
 			sess.chatMessages = append(sess.chatMessages, renderErrorMessage(fmt.Errorf("%s", e)))
 		}
-		attachments := append(panelAtts, textAtts...)
+		displayText, fileAtts := extractFileAttachments(displayText)
+		attachments := append(append(panelAtts, textAtts...), fileAtts...)
 
-		sess.chatMessages = append(sess.chatMessages, renderUserMessage(displayText, m.mdRenderer.width))
+		sess.chatMessages = append(sess.chatMessages, renderUserMessage(displayText, m.mdRenderer.width, attachments...))
 		sess.chatScrollOffset = 0
+
+		// Draft thread: commit it now. Open the daemon connection in the
+		// chosen working directory, then flush this message once connected
+		// (draftConnectedMsg). The cwd is frozen from here on.
+		if sess.phase == phaseDraft {
+			cwd := resolveWorkDir(sess.workDir)
+			if info, err := os.Stat(cwd); err != nil || !info.IsDir() {
+				sess.chatMessages = append(sess.chatMessages, renderErrorMessage(fmt.Errorf("working directory does not exist: %s", sess.workDir)))
+				sess.chatScrollOffset = 0
+				return m, nil
+			}
+			sess.workDir = cwd
+			sess.pendingFirstInput = &pendingMsg{text: displayText, attachments: attachments}
+			sess.reconnecting = true
+			sess.agentState = StateStreaming
+			return m, tea.Batch(
+				connectDraft(m.socketPath, sess.clientKey, cwd, m.cfg.ConfigDir, m.cfg.Model, m.authToken, m.forceInit, m.enableAutomaticWritePermission, m.enableAutomaticDirectoryAccess),
+				sess.thinkingAnim.Start(),
+			)
+		}
 
 		sess.agentState = StateStreaming
 		animCmd := sess.thinkingAnim.Start()
 
 		if sess.client != nil {
+			telemetry.TrackTurn(sess.modelName)
 			if sess.activeWorkflow != "" && !strings.HasPrefix(displayText, "/") {
 				sess.client.SendWorkflow(sess.activeWorkflow, displayText)
 			} else {
@@ -1812,18 +2902,50 @@ func (m Model) handleEnter(sess *SessionState) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// applyEventToSession processes a single daemon event for the session at idx.
-func (m *Model) applyEventToSession(idx int, event protocol.SessionEvent) []tea.Cmd {
-	sess := m.sessions[idx]
+// applyEventToThread processes a single daemon event for the thread at idx.
+func (m *Model) applyEventToThread(idx int, event protocol.ThreadEvent) []tea.Cmd {
+	sess := m.threads[idx]
 	var cmds []tea.Cmd
 
 	switch event.Type {
-	case "event.session_started":
+	case "event.thread_started":
 		data := marshalData(event.Data)
-		var started protocol.EventSessionStarted
+		var started protocol.EventThreadStarted
 		json.Unmarshal(data, &started)
 		sess.parentID = started.ParentID
 		sess.forkTurnIdx = started.ForkTurnIdx
+
+	case "event.replay":
+		data := marshalData(event.Data)
+		var rep protocol.EventReplay
+		json.Unmarshal(data, &rep)
+		m.applyReplay(sess, rep)
+		// The viewport is now rebuilt; drop the restoring placeholder and stop
+		// its spinner.
+		sess.awaitingReplay = false
+		sess.thinkingAnim.Stop()
+		// Viewing the replay counts as reading: clear the persisted unread
+		// flag when this thread is the one on screen. Sent unconditionally
+		// (not via markThreadRead) because the disk flag may be set even
+		// when the local counter is zero — e.g. a vix job run just opened.
+		if idx == m.selectedThread && m.activeTab == TabKindChat {
+			sess.unreadCount = 0
+			if !m.hasUnreadThreads() {
+				m.threadsTabUnseen = false
+			}
+			if sess.client != nil {
+				sess.client.SendMarkRead()
+			}
+		}
+
+	case "event.title_updated":
+		data := marshalData(event.Data)
+		var tu protocol.EventTitleUpdated
+		json.Unmarshal(data, &tu)
+		sess.title = tu.Title
+		if sess.vixSummary != nil {
+			sess.vixSummary.Title = tu.Title
+		}
 
 	case "event.init_state":
 		data := marshalData(event.Data)
@@ -1858,20 +2980,70 @@ func (m *Model) applyEventToSession(idx int, event protocol.SessionEvent) []tea.
 		json.Unmarshal(data, &sa)
 		sess.skills = sa.Skills
 
+	case "event.tool_backends":
+		data := marshalData(event.Data)
+		var tb protocol.EventToolBackends
+		json.Unmarshal(data, &tb)
+		m.grepBackendEffective = tb.GrepEffective
+		m.grepBackendConfigured = tb.GrepConfigured
+		m.globBackendEffective = tb.GlobEffective
+		m.globBackendConfigured = tb.GlobConfigured
+
+	case "event.update_available":
+		data := marshalData(event.Data)
+		var ua protocol.EventUpdateAvailable
+		json.Unmarshal(data, &ua)
+		m.updateCurrent = ua.Current
+		m.updateLatest = ua.Latest
+		m.updateURL = ua.URL
+		m.updateMethod = ua.Method
+
+	case "event.job_done":
+		data := marshalData(event.Data)
+		var jd protocol.EventJobDone
+		json.Unmarshal(data, &jd)
+		text, kind := jobDoneStatusText(jd)
+		m.threadsTabUnseen = true
+		cmds = append(cmds,
+			m.emitStatusMsg(text, kind),
+			fetchVixThreads(m.socketPath, m.cwd, m.cfg.ConfigDir, m.authToken))
+
+	case "event.job_run":
+		data := marshalData(event.Data)
+		var jr protocol.EventJobRun
+		json.Unmarshal(data, &jr)
+		// Only failures-of-policy are worth a status line; routine starts are
+		// silent (the run will land in the threads list anyway).
+		switch jr.Status {
+		case "invalid":
+			cmds = append(cmds, m.emitStatusMsg(fmt.Sprintf("Job %s has an invalid spec: %s", jr.JobID, jr.Error), StatusMsgWarning))
+		case "auto_disabled":
+			cmds = append(cmds, m.emitStatusMsg(fmt.Sprintf("Job %s disabled after repeated failures", jr.JobID), StatusMsgError))
+		}
+
+	case "event.job_nudge":
+		// One-time hint emitted when the first user-created job appears.
+		cmds = append(cmds, m.emitStatusMsg("Tip: `vix daemon install` starts vixd at login so scheduled jobs survive reboots", StatusMsgInfo))
+
 	case "event.stream_chunk":
 		data := marshalData(event.Data)
 		var chunk protocol.EventStreamChunk
 		json.Unmarshal(data, &chunk)
 		sess.assistantBuf += chunk.Text
-		sess.assistantRendered = m.mdRenderer.Render(sess.assistantBuf)
+		if time.Since(sess.lastStreamRender) >= streamRenderInterval {
+			m.syncMermaidCtx(sess)
+			sess.assistantRendered = m.mdRenderer.Render(sess.assistantBuf)
+			sess.lastStreamRender = time.Now()
+		}
 
 	case "event.thinking_chunk":
 		data := marshalData(event.Data)
 		var chunk protocol.EventThinkingChunk
 		json.Unmarshal(data, &chunk)
 		sess.thinkingBuf += chunk.Text
-		if sess.showThinking {
+		if sess.showThinking && time.Since(sess.lastThinkingRender) >= streamRenderInterval {
 			sess.thinkingRendered = renderThinkingText(sess.thinkingBuf, m.styles, m.mdRenderer.width+4)
+			sess.lastThinkingRender = time.Now()
 		}
 
 	case "event.stream_done":
@@ -1889,7 +3061,7 @@ func (m *Model) applyEventToSession(idx int, event protocol.SessionEvent) []tea.
 		sess.lastInputTokens = done.InputTokens + done.CacheReadTokens + done.CacheCreationTokens
 
 	case "event.tool_call":
-		m.flushSessionBuf(sess)
+		m.flushThreadBuf(sess)
 		sess.agentState = StateToolExecuting
 		data := marshalData(event.Data)
 		var tc protocol.EventToolCall
@@ -1975,16 +3147,16 @@ func (m *Model) applyEventToSession(idx int, event protocol.SessionEvent) []tea.
 		var tu protocol.EventTodoListUpdated
 		json.Unmarshal(data, &tu)
 		sess.todos = tu.Todos
-		switch sess.rightPanel.mode {
-		case rpModeWorkflow:
+		switch {
+		case sess.rightPanel.IsVisible() && sess.rightPanel.mode == rpModeWorkflow:
 			// Todos render below workflow steps automatically.
-		case rpModeTodos:
+		case sess.rightPanel.IsVisible() && sess.rightPanel.mode == rpModeTodos:
 			if !hasPendingTodos(sess.todos) {
 				sess.rightPanel.Close()
 				m.updateChatWidth()
 			}
 		default:
-			if !sess.rightPanel.IsVisible() && hasPendingTodos(sess.todos) {
+			if hasPendingTodos(sess.todos) {
 				sess.rightPanel.OpenTodos(m.height)
 				m.updateChatWidth()
 			}
@@ -2042,7 +3214,7 @@ func (m *Model) applyEventToSession(idx int, event protocol.SessionEvent) []tea.
 
 	case "event.workflow_step_done":
 		sess.thinkingAnim.Stop()
-		m.flushSessionBuf(sess)
+		m.flushThreadBuf(sess)
 		data := marshalData(event.Data)
 		var psd protocol.EventWorkflowStepDone
 		json.Unmarshal(data, &psd)
@@ -2062,11 +3234,34 @@ func (m *Model) applyEventToSession(idx int, event protocol.SessionEvent) []tea.
 			m.updateChatWidth()
 		}
 
+	case "event.workflow_status":
+		data := marshalData(event.Data)
+		var ws protocol.EventWorkflowStatus
+		json.Unmarshal(data, &ws)
+		// "running" transitions (resume) are visible via step events already;
+		// only surface the noteworthy stops.
+		if ws.Status != "running" {
+			sess.chatMessages = append(sess.chatMessages, renderWorkflowStatus(ws.WorkflowName, ws.Status, ws.StepID, ws.Iteration, ws.TokensUsed, ws.TokenBudget, ws.Note, m.styles))
+		}
+
 	case "event.agent_done":
+		if sess.cancelAckPending && sess.pendingInput == nil &&
+			(sess.agentState == StateStreaming || sess.agentState == StateToolExecuting || sess.agentState == StatePlanExecuting) {
+			sess.cancelAckPending = false
+			return cmds
+		}
+		sess.cancelAckPending = false
 		sess.thinkingAnim.Stop()
-		m.flushSessionBuf(sess)
-		if idx != m.selectedSession || m.activeTab != TabKindChat {
+		m.flushThreadBuf(sess)
+		if idx != m.selectedThread || m.activeTab != TabKindChat {
 			sess.unreadCount++
+			if m.activeTab != TabKindThreads {
+				m.threadsTabUnseen = true
+			}
+		} else if sess.client != nil {
+			// The user watched this turn complete: clear the persisted unread
+			// flag the daemon just set at turn end.
+			sess.client.SendMarkRead()
 		}
 		turnInput := sess.inputTokens - sess.turnStartInputTokens
 		turnOutput := sess.outputTokens - sess.turnStartOutputTokens
@@ -2083,6 +3278,7 @@ func (m *Model) applyEventToSession(idx int, event protocol.SessionEvent) []tea.
 			pending := sess.pendingInput
 			sess.pendingInput = nil
 			if sess.client != nil {
+				telemetry.TrackTurn(sess.modelName)
 				if sess.activeWorkflow != "" && !strings.HasPrefix(pending.text, "/") {
 					sess.client.SendWorkflow(sess.activeWorkflow, pending.text)
 				} else {
@@ -2098,8 +3294,9 @@ func (m *Model) applyEventToSession(idx int, event protocol.SessionEvent) []tea.
 		}
 
 	case "event.clear":
-		m.flushSessionBuf(sess)
+		m.flushThreadBuf(sess)
 		sess.chatMessages = nil
+		sess.chatCache.invalidate()
 		sess.pendingTools = nil
 		sess.inputTokens = 0
 		sess.outputTokens = 0
@@ -2117,7 +3314,7 @@ func (m *Model) applyEventToSession(idx int, event protocol.SessionEvent) []tea.
 		data := marshalData(event.Data)
 		var c protocol.EventCompacted
 		json.Unmarshal(data, &c)
-		m.flushSessionBuf(sess)
+		m.flushThreadBuf(sess)
 		sess.lastInputTokens = 0
 		verb := "Compacted"
 		if c.Auto {
@@ -2130,7 +3327,7 @@ func (m *Model) applyEventToSession(idx int, event protocol.SessionEvent) []tea.
 		data := marshalData(event.Data)
 		var retry protocol.EventRetry
 		json.Unmarshal(data, &retry)
-		m.flushSessionBuf(sess)
+		m.flushThreadBuf(sess)
 		sess.chatMessages = append(sess.chatMessages, renderRetryMessage(retry))
 
 	case "event.error":
@@ -2138,9 +3335,6 @@ func (m *Model) applyEventToSession(idx int, event protocol.SessionEvent) []tea.
 		var errEvent protocol.EventError
 		json.Unmarshal(data, &errEvent)
 		sess.chatMessages = append(sess.chatMessages, renderErrorMessage(fmt.Errorf("%s", errEvent.Message)))
-
-	case "event.quit":
-		cmds = append(cmds, tea.Quit)
 	}
 
 	return cmds
@@ -2154,7 +3348,7 @@ func (m Model) View() tea.View {
 		return v
 	}
 
-	sess := m.currentSession()
+	sess := m.currentThread()
 
 	// Layout
 	var panelHeights []int
@@ -2181,55 +3375,100 @@ func (m Model) View() tea.View {
 	y := 0
 
 	// Tab bar
-	viewportFocused := m.activeTab == TabKindSessions || m.activeTab == TabKindModels || m.activeTab == TabKindSettings || (sess != nil && sess.focus == FocusChat)
+	viewportFocused := m.activeTab == TabKindThreads || m.activeTab == TabKindModels || m.activeTab == TabKindJobs || m.activeTab == TabKindSettings || (sess != nil && sess.focus == FocusChat)
 	tabBarWidth := layout.ChatWidth
-	if m.activeTab == TabKindSessions || m.activeTab == TabKindModels || m.activeTab == TabKindSettings {
+	if m.activeTab == TabKindThreads || m.activeTab == TabKindModels || m.activeTab == TabKindJobs || m.activeTab == TabKindSettings {
 		tabBarWidth = m.width
 	}
-	anyUnread := false
-	for _, sess := range m.sessions {
-		if sess.unreadCount > 0 {
-			anyUnread = true
-			break
-		}
-	}
-	tabBar := renderTabBar(m.activeTab, tabBarWidth, m.styles, viewportFocused, m.tabAlertBlinkOn, anyUnread)
+	tabBar := renderTabBar(m.activeTab, tabBarWidth, m.styles, viewportFocused, m.hasAlertThreads(), m.tabAlertBlinkOn, m.threadsTabUnseen, m.updateLatest != "")
 	uv.NewStyledString(tabBar).Draw(canvas, image.Rect(0, y, tabBarWidth, y+layout.TabBarHeight))
 	y += layout.TabBarHeight
 
 	switch m.activeTab {
-	case TabKindSessions:
-		sessionsHeight := m.height - layout.TabBarHeight - layout.StatusBarHeight
-		sv := renderSessionsView(m.sessions, m.width, sessionsHeight, m.styles, m.sessionsSelected)
-		uv.NewStyledString(sv).Draw(canvas, image.Rect(0, y, m.width, y+sessionsHeight))
-		y += sessionsHeight
+	case TabKindThreads:
+		threadsHeight := m.height - layout.TabBarHeight - layout.StatusBarHeight
+		spinnerFrame := ""
+		if m.threadsSpinnerActive {
+			spinnerFrame = string(animFrames[frozenStep(m.threadsSpinnerStep)%len(animFrames)])
+		}
+		// The User-initiated group renders as per-directory blocks (current cwd
+		// first); the Vix-initiated group renders as one StartedAt-ordered list.
+		// Both derive from the same canonical row order as the selection index
+		// space (threadRowTargets → userDirBlocks + vixRowTargets).
+		var userGroups []userDirGroupView
+		for _, b := range m.userDirBlocks() {
+			g := userDirGroupView{dir: b.dir}
+			for _, r := range b.rows {
+				if r.sum != nil {
+					g.rows = append(g.rows, userRowView{sum: *r.sum})
+				} else {
+					g.rows = append(g.rows, userRowView{live: m.threads[r.liveIdx]})
+				}
+			}
+			userGroups = append(userGroups, g)
+		}
+		var vixRows []vixDisplayRow
+		for _, r := range m.vixRowTargets() {
+			if r.sum != nil {
+				vixRows = append(vixRows, vixDisplayRow{sum: *r.sum})
+			} else {
+				live := m.threads[r.liveIdx]
+				vixRows = append(vixRows, vixDisplayRow{live: live, sum: *live.vixSummary})
+			}
+		}
+		sv := renderThreadsView(userGroups, vixRows, m.width, threadsHeight, m.styles, m.threadsSelected, spinnerFrame)
+		uv.NewStyledString(sv).Draw(canvas, image.Rect(0, y, m.width, y+threadsHeight))
+		y += threadsHeight
 
 	case TabKindChat:
 		// Chat content
 		innerWidth := layout.ChatWidth - 4
-		var chatContent string
-		if sess != nil {
-			chatContent = buildRenderedChat(sess.chatMessages, m.styles, innerWidth)
+		contentHeight := layout.ChatHeight - 1
+
+		var allLines []string
+		var visualRowStart []int
+		switch {
+		case sess != nil && sess.awaitingReplay && !m.testMode:
+			// While waiting for the replay the spinner runs, which would
+			// otherwise make the content non-empty and bypass the placeholder.
+			placeholder := renderRestoringInline(innerWidth, contentHeight, m.styles, sess.thinkingAnim.View())
+			allLines = strings.Split(placeholder, "\n")
+			visualRowStart = visualRowPrefix(allLines, innerWidth)
+		case sess != nil:
+			tail := ""
 			if sess.showThinking && sess.thinkingRendered != "" {
-				chatContent += sess.thinkingRendered + "\n"
+				tail += sess.thinkingRendered + "\n"
 			}
 			if sess.assistantRendered != "" {
-				chatContent += sess.assistantRendered
+				tail += sess.assistantRendered
 			} else if animFrame := sess.thinkingAnim.View(); animFrame != "" {
-				chatContent += animFrame + "\n"
+				tail += animFrame + "\n"
 			}
-		}
-		if chatContent == "" && !m.testMode {
-			chatContent = renderWelcomeInline(innerWidth, layout.ChatHeight-1, m.styles)
+			lines, rowStart := sess.cachedChatLines(m.styles, innerWidth)
+			if emptyChatLines(lines) && tail == "" && !m.testMode {
+				recentSel := -1
+				var recent []protocol.DirUsage
+				if sess.phase == phaseDraft {
+					recent = m.topRecentDirs()
+					if sess.focus == FocusChat && len(recent) > 0 {
+						recentSel = sess.recentDirSelected
+					}
+				}
+				welcome := renderWelcomeInline(innerWidth, contentHeight, m.styles, sess.workDir, sess.phase == phaseDraft, recent, recentSel)
+				allLines = strings.Split(welcome, "\n")
+				visualRowStart = visualRowPrefix(allLines, innerWidth)
+			} else {
+				allLines, visualRowStart = combineTail(lines, rowStart, tail, innerWidth)
+			}
+		case !m.testMode:
+			welcome := renderWelcomeInline(innerWidth, contentHeight, m.styles, m.cwd, false, nil, -1)
+			allLines = strings.Split(welcome, "\n")
+			visualRowStart = visualRowPrefix(allLines, innerWidth)
+		default:
+			allLines = []string{""}
+			visualRowStart = []int{0, 1}
 		}
 
-		contentHeight := layout.ChatHeight - 1
-		allLines := strings.Split(chatContent, "\n")
-
-		visualRowStart := make([]int, len(allLines)+1)
-		for i, line := range allLines {
-			visualRowStart[i+1] = visualRowStart[i] + visualRows(line, innerWidth)
-		}
 		totalVisualRows := visualRowStart[len(allLines)]
 
 		chatScrollOffset := 0
@@ -2251,7 +3490,7 @@ func (m Model) View() tea.View {
 		accVisRows := 0
 		startLogical := endLogical
 		for startLogical > 0 {
-			rows := visualRows(allLines[startLogical-1], innerWidth)
+			rows := visualRowStart[startLogical] - visualRowStart[startLogical-1]
 			if accVisRows+rows > contentHeight {
 				break
 			}
@@ -2269,8 +3508,18 @@ func (m Model) View() tea.View {
 		} else {
 			chatBorderStyle = m.styles.ViewportBlurredStyle
 		}
-		chatBox := chatBorderStyle.Width(layout.ChatWidth).Height(layout.ChatHeight).
-			Render(strings.Join(chatLines, "\n"))
+		joined := strings.Join(chatLines, "\n")
+		var chatBox string
+		if sess != nil {
+			key := fmt.Sprintf("%d|%d|%t|", layout.ChatWidth, layout.ChatHeight, sess.focus == FocusChat) + joined
+			if key != sess.chatBoxKey {
+				sess.chatBoxKey = key
+				sess.chatBoxRendered = chatBorderStyle.Width(layout.ChatWidth).Height(layout.ChatHeight).Render(joined)
+			}
+			chatBox = sess.chatBoxRendered
+		} else {
+			chatBox = chatBorderStyle.Width(layout.ChatWidth).Height(layout.ChatHeight).Render(joined)
+		}
 		uv.NewStyledString(chatBox).Draw(canvas, image.Rect(0, y, layout.ChatWidth, y+layout.ChatHeight))
 
 		// Right panel
@@ -2318,28 +3567,61 @@ func (m Model) View() tea.View {
 	case TabKindModels:
 		modelsHeight := m.height - layout.TabBarHeight - layout.StatusBarHeight
 		mv := renderModelsView(m.width, modelsHeight, m.styles,
-			m.modelsLoggedIn, m.modelsAvailable, m.modelsStatus,
+			m.modelsLoggedIn, m.modelsLocal, m.modelsAvailable, m.modelsStatus, m.modelsLocalUI,
 			m.modelsProviderSel, m.modelsFocus,
 			m.modelsAuthRow, m.modelsAuthBtn, m.modelsModelSel, m.modelsModelScroll,
 			m.modelsFilter, m.activeModelSpec(), m.modelsLoginStatus)
 		uv.NewStyledString(mv).Draw(canvas, image.Rect(0, y, m.width, y+modelsHeight))
 		y += modelsHeight
 
+	case TabKindMcp:
+		mcpHeight := m.height - layout.TabBarHeight - layout.StatusBarHeight
+		mv := renderMCPView(m.mcpServers, m.width, mcpHeight, m.styles, m.mcpSelected)
+		uv.NewStyledString(mv).Draw(canvas, image.Rect(0, y, m.width, y+mcpHeight))
+		y += mcpHeight
+
+	case TabKindJobs:
+		jobsHeight := m.height - layout.TabBarHeight - layout.StatusBarHeight
+		spinnerFrame := ""
+		if m.threadsSpinnerActive {
+			spinnerFrame = string(animFrames[frozenStep(m.threadsSpinnerStep)%len(animFrames)])
+		}
+		jv := renderJobsView(m.jobs, m.hooks, m.width, jobsHeight, m.styles, m.jobsSelected, spinnerFrame)
+		uv.NewStyledString(jv).Draw(canvas, image.Rect(0, y, m.width, y+jobsHeight))
+		y += jobsHeight
+
 	case TabKindSettings:
 		settingsHeight := m.height - layout.TabBarHeight - layout.StatusBarHeight
-		settingsShowThinking := config.ShowThinking()
-		if settSess := m.currentSession(); settSess != nil {
-			settingsShowThinking = settSess.showThinking
+		st := settingsState{
+			cursor:              m.settingsCursor,
+			showThinking:        config.ShowThinking(),
+			readAgentsMD:        config.ReadAgentsMD(),
+			readClaudeMD:        config.ReadClaudeMD(),
+			telemetry:           config.TelemetryEnabled(),
+			compactionAuto:      config.CompactionAuto(),
+			compactionThreshold: config.CompactionThreshold(),
+			closedRetentionMins: config.ClosedThreadRetentionMinutes(),
+			updateCheck:         config.UpdateCheckEnabled(),
+			updateCurrent:       m.updateCurrent,
+			updateLatest:        m.updateLatest,
+			updateMethod:        m.updateMethod,
+			updateInstalled:     m.updateInstalled,
+			updateErr:           m.updateErr,
+			grepBackend:         backendLabel(m.grepBackendEffective, m.grepBackendConfigured),
+			globBackend:         backendLabel(m.globBackendEffective, m.globBackendConfigured),
 		}
-		sv := renderSettingsView(m.width, settingsHeight, m.styles, settingsShowThinking)
+		if settSess := m.currentThread(); settSess != nil {
+			st.showThinking = settSess.showThinking
+		}
+		sv := renderSettingsView(m.width, settingsHeight, m.styles, st)
 		uv.NewStyledString(sv).Draw(canvas, image.Rect(0, y, m.width, y+settingsHeight))
 		y += settingsHeight
 	}
 
-	// Status bar — global: connected if any session is up, reconnecting if none
+	// Status bar — global: connected if any thread is up, reconnecting if none
 	// are connected but at least one is trying.
 	var connected, reconnecting bool
-	for _, s := range m.sessions {
+	for _, s := range m.threads {
 		if !s.reconnecting && s.client != nil {
 			connected = true
 			break
@@ -2355,7 +3637,8 @@ func (m Model) View() tea.View {
 		statusInputTokens = sess.lastInputTokens
 		statusContextWindow = sess.contextWindow
 	}
-	statusBar := renderStatusBar(m.width, connected, reconnecting, m.statusMsg, m.styles, m.activeTab, statusFocus, statusInputTokens, statusContextWindow)
+	draft := sess != nil && sess.phase == phaseDraft
+	statusBar := renderStatusBar(m.width, connected, reconnecting, draft, m.statusMsg, m.styles, m.activeTab, statusFocus, statusInputTokens, statusContextWindow)
 	uv.NewStyledString(statusBar).Draw(canvas, image.Rect(0, y, m.width, m.height))
 
 	// Command palette overlay
@@ -2368,7 +3651,7 @@ func (m Model) View() tea.View {
 
 	// Quit confirm overlay
 	if m.state == StateQuitConfirm {
-		overlay := renderQuitDialog(m.width, m.height, m.styles, m.quitSelected)
+		overlay := renderQuitDialog(m.width, m.height, m.styles, m.quitSelected, m.quitCloseAll)
 		w, h := lipgloss.Size(overlay)
 		center := centerRect(canvas.Bounds(), w, h)
 		uv.NewStyledString(overlay).Draw(canvas, center)
@@ -2382,15 +3665,15 @@ func (m Model) View() tea.View {
 		uv.NewStyledString(overlay).Draw(canvas, center)
 	}
 
-	// Session close confirm overlay
-	if m.state == StateSessionCloseConfirm {
-		sessionID := ""
-		if m.sessionCloseIdx >= 0 && m.sessionCloseIdx < len(m.sessions) {
-			if s := m.sessions[m.sessionCloseIdx]; s.client != nil {
-				sessionID = s.client.SessionID()
+	// Thread close confirm overlay
+	if m.state == StateThreadCloseConfirm {
+		threadID := m.vixDismissID
+		if threadID == "" && m.threadCloseIdx >= 0 && m.threadCloseIdx < len(m.threads) {
+			if s := m.threads[m.threadCloseIdx]; s.client != nil {
+				threadID = s.client.ThreadID()
 			}
 		}
-		overlay := renderSessionCloseDialog(m.width, m.height, m.styles, m.sessionCloseSelected, sessionID)
+		overlay := renderThreadCloseDialog(m.width, m.height, m.styles, m.threadCloseSelected, threadID)
 		w, h := lipgloss.Size(overlay)
 		center := centerRect(canvas.Bounds(), w, h)
 		uv.NewStyledString(overlay).Draw(canvas, center)
@@ -2398,7 +3681,14 @@ func (m Model) View() tea.View {
 
 	// Credential-entry popup overlay (Models tab)
 	if m.modelsInKeyInput {
-		overlay := renderKeyInputDialog(m.width, m.height, m.styles, DisplayNameForProvider(m.modelsKeyInputProvider), maskSecret(m.modelsKeyInput.Value()))
+		overlay := renderKeyInputDialog(m.width, m.height, m.styles, keyInputDialog{
+			Provider:     DisplayNameForProvider(m.modelsKeyInputProvider),
+			MethodLabel:  m.modelsKeyInputLabel,
+			KeyMasked:    maskSecret(m.modelsKeyInput.Value()),
+			NeedsBaseURL: m.modelsKeyInputBaseURL,
+			BaseURL:      m.modelsBaseURLInput.Value(),
+			Focus:        m.modelsKeyInputFocus,
+		})
 		w, h := lipgloss.Size(overlay)
 		center := centerRect(canvas.Bounds(), w, h)
 		uv.NewStyledString(overlay).Draw(canvas, center)
@@ -2430,9 +3720,28 @@ func (m Model) View() tea.View {
 		}
 	}
 
+	// Directory picker overlay (draft welcome screen, centered)
+	if sess != nil && sess.dirPicker.IsVisible() {
+		popupWidth := 60
+		if popupWidth > m.width-4 {
+			popupWidth = m.width - 4
+		}
+		list := sess.dirPicker.View(popupWidth, 10, m.styles)
+		if list != "" {
+			header := lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).
+				Width(popupWidth).Render(truncatePathLeft(sess.dirPicker.CurrentDir(), popupWidth))
+			hint := lipgloss.NewStyle().Foreground(m.styles.ColorDimGray).
+				Width(popupWidth).Render("↑↓ select · → open · ← up · Enter choose · Esc cancel")
+			overlay := header + "\n" + list + "\n" + hint
+			w, h := lipgloss.Size(overlay)
+			center := centerRect(canvas.Bounds(), w, h)
+			uv.NewStyledString(overlay).Draw(canvas, center)
+		}
+	}
+
 	// Slash menu overlay
 	if sess != nil && sess.slashMenu.IsVisible() {
-		popupWidth := 70
+		popupWidth := 80
 		overlay := sess.slashMenu.View(popupWidth, 8, m.styles)
 		if overlay != "" {
 			_, h := lipgloss.Size(overlay)
@@ -2445,6 +3754,15 @@ func (m Model) View() tea.View {
 		}
 	}
 
+	// Error alert popup overlay (topmost — drawn last so it sits above other
+	// overlays; dismissed on any key press).
+	if m.alertPopup != "" {
+		overlay := renderAlertDialog(m.width, m.height, m.styles, m.alertPopup)
+		w, h := lipgloss.Size(overlay)
+		center := centerRect(canvas.Bounds(), w, h)
+		uv.NewStyledString(overlay).Draw(canvas, center)
+	}
+
 	content := strings.ReplaceAll(canvas.Render(), "\r\n", "\n")
 	v := tea.NewView(content)
 	v.AltScreen = true
@@ -2455,23 +3773,17 @@ func (m Model) View() tea.View {
 
 // handleCommandAction executes the command identified by action and returns any
 // resulting tea.Cmd values. It is shared by the command palette and slash menu.
-func (m *Model) handleCommandAction(action string, sess *SessionState) []tea.Cmd {
+func (m *Model) handleCommandAction(action string, sess *ThreadState) []tea.Cmd {
 	var cmds []tea.Cmd
 	switch action {
-	case "manage_keys":
-		if sess != nil {
-			sess.rightPanel.OpenKeyManager(m.height)
-			m.updateChatWidth()
-			sess.focus = FocusRightPanel
-			sess.input.Blur()
-		}
 	case "clear":
 		if sess != nil && sess.client != nil {
 			sess.client.SendCancel()
 		}
 		if sess != nil {
-			m.flushSessionBuf(sess)
+			m.flushThreadBuf(sess)
 			sess.chatMessages = nil
+			sess.chatCache.invalidate()
 		}
 	case "copy_conversation":
 		if sess == nil || len(sess.chatMessages) == 0 {
@@ -2509,7 +3821,7 @@ func (m *Model) handleCommandAction(action string, sess *SessionState) []tea.Cmd
 		}
 	case "scroll_top":
 		if sess != nil {
-			sess.chatScrollOffset = m.sessionMaxScrollOffset(sess)
+			sess.chatScrollOffset = m.threadMaxScrollOffset(sess)
 			sess.focus = FocusChat
 		}
 	case "scroll_bottom":
@@ -2528,22 +3840,21 @@ func (m *Model) handleCommandAction(action string, sess *SessionState) []tea.Cmd
 			_ = config.SetShowThinking(sess.showThinking)
 		}
 	case "quit":
-		if sess != nil && sess.client != nil {
-			sess.client.SendCancel()
-			sess.client.SendClose()
-		}
+		m.closeThreadsForQuit(config.CloseAllThreadsOnQuit())
 		cmds = append(cmds, tea.Quit)
 	default:
 		if strings.HasPrefix(action, "switch_tab_") {
 			idxStr := strings.TrimPrefix(action, "switch_tab_")
 			if i, err := strconv.Atoi(idxStr); err == nil {
 				switch TabKind(i) {
-				case TabKindSessions:
-					cmds = append(cmds, m.switchTab(TabKindSessions))
+				case TabKindThreads:
+					cmds = append(cmds, m.switchTab(TabKindThreads))
 				case TabKindChat:
 					cmds = append(cmds, m.switchTab(TabKindChat))
 				case TabKindModels:
 					cmds = append(cmds, m.switchTab(TabKindModels))
+				case TabKindJobs:
+					cmds = append(cmds, m.switchTab(TabKindJobs))
 				case TabKindSettings:
 					cmds = append(cmds, m.switchTab(TabKindSettings))
 				}
@@ -2553,8 +3864,9 @@ func (m *Model) handleCommandAction(action string, sess *SessionState) []tea.Cmd
 	return cmds
 }
 
-// flushSessionBuf commits the streaming assistant buffer to the session's chatMessages.
-func (m *Model) flushSessionBuf(sess *SessionState) {
+// flushThreadBuf commits the streaming assistant buffer to the thread's chatMessages.
+func (m *Model) flushThreadBuf(sess *ThreadState) {
+	m.syncMermaidCtx(sess)
 	if sess.showThinking && sess.thinkingBuf != "" {
 		sess.chatMessages = append(sess.chatMessages, renderThinkingMessage(sess.thinkingBuf, m.styles, m.mdRenderer.width+4))
 	}
@@ -2567,9 +3879,100 @@ func (m *Model) flushSessionBuf(sess *SessionState) {
 	sess.thinkingRendered = ""
 }
 
-// visualLineCount returns the display line count for the current session's input.
+// applyReplay rebuilds a thread's viewport and restores its mode/model/todos
+// from a daemon event.replay (sent when attaching to a persisted thread).
+// Restore-time warnings are appended as system messages.
+func (m *Model) applyReplay(sess *ThreadState, rep protocol.EventReplay) {
+	m.syncMermaidCtx(sess)
+	sess.chatMessages = m.buildReplayChatMessages(rep)
+	sess.chatCache.invalidate()
+	sess.todos = rep.Todos
+	if !sess.rightPanel.IsVisible() && hasPendingTodos(sess.todos) {
+		sess.rightPanel.OpenTodos(m.height)
+		m.updateChatWidth()
+	}
+	sess.activePlan = rep.ActivePlan
+	if rep.Model != "" {
+		sess.setModel(rep.Model)
+	}
+	if rep.Title != "" {
+		sess.title = rep.Title
+		if sess.vixSummary != nil {
+			sess.vixSummary.Title = rep.Title
+		}
+	}
+	sess.activeWorkflow = rep.ActiveWorkflow
+	for _, w := range rep.Warnings {
+		sess.chatMessages = append(sess.chatMessages, renderSystemMessage(w, m.styles))
+	}
+	if sess.agentState == StateStreaming || sess.agentState == StateToolExecuting {
+		sess.agentState = StateWaitingForInput
+	}
+}
+
+// buildReplayChatMessages reconstructs rendered ChatMessages from a replayed
+// conversation. Tool results are matched to their preceding tool_use by ID so
+// the result line carries the right tool name.
+func (m *Model) buildReplayChatMessages(rep protocol.EventReplay) []ChatMessage {
+	var out []ChatMessage
+	toolNames := map[string]string{}
+	for _, msg := range rep.Messages {
+		var ts time.Time
+		if msg.Timestamp != "" {
+			if parsed, err := time.Parse(time.RFC3339, msg.Timestamp); err == nil {
+				ts = parsed
+			}
+		}
+		for _, b := range msg.Blocks {
+			switch b.Kind {
+			case "text":
+				if msg.Role == "user" {
+					body, atts := parseAttachmentRefs(b.Text)
+					out = append(out, renderUserMessageAt(body, m.width, ts, atts...))
+				} else {
+					out = append(out, renderAssistantMessage(b.Text, m.mdRenderer))
+				}
+			case "tool_use":
+				if b.ToolID != "" {
+					toolNames[b.ToolID] = b.ToolName
+				}
+				out = append(out, renderToolCall(b.ToolName, replayToolSummary(b.Input), "", [4]string{}, m.styles))
+			case "tool_result":
+				name := toolNames[b.ToolID]
+				out = append(out, renderToolResultWithContext(name, b.Output, b.IsError, false, "", m.styles, m.mdRenderer, m.mdRenderer.width))
+			case "retry":
+				out = append(out, renderRetryMessage(protocol.EventRetry{
+					Attempt:    b.Attempt,
+					MaxRetries: b.MaxRetries,
+					WaitSecs:   b.WaitSecs,
+					Reason:     b.Text,
+				}))
+			case "error":
+				out = append(out, renderErrorMessage(fmt.Errorf("%s", b.Text)))
+			}
+		}
+	}
+	return out
+}
+
+// replayToolSummary derives a short one-line summary from a tool's input for
+// the replayed tool-call line (the live summary is computed daemon-side and not
+// persisted).
+func replayToolSummary(input map[string]any) string {
+	if input == nil {
+		return ""
+	}
+	for _, k := range []string{"path", "command", "pattern", "query", "url", "name", "id"} {
+		if v, ok := input[k].(string); ok && v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// visualLineCount returns the display line count for the current thread's input.
 func (m *Model) visualLineCount() int {
-	sess := m.currentSession()
+	sess := m.currentThread()
 	if sess == nil {
 		return 1
 	}
@@ -2595,32 +3998,26 @@ func (m *Model) visualLineCount() int {
 	return total
 }
 
-// sessionMaxScrollOffset returns the max scroll offset for a session's chat.
-func (m *Model) sessionMaxScrollOffset(sess *SessionState) int {
+// threadMaxScrollOffset returns the max scroll offset for a thread's chat.
+func (m *Model) threadMaxScrollOffset(sess *ThreadState) int {
 	layout := computeLayout(m.width, m.height, m.visualLineCount())
 	contentHeight := layout.ChatHeight - 1
-	chatWidth := layout.ChatWidth
-	if sess.rightPanel.IsVisible() {
-		chatWidth = m.width - sess.rightPanel.PanelWidth()
-		if chatWidth < 10 {
-			chatWidth = 10
-		}
-	}
-	innerWidth := chatWidth - 4
-	chatContent := buildRenderedChat(sess.chatMessages, m.styles, innerWidth)
+	innerWidth := m.effectiveChatWidth() - 4
+	tail := ""
 	if sess.showThinking && sess.thinkingRendered != "" {
-		chatContent += sess.thinkingRendered + "\n"
+		tail += sess.thinkingRendered + "\n"
 	}
 	if sess.assistantRendered != "" {
-		chatContent += sess.assistantRendered
+		tail += sess.assistantRendered
 	}
-	if chatContent == "" && !m.testMode {
-		chatContent = renderWelcomeInline(innerWidth, contentHeight, m.styles)
+	lines, rowStart := sess.cachedChatLines(m.styles, innerWidth)
+	if emptyChatLines(lines) && tail == "" {
+		// Empty transcript: the welcome screen is generated to fit the
+		// viewport, so there is nothing to scroll.
+		return 0
 	}
-	totalVisualRows := 0
-	for _, line := range strings.Split(chatContent, "\n") {
-		totalVisualRows += visualRows(line, innerWidth)
-	}
+	_, rowStart = combineTail(lines, rowStart, tail, innerWidth)
+	totalVisualRows := rowStart[len(rowStart)-1]
 	maxOff := totalVisualRows - contentHeight
 	if maxOff < 0 {
 		return 0
@@ -2628,18 +4025,18 @@ func (m *Model) sessionMaxScrollOffset(sess *SessionState) int {
 	return maxOff
 }
 
-// clampScrollOffset ensures the session's chatScrollOffset is within valid bounds.
-func (m *Model) clampScrollOffset(sess *SessionState) {
+// clampScrollOffset ensures the thread's chatScrollOffset is within valid bounds.
+func (m *Model) clampScrollOffset(sess *ThreadState) {
 	if sess.chatScrollOffset < 0 {
 		sess.chatScrollOffset = 0
 	}
-	if max := m.sessionMaxScrollOffset(sess); sess.chatScrollOffset > max {
+	if max := m.threadMaxScrollOffset(sess); sess.chatScrollOffset > max {
 		sess.chatScrollOffset = max
 	}
 }
 
 // turnSepByNumber returns the separator info for the given 1-based turn number.
-func (m *Model) turnSepByNumber(sess *SessionState, turnNum int) (TurnSepInfo, bool) {
+func (m *Model) turnSepByNumber(sess *ThreadState, turnNum int) (TurnSepInfo, bool) {
 	for _, s := range turnSeparatorInfos(sess.chatMessages, m.styles, m.mdRenderer.width) {
 		if s.TurnIdx == turnNum-1 {
 			return s, true
@@ -2662,7 +4059,7 @@ func parseTurnArg(fields []string) (int, bool) {
 }
 
 // appendCommandError appends a system message describing a command error.
-func (m *Model) appendCommandError(sess *SessionState, text string) {
+func (m *Model) appendCommandError(sess *ThreadState, text string) {
 	sess.input.Reset()
 	sess.input.SetHeight(1)
 	sess.chatMessages = append(sess.chatMessages, renderSystemMessage(text, m.styles))
@@ -2673,7 +4070,7 @@ func (m *Model) appendCommandError(sess *SessionState, text string) {
 // typed into the input. When the input is a recognized local command it is
 // consumed (never sent to the daemon) and handled is true; the returned
 // model/cmd should then be used as handleEnter's result.
-func (m Model) tryLocalCommand(sess *SessionState) (handled bool, model tea.Model, cmd tea.Cmd) {
+func (m Model) tryLocalCommand(sess *ThreadState) (handled bool, model tea.Model, cmd tea.Cmd) {
 	text := strings.TrimSpace(sess.input.Value())
 	if !strings.HasPrefix(text, "/") {
 		return false, m, nil
@@ -2759,7 +4156,7 @@ func (m Model) tryLocalCommand(sess *SessionState) (handled bool, model tea.Mode
 // copyTurn copies just the messages belonging to the given 1-based turn number
 // to the clipboard. The turn's messages are those between the previous turn
 // separator and this one (excluding the separator line itself).
-func (m *Model) copyTurn(sess *SessionState, turnNum int, sep TurnSepInfo) {
+func (m *Model) copyTurn(sess *ThreadState, turnNum int, sep TurnSepInfo) {
 	start := 0
 	if prev, ok := m.turnSepByNumber(sess, turnNum-1); ok {
 		start = prev.MsgIdx + 1
@@ -2788,7 +4185,7 @@ func (m *Model) copyTurn(sess *SessionState, turnNum int, sep TurnSepInfo) {
 // gotoTurn scrolls the chat so the first message of the given 1-based turn
 // number sits at the top of the viewport. Turn N's content starts on the line
 // immediately after turn separator N-1 (or at the very top for turn 1).
-func (m *Model) gotoTurn(sess *SessionState, turnNum int) {
+func (m *Model) gotoTurn(sess *ThreadState, turnNum int) {
 	innerWidth := m.effectiveChatWidth() - 4
 	if innerWidth < 1 {
 		innerWidth = 1
@@ -2806,22 +4203,19 @@ func (m *Model) gotoTurn(sess *SessionState, turnNum int) {
 	}
 
 	// Rebuild the rendered chat and a visual-row prefix sum, mirroring the
-	// renderer (and sessionMaxScrollOffset), to convert the logical line into a
+	// renderer (and threadMaxScrollOffset), to convert the logical line into a
 	// from-bottom scroll offset.
-	chatContent := buildRenderedChat(sess.chatMessages, m.styles, innerWidth)
+	tail := ""
 	if sess.showThinking && sess.thinkingRendered != "" {
-		chatContent += sess.thinkingRendered + "\n"
+		tail += sess.thinkingRendered + "\n"
 	}
 	if sess.assistantRendered != "" {
-		chatContent += sess.assistantRendered
+		tail += sess.assistantRendered
 	}
-	allLines := strings.Split(chatContent, "\n")
+	lines, rowStart := sess.cachedChatLines(m.styles, innerWidth)
+	allLines, visualRowStart := combineTail(lines, rowStart, tail, innerWidth)
 	if targetLine > len(allLines) {
 		targetLine = len(allLines)
-	}
-	visualRowStart := make([]int, len(allLines)+1)
-	for i, line := range allLines {
-		visualRowStart[i+1] = visualRowStart[i] + visualRows(line, innerWidth)
 	}
 	totalVisualRows := visualRowStart[len(allLines)]
 	startVisRow := visualRowStart[targetLine]
@@ -2834,66 +4228,69 @@ func (m *Model) gotoTurn(sess *SessionState, turnNum int) {
 	sess.focus = FocusChat
 }
 
-// doFork creates a new session seeded with history up to sep, and connects a fork.
+// doFork creates a new thread seeded with history up to sep, and connects a fork.
 func (m *Model) doFork(sep TurnSepInfo) (Model, tea.Cmd) {
-	sess := m.currentSession()
+	sess := m.currentThread()
 
-	newSess := newSessionState(m.cfg, nil)
+	newSess := newThreadState(m.cfg, nil)
 	newSess.reconnecting = true
+	newSess.workDir = pickCWD(sess.workDir, m.cwd)
 	forkedMsgs := make([]ChatMessage, sep.MsgIdx+1)
 	copy(forkedMsgs, sess.chatMessages[:sep.MsgIdx+1])
 	newSess.chatMessages = forkedMsgs
 
-	forkSessionID := ""
+	forkThreadID := ""
 	if sess.client != nil {
-		forkSessionID = sess.client.SessionID()
+		forkThreadID = sess.client.ThreadID()
 	}
 
-	newIdx := len(m.sessions)
-	m.sessions = append(m.sessions, newSess)
-	m.selectedSession = newIdx
+	newIdx := len(m.threads)
+	m.threads = append(m.threads, newSess)
+	m.selectedThread = newIdx
 
-	return *m, connectFork(
-		m.socketPath, m.cwd, m.cfg.ConfigDir, m.cfg.Model, m.authToken,
+	return *m, tea.Batch(connectFork(
+		m.socketPath, newSess.workDir, m.cfg.ConfigDir, m.cfg.Model, m.authToken,
 		m.enableAutomaticWritePermission, m.enableAutomaticDirectoryAccess,
-		forkSessionID, sep.TurnIdx, newSess.daemonSessionID,
-	)
+		forkThreadID, sep.TurnIdx, newSess.daemonThreadID,
+	), armCursorBlink(newSess))
 }
 
-// doDuplicate creates a new session that is a full copy of srcSess, seeded with
+// doDuplicate creates a new thread that is a full copy of srcSess, seeded with
 // the source's conversation history up to its last completed turn (sep), and
-// connects it. Mirrors doFork but operates on an explicit source session (so it
-// can be triggered from the Sessions tab against the highlighted row).
-func (m *Model) doDuplicate(srcSess *SessionState, sep TurnSepInfo) (Model, tea.Cmd) {
-	newSess := newSessionState(m.cfg, nil)
+// connects it. Mirrors doFork but operates on an explicit source thread (so it
+// can be triggered from the Threads tab against the highlighted row).
+func (m *Model) doDuplicate(srcSess *ThreadState, sep TurnSepInfo) (Model, tea.Cmd) {
+	newSess := newThreadState(m.cfg, nil)
 	newSess.reconnecting = true
+	newSess.workDir = pickCWD(srcSess.workDir, m.cwd)
 	copiedMsgs := make([]ChatMessage, sep.MsgIdx+1)
 	copy(copiedMsgs, srcSess.chatMessages[:sep.MsgIdx+1])
 	newSess.chatMessages = copiedMsgs
 
-	forkSessionID := ""
+	forkThreadID := ""
 	if srcSess.client != nil {
-		forkSessionID = srcSess.client.SessionID()
+		forkThreadID = srcSess.client.ThreadID()
 	}
 
-	newIdx := len(m.sessions)
-	m.sessions = append(m.sessions, newSess)
-	m.selectedSession = newIdx
-	m.syncSessionsSelected()
+	newIdx := len(m.threads)
+	m.threads = append(m.threads, newSess)
+	m.selectedThread = newIdx
+	m.syncThreadsSelected()
 
-	return *m, connectFork(
-		m.socketPath, m.cwd, m.cfg.ConfigDir, m.cfg.Model, m.authToken,
+	return *m, tea.Batch(connectFork(
+		m.socketPath, newSess.workDir, m.cfg.ConfigDir, m.cfg.Model, m.authToken,
 		m.enableAutomaticWritePermission, m.enableAutomaticDirectoryAccess,
-		forkSessionID, sep.TurnIdx, newSess.daemonSessionID,
-	)
+		forkThreadID, sep.TurnIdx, newSess.daemonThreadID,
+	), armCursorBlink(newSess))
 }
 
-// doTrim trims the current session's history to sep and tells the daemon to match.
+// doTrim trims the current thread's history to sep and tells the daemon to match.
 func (m *Model) doTrim(sep TurnSepInfo) (Model, tea.Cmd) {
-	sess := m.currentSession()
+	sess := m.currentThread()
 	trimmed := make([]ChatMessage, sep.MsgIdx+1)
 	copy(trimmed, sess.chatMessages[:sep.MsgIdx+1])
 	sess.chatMessages = trimmed
+	sess.chatCache.invalidate()
 	sess.chatScrollOffset = 0
 	m.clampScrollOffset(sess)
 	sess.agentState = sess.trimPrevState
@@ -2908,45 +4305,77 @@ func (m *Model) doTrim(sep TurnSepInfo) (Model, tea.Cmd) {
 	return *m, cmd
 }
 
-// doCloseSession closes the session at sessionIdx and returns to the Sessions tab.
-func (m *Model) doCloseSession(sessionIdx int) (Model, tea.Cmd) {
-	if sessionIdx < 0 || sessionIdx >= len(m.sessions) {
+// closeThreadsForQuit runs right before the TUI exits. When closeAll is set
+// (the quit-dialog checkbox / persisted preference), every thread is
+// explicitly closed: thread.close moves each record open/ -> closed/ in the
+// daemon, so nothing is restored on next launch. When unset, it sends nothing —
+// the process exit bare-disconnects every connection; the daemon cancels any
+// running agent on EOF and leaves all records in open/ for next-run restore.
+//
+// Deliberately not called from the update quit-all flow (handleUpdateAction,
+// event.quit): an update quit is a restart, not an exit, so threads must
+// survive it regardless of the preference.
+func (m *Model) closeThreadsForQuit(closeAll bool) {
+	if !closeAll {
+		return
+	}
+	for _, sess := range m.threads {
+		if sess.client != nil {
+			// Mark the thread so the disconnect that follows thread.close is
+			// treated as expected rather than triggering a reconnect (which
+			// would race the daemon's open/ -> closed/ move and resurrect the
+			// record in open/).
+			sess.closing = true
+			sess.client.SendCancel()
+			sess.client.SendClose()
+		}
+	}
+}
+
+// doCloseThread closes the thread at threadIdx and returns to the Threads tab.
+func (m *Model) doCloseThread(threadIdx int) (Model, tea.Cmd) {
+	if threadIdx < 0 || threadIdx >= len(m.threads) {
 		m.state = StateWaitingForInput
 		return *m, nil
 	}
 
-	sess := m.sessions[sessionIdx]
+	sess := m.threads[threadIdx]
 	if sess.client != nil {
 		sess.client.SendCancel()
 		sess.client.SendClose()
 	}
 
-	m.sessions = append(m.sessions[:sessionIdx], m.sessions[sessionIdx+1:]...)
+	m.threads = append(m.threads[:threadIdx], m.threads[threadIdx+1:]...)
 
-	if m.selectedSession >= len(m.sessions) {
-		m.selectedSession = len(m.sessions) - 1
+	if m.selectedThread >= len(m.threads) {
+		m.selectedThread = len(m.threads) - 1
 	}
-	if m.selectedSession < 0 {
-		m.selectedSession = 0
+	if m.selectedThread < 0 {
+		m.selectedThread = 0
 	}
 
 	var reconnectCmd tea.Cmd
-	if len(m.sessions) == 0 {
-		newSess := newSessionState(m.cfg, nil)
-		newSess.reconnecting = true
-		m.sessions = append(m.sessions, newSess)
-		m.selectedSession = 0
-		reconnectCmd = attemptReconnect(m.socketPath, m.cwd, m.cfg.ConfigDir, m.cfg.Model, m.authToken, false, m.enableAutomaticWritePermission, m.enableAutomaticDirectoryAccess, newSess.daemonSessionID)
+	if len(m.threads) == 0 {
+		// All threads closed: open a fresh draft (welcome screen), which
+		// connects on its first message.
+		newSess := newThreadState(m.cfg, nil)
+		m.threads = append(m.threads, newSess)
+		m.selectedThread = 0
+		reconnectCmd = armCursorBlink(newSess)
 	}
 
-	if n := m.sessionsVisibleCount(); n > 0 && m.sessionsSelected >= n {
-		m.sessionsSelected = n - 1
+	// Keep the Threads-tab cursor on the same row index: the closed row was the
+	// highlighted one, so the next thread slides into its place. Clamp against
+	// the full row count (live threads + persisted user/vix records). Do NOT
+	// call syncThreadsSelected here — it would snap the highlight onto the
+	// active workspace thread's row (usually a user-initiated one).
+	if n := len(m.threadRowTargets()); n > 0 && m.threadsSelected >= n {
+		m.threadsSelected = n - 1
 	}
 
-	m.activeTab = TabKindSessions
-	m.syncSessionsSelected()
+	m.activeTab = TabKindThreads
 	m.state = StateWaitingForInput
-	return *m, reconnectCmd
+	return *m, tea.Batch(reconnectCmd, m.maybeStartThreadsSpinner())
 }
 
 // effectiveChatWidth returns the panel-aware total chat width — the single
@@ -2955,7 +4384,7 @@ func (m *Model) doCloseSession(sessionIdx int) (Model, tea.Cmd) {
 // chat width. Inner content width is effectiveChatWidth() - 4.
 func (m *Model) effectiveChatWidth() int {
 	chatWidth := computeLayout(m.width, m.height, m.visualLineCount()).ChatWidth
-	if sess := m.currentSession(); sess != nil && sess.rightPanel.IsVisible() {
+	if sess := m.currentThread(); sess != nil && sess.rightPanel.IsVisible() {
 		chatWidth = m.width - sess.rightPanel.PanelWidth()
 		if chatWidth < 10 {
 			chatWidth = 10
@@ -2965,17 +4394,17 @@ func (m *Model) effectiveChatWidth() int {
 }
 
 // updateChatWidth updates the markdown renderer width to match the current
-// effective chat width and re-renders the session's cached messages.
+// effective chat width and re-renders the thread's cached messages.
 func (m *Model) updateChatWidth() {
 	m.mdRenderer.UpdateWidth(m.effectiveChatWidth() - 4)
-	m.rerenderSessionMessages()
+	m.rerenderThreadMessages()
 	m.lastChatWidth = m.effectiveChatWidth()
 }
 
 // reconcileChatWidth re-flows width-cached content (the glamour code box and
 // cached message renders) whenever the effective panel-aware chat width has
 // changed since the last reconciliation. Called centrally from Update so panel
-// open/close, session switches, and resizes all self-heal without each
+// open/close, thread switches, and resizes all self-heal without each
 // transition having to remember to call updateChatWidth.
 func (m *Model) reconcileChatWidth() {
 	if m.width == 0 {
@@ -2986,55 +4415,325 @@ func (m *Model) reconcileChatWidth() {
 	}
 }
 
-// rerenderSessionMessages re-renders the current session's chat messages at the current width.
-func (m *Model) rerenderSessionMessages() {
-	sess := m.currentSession()
+// rerenderThreadMessages re-renders the current thread's chat messages at the current width.
+func (m *Model) rerenderThreadMessages() {
+	sess := m.currentThread()
 	if sess == nil {
 		return
 	}
+	m.syncMermaidCtx(sess)
 	width := m.mdRenderer.width + 4
 	for i, msg := range sess.chatMessages {
 		sess.chatMessages[i] = msg.rerender(m.mdRenderer, m.styles, width)
 	}
+	sess.chatCache.invalidate()
 }
 
-// visibleSessionIndices returns the indices of all sessions.
-func (m *Model) visibleSessionIndices() []int {
-	indices := make([]int, len(m.sessions))
-	for i := range m.sessions {
-		indices[i] = i
+// syncMermaidCtx points the shared markdown renderer at a session's daemon
+// thread id (and the daemon's whiteboard base) so ```mermaid blocks render with
+// a correct per-thread "See it on the whiteboard" link.
+func (m *Model) syncMermaidCtx(sess *ThreadState) {
+	if sess == nil {
+		return
 	}
-	return indices
+	// The daemon reports the whiteboard base in the thread_started event, which
+	// ThreadClient consumes during connect (the TUI event loop never sees it), so
+	// read it straight from the client. Cache the last non-empty value so a render
+	// during a brief reconnect (client momentarily nil) still has it.
+	if sess.client != nil {
+		if b := sess.client.WhiteboardBase(); b != "" {
+			m.whiteboardBase = b
+		}
+	}
+	m.mdRenderer.SetWhiteboardContext(m.whiteboardBase, sess.daemonThreadID)
 }
 
-// sessionsVisibleCount returns the number of visible sessions (after filter).
-func (m *Model) sessionsVisibleCount() int {
-	return len(m.visibleSessionIndices())
+// rowTarget identifies what a single Threads-tab row points at: a live thread
+// (liveIdx is an index into m.threads, sum == nil) or a persisted, not-attached
+// vix-initiated record (liveIdx == -1, sum != nil).
+type rowTarget struct {
+	liveIdx int
+	sum     *protocol.ThreadSummary
 }
 
-// syncSessionsSelected sets sessionsSelected to the visible row that corresponds
-// to the currently active workspace session (selectedSession).
-func (m *Model) syncSessionsSelected() {
-	for i, idx := range m.visibleSessionIndices() {
-		if idx == m.selectedSession {
-			m.sessionsSelected = i
+// rowStartedAt returns the creation time used to order a Threads-tab row. A
+// live vix thread carries its origin record in vixSummary, so a record keeps
+// the same StartedAt — and therefore the same list position — when it
+// transitions from persisted to attached (on read). A live user thread has no
+// such record, so its creation time comes from the daemon thread itself
+// (ThreadState.createdAt). Not-attached records use their persisted StartedAt.
+func (m *Model) rowStartedAt(r rowTarget) time.Time {
+	switch {
+	case r.sum != nil:
+		t, _ := time.Parse(time.RFC3339, r.sum.StartedAt)
+		return t
+	case r.liveIdx >= 0 && r.liveIdx < len(m.threads):
+		sess := m.threads[r.liveIdx]
+		if vs := sess.vixSummary; vs != nil {
+			t, _ := time.Parse(time.RFC3339, vs.StartedAt)
+			return t
+		}
+		return sess.createdAt()
+	}
+	return time.Time{}
+}
+
+// userDirBlock is one working directory's block within the User-initiated group:
+// its rows (live threads and/or persisted not-attached records) plus the most
+// recent activity across them, used to order non-current directories.
+type userDirBlock struct {
+	dir  string
+	rows []rowTarget
+	last time.Time
+}
+
+// recordActivity returns a record's activity time (LastRequestAt, else
+// StartedAt) for ordering directories by recency.
+func recordActivity(sum *protocol.ThreadSummary) time.Time {
+	raw := sum.LastRequestAt
+	if raw == "" {
+		raw = sum.StartedAt
+	}
+	t, _ := time.Parse(time.RFC3339, raw)
+	return t
+}
+
+// userDirBlocks groups the User-initiated threads by working directory: live
+// threads (auto-attached on launch, so mostly the current cwd) and persisted
+// not-attached records (from every directory). The current cwd sorts first; the
+// remaining directories follow by most-recent activity (desc), tiebroken by path
+// (asc) for determinism. Within a directory, rows are ordered by creation time
+// (asc), interleaving live threads and records — a live thread is not hoisted
+// ahead of an older record.
+func (m *Model) userDirBlocks() []userDirBlock {
+	byDir := map[string]*userDirBlock{}
+	var order []string
+	get := func(dir string) *userDirBlock {
+		b := byDir[dir]
+		if b == nil {
+			b = &userDirBlock{dir: dir}
+			byDir[dir] = b
+			order = append(order, dir)
+		}
+		return b
+	}
+	// Collect live rows first only so records can dedup against them; the final
+	// per-block order is by creation time below, not live-first.
+	liveIDs := map[string]bool{}
+	for i, s := range m.threads {
+		if s.vixSummary != nil {
+			continue
+		}
+		if s.daemonThreadID != "" {
+			liveIDs[s.daemonThreadID] = true
+		}
+		b := get(pickCWD(s.workDir, m.cwd))
+		b.rows = append(b.rows, rowTarget{liveIdx: i})
+	}
+	for idx := range m.userThreadRecords {
+		rec := &m.userThreadRecords[idx]
+		// Skip a record that is already live in this window (it attached but the
+		// list hasn't refreshed yet), so it isn't shown twice.
+		if liveIDs[rec.ID] {
+			continue
+		}
+		dir := rec.CWD
+		if strings.TrimSpace(dir) == "" {
+			dir = m.cwd
+		}
+		b := get(dir)
+		b.rows = append(b.rows, rowTarget{liveIdx: -1, sum: rec})
+		if t := recordActivity(rec); t.After(b.last) {
+			b.last = t
+		}
+	}
+	sort.SliceStable(order, func(a, c int) bool {
+		da, dc := order[a], order[c]
+		if da == m.cwd {
+			return dc != m.cwd
+		}
+		if dc == m.cwd {
+			return false
+		}
+		if la, lc := byDir[da].last, byDir[dc].last; !la.Equal(lc) {
+			return la.After(lc)
+		}
+		return da < dc
+	})
+	out := make([]userDirBlock, 0, len(order))
+	for _, dir := range order {
+		b := byDir[dir]
+		// Order rows by creation time (asc). A connecting/draft thread with an
+		// unknown start time (zero) sorts last, matching a freshly-created row.
+		sort.SliceStable(b.rows, func(i, j int) bool {
+			return m.userRowSortKey(b.rows[i]).Before(m.userRowSortKey(b.rows[j]))
+		})
+		out = append(out, *b)
+	}
+	return out
+}
+
+// userRowSortKey is the creation-time key used to order rows within a directory
+// block. Rows with an unknown start time (a thread still connecting) sort last
+// rather than first, so a just-created thread lands at the bottom of its block.
+func (m *Model) userRowSortKey(r rowTarget) time.Time {
+	t := m.rowStartedAt(r)
+	if t.IsZero() {
+		return time.Unix(1<<62, 0)
+	}
+	return t
+}
+
+// vixRowTargets returns the Vix-initiated group's rows: live attached records
+// and persisted not-attached records merged into one StartedAt-ordered list.
+func (m *Model) vixRowTargets() []rowTarget {
+	var vix []rowTarget
+	for i, s := range m.threads {
+		if s.vixSummary != nil {
+			vix = append(vix, rowTarget{liveIdx: i})
+		}
+	}
+	for idx := range m.vixThreads {
+		vix = append(vix, rowTarget{liveIdx: -1, sum: &m.vixThreads[idx]})
+	}
+	sort.SliceStable(vix, func(a, b int) bool {
+		return m.rowStartedAt(vix[a]).Before(m.rowStartedAt(vix[b]))
+	})
+	return vix
+}
+
+// threadRowTargets returns one entry per Threads-tab row in display order: the
+// User-initiated group (live threads and persisted not-attached records grouped
+// by working directory, current cwd first) followed by the Vix-initiated group.
+// The slice index is the selection row index (m.threadsSelected).
+func (m *Model) threadRowTargets() []rowTarget {
+	var rows []rowTarget
+	for _, b := range m.userDirBlocks() {
+		rows = append(rows, b.rows...)
+	}
+	return append(rows, m.vixRowTargets()...)
+}
+
+// visibleThreadIndices returns the indices of all live threads in Threads-tab
+// row order (user-initiated first, then attached vix-initiated ones in the same
+// order they render). Persisted, not-attached records are skipped.
+func (m *Model) visibleThreadIndices() []int {
+	var out []int
+	for _, r := range m.threadRowTargets() {
+		if r.sum == nil {
+			out = append(out, r.liveIdx)
+		}
+	}
+	return out
+}
+
+// armCursorBlink re-focuses a thread's input and returns the command that
+// restarts its cursor blink loop. The blink is a self-rescheduling BlinkMsg
+// chain keyed to one cursor's id; switching the active workspace thread
+// orphans the previous thread's chain (its BlinkMsgs are routed to the new
+// input and dropped on id mismatch) without starting one for the new cursor.
+// Every switch must re-arm the loop or the cursor freezes — sometimes in its
+// hidden phase, so it looks like it disappeared — until the user types.
+func armCursorBlink(sess *ThreadState) tea.Cmd {
+	if sess == nil {
+		return nil
+	}
+	return sess.input.Focus()
+}
+
+// stepWorkspaceThread moves the workspace to the next (dir > 0) or previous
+// (dir < 0) thread in Threads-tab display order (user-initiated first, then
+// vix-initiated) — which can differ from m.threads slice order, since
+// attached threads are inserted by creation time. Reports false when there is
+// no thread in that direction.
+func (m *Model) stepWorkspaceThread(dir int) ([]tea.Cmd, bool) {
+	order := m.visibleThreadIndices()
+	pos := -1
+	for i, idx := range order {
+		if idx == m.selectedThread {
+			pos = i
+			break
+		}
+	}
+	next := pos + dir
+	if pos < 0 || next < 0 {
+		return nil, false
+	}
+	if next >= len(order) {
+		// Past the last live thread: the rows below are persisted,
+		// not-yet-attached records (user-initiated ones grouped by directory,
+		// then vix-initiated). Attach the first — same as pressing enter on it
+		// in the Threads tab; the replay's threadRestoredMsg focuses it and
+		// marks it read.
+		for _, r := range m.threadRowTargets() {
+			if r.sum != nil {
+				sum := *r.sum
+				m.focusRestoredID = sum.ID
+				return []tea.Cmd{attachRestoreThread(m.socketPath, pickCWD(sum.CWD, m.cwd), m.cfg.ConfigDir, m.cfg.Model, m.authToken, m.enableAutomaticWritePermission, m.enableAutomaticDirectoryAccess, sum)}, true
+			}
+		}
+		return nil, false
+	}
+	var cmds []tea.Cmd
+	m.selectedThread = order[next]
+	m.activeTab = TabKindChat
+	selSess := m.threads[m.selectedThread]
+	m.markThreadRead(selSess)
+	selSess.input.SetWidth(m.width - 4)
+	if selSess.client == nil && !selSess.reconnecting && selSess.daemonThreadID != "" {
+		selSess.reconnecting = true
+		cmds = append(cmds, attemptReconnect(m.socketPath, pickCWD(selSess.workDir, m.cwd), m.cfg.ConfigDir, m.cfg.Model, m.authToken, false, m.enableAutomaticWritePermission, m.enableAutomaticDirectoryAccess, selSess.daemonThreadID))
+	}
+	cmds = append(cmds, selSess.thinkingAnim.Resume())
+	cmds = append(cmds, armCursorBlink(selSess))
+	if !m.hasAlertThreads() {
+		m.stopTabAlertBlink()
+	}
+	return cmds, true
+}
+
+// syncThreadsSelected sets threadsSelected to the visible row that corresponds
+// to the currently active workspace thread (selectedThread).
+func (m *Model) syncThreadsSelected() {
+	for i, r := range m.threadRowTargets() {
+		if r.sum == nil && r.liveIdx == m.selectedThread {
+			m.threadsSelected = i
 			return
 		}
 	}
 }
 
-// sessionsSelectedIdx returns the session index for the highlighted row.
-func (m *Model) sessionsSelectedIdx() (int, bool) {
-	indices := m.visibleSessionIndices()
-	if m.sessionsSelected < 0 || m.sessionsSelected >= len(indices) {
+// threadsSelectedIdx returns the m.threads index for the highlighted row, when
+// that row is a live thread. Persisted vix-initiated rows report false (use
+// vixSelectedSummary for those).
+func (m *Model) threadsSelectedIdx() (int, bool) {
+	rows := m.threadRowTargets()
+	if m.threadsSelected < 0 || m.threadsSelected >= len(rows) {
 		return 0, false
 	}
-	return indices[m.sessionsSelected], true
+	r := rows[m.threadsSelected]
+	if r.sum != nil {
+		return 0, false
+	}
+	return r.liveIdx, true
 }
 
-// hasAlertSessions reports whether any session is waiting for user input.
-func (m *Model) hasAlertSessions() bool {
-	for _, sess := range m.sessions {
+// vixSelectedSummary returns the vix-initiated record for the highlighted row,
+// when that row is a persisted, not-attached record.
+func (m *Model) vixSelectedSummary() (protocol.ThreadSummary, bool) {
+	rows := m.threadRowTargets()
+	if m.threadsSelected < 0 || m.threadsSelected >= len(rows) {
+		return protocol.ThreadSummary{}, false
+	}
+	if r := rows[m.threadsSelected]; r.sum != nil {
+		return *r.sum, true
+	}
+	return protocol.ThreadSummary{}, false
+}
+
+// hasAlertThreads reports whether any thread is waiting for user input.
+func (m *Model) hasAlertThreads() bool {
+	for _, sess := range m.threads {
 		if sess.agentState == StateConfirmPending || sess.agentState == StateUserQuestion {
 			return true
 		}
@@ -3042,9 +4741,9 @@ func (m *Model) hasAlertSessions() bool {
 	return false
 }
 
-// maybeStartTabAlertBlink starts the tab alert blink if any session needs attention.
+// maybeStartTabAlertBlink starts the tab alert blink if any thread needs attention.
 func (m *Model) maybeStartTabAlertBlink() tea.Cmd {
-	if m.tabAlertActive || !m.hasAlertSessions() {
+	if m.tabAlertActive || !m.hasAlertThreads() {
 		return nil
 	}
 	m.tabAlertActive = true
@@ -3067,8 +4766,70 @@ func (m *Model) tabBlinkTick() tea.Cmd {
 	})
 }
 
-// nextWorkflow cycles through available workflows for a session.
-func (m *Model) nextWorkflow(sess *SessionState) string {
+// hasBusyThreads reports whether any thread is actively working (streaming,
+// running a tool, or executing a plan) — the states the threads-list spinner
+// animates.
+func (m *Model) hasBusyThreads() bool {
+	for _, sess := range m.threads {
+		switch sess.agentState {
+		case StateStreaming, StateToolExecuting, StatePlanExecuting:
+			return true
+		}
+	}
+	return false
+}
+
+// maybeStartThreadsSpinner starts the threads-list loading spinner when the
+// Threads tab is active and at least one thread is busy. No-op otherwise (and
+// when already running), so it is safe to call on every relevant state change.
+func (m *Model) maybeStartThreadsSpinner() tea.Cmd {
+	if m.threadsSpinnerActive || !m.spinnerShouldRun() {
+		return nil
+	}
+	m.threadsSpinnerActive = true
+	return m.threadsSpinnerTick()
+}
+
+// hasRunningJobs reports whether any scheduled job is currently executing.
+func (m *Model) hasRunningJobs() bool {
+	for _, j := range m.jobs {
+		if j.Running {
+			return true
+		}
+	}
+	return false
+}
+
+// spinnerShouldRun reports whether the list-loading spinner should animate:
+// busy threads on the Threads tab, or a running job on the Jobs & Triggers
+// tab. Used to gate both starting and continuing the spinner loop.
+func (m *Model) spinnerShouldRun() bool {
+	switch m.activeTab {
+	case TabKindThreads:
+		return m.hasBusyThreads()
+	case TabKindJobs:
+		return m.hasRunningJobs()
+	}
+	return false
+}
+
+// stopThreadsSpinner halts the spinner loop and bumps the generation so any
+// in-flight tick already queued in Bubble Tea's channel is ignored on arrival.
+func (m *Model) stopThreadsSpinner() {
+	m.threadsSpinnerActive = false
+	m.threadsSpinnerGen++
+}
+
+// threadsSpinnerTick schedules the next threads-list spinner frame.
+func (m *Model) threadsSpinnerTick() tea.Cmd {
+	gen := m.threadsSpinnerGen
+	return tea.Tick(threadsSpinnerPeriod, func(time.Time) tea.Msg {
+		return threadsSpinnerMsg{gen: gen}
+	})
+}
+
+// nextWorkflow cycles through available workflows for a thread.
+func (m *Model) nextWorkflow(sess *ThreadState) string {
 	if sess.activeWorkflow == "" {
 		if len(sess.workflows) > 0 {
 			return sess.workflows[0].Name
@@ -3087,7 +4848,7 @@ func (m *Model) nextWorkflow(sess *SessionState) string {
 }
 
 // currentModeName returns "Chat" or the active workflow name.
-func (m *Model) currentModeName(sess *SessionState) string {
+func (m *Model) currentModeName(sess *ThreadState) string {
 	if sess.activeWorkflow == "" {
 		return "Chat"
 	}
@@ -3099,10 +4860,16 @@ func (m *Model) currentModeName(sess *SessionState) string {
 	return "Chat"
 }
 
-// emitStatusMsg sets the global transient status bar message and returns a
-// tea.Cmd that clears it after 3 seconds. Rapid successive calls are safe
-// because each call bumps the generation counter; only the matching clear fires.
+// emitStatusMsg surfaces a transient status bar message and returns a tea.Cmd
+// that clears it after 3 seconds. Error-kind messages are instead shown as a
+// persistent centered popup (m.alertPopup) that stays until the user dismisses
+// it, so failures aren't missed. Rapid successive calls are safe because each
+// status message bumps a generation counter; only the matching clear fires.
 func (m *Model) emitStatusMsg(text string, kind StatusMsgKind) tea.Cmd {
+	if kind == StatusMsgError {
+		m.alertPopup = text
+		return nil
+	}
 	m.statusMsg.gen++
 	m.statusMsg.Text = text
 	m.statusMsg.Kind = kind
@@ -3113,7 +4880,7 @@ func (m *Model) emitStatusMsg(text string, kind StatusMsgKind) tea.Cmd {
 }
 
 // placeholderForMode returns mode-specific placeholder text.
-func (m *Model) placeholderForMode(sess *SessionState) string {
+func (m *Model) placeholderForMode(sess *ThreadState) string {
 	if sess.activeWorkflow == "" {
 		return "Ask the agent anything... (Enter to send, Shift+Enter or Alt+Enter for new line)"
 	}
@@ -3126,7 +4893,7 @@ func (m *Model) placeholderForMode(sess *SessionState) string {
 }
 
 // updateInputPromptColor sets the textarea text style to match the current mode.
-func (m *Model) updateInputPromptColor(sess *SessionState) {
+func (m *Model) updateInputPromptColor(sess *ThreadState) {
 	whiteStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
 	s := sess.input.Styles()
 	s.Focused.Text = whiteStyle
@@ -3141,9 +4908,9 @@ func marshalData(data any) []byte {
 	return b
 }
 
-// fillTestData populates the current session with fake messages for UI testing.
+// fillTestData populates the current thread with fake messages for UI testing.
 func (m *Model) fillTestData() {
-	sess := m.currentSession()
+	sess := m.currentThread()
 	if sess == nil {
 		return
 	}

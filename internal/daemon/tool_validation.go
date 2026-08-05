@@ -19,7 +19,7 @@ import (
 // JSON schema already declared in tool_schemas.go before the call reaches a
 // handler. It enforces only two things: required fields must be present, and
 // any present field must have a type the handler can actually use. Optional
-// fields, unknown keys (the daemon injects cwd/_session/etc.), emptiness, and
+// fields, unknown keys (the daemon injects cwd/_thread/etc.), emptiness, and
 // nested object/array element shapes are intentionally NOT checked here — those
 // are either the daemon's own business or the impl layer's.
 
@@ -30,7 +30,7 @@ var (
 
 // schemaFor returns the declared schema for a tool name, building the index
 // once on first use. The second return is false for names with no local schema
-// (MCP tools, session-method tools not in buildToolSchemas, unknown names).
+// (MCP tools, thread-method tools not in buildToolSchemas, unknown names).
 func schemaFor(name string) (llm.ToolParam, bool) {
 	toolSchemaOnce.Do(func() {
 		schemas := ToolSchemas()

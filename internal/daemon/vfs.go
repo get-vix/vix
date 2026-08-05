@@ -15,18 +15,16 @@ import (
 // errVFSUnsupported is returned when the file cannot be minified by Tree-sitter.
 var errVFSUnsupported = errors.New("vfs: unsupported file type")
 
-// defaultSettingsPaths returns the canonical [home/settings.json, cwd/.vix/settings.json]
-// list used by stateless tool handlers that don't have a session-level VixPaths
-// available. Per-session overrides are handled at the session layer.
-func defaultSettingsPaths(homeVixDir, cwd string) []string {
-	var out []string
-	if homeVixDir != "" {
-		out = append(out, filepath.Join(homeVixDir, "settings.json"))
+// defaultLanguagesPaths returns the canonical [home/config/languages.json]
+// list used by stateless tool handlers that don't have a thread-level
+// VixPaths available. Languages are home-only (not layered with the project),
+// so this is a single-element slice. Per-thread config-dir overrides are
+// handled at the thread layer.
+func defaultLanguagesPaths(homeVixDir string) []string {
+	if homeVixDir == "" {
+		return nil
 	}
-	if cwd != "" {
-		out = append(out, filepath.Join(cwd, ".vix", "settings.json"))
-	}
-	return out
+	return []string{filepath.Join(homeVixDir, "config", "languages.json")}
 }
 
 // fileLocks is a per-file mutex registry to ensure vfsEdit's read→minify→write
@@ -200,12 +198,79 @@ func vfsFormat(absPath string, cfg *lsp.FormatterConfig) error {
 	return nil
 }
 
-// VfsEdit performs an edit on a VFS-managed file.
-// It minifies the current file content, matches oldString against the minified
-// representation, writes the new minified content back to disk, then runs the
-// formatter to restore valid source.
+// projectSpan maps a byte range [outStart, outEnd) in the minified output back
+// to a byte range [srcStart, srcEnd) in the original source, using the position
+// map produced by minifyWithTreeSitterMapped. segs must be sorted by outStart
+// (as emitted), non-overlapping, and increasing.
 //
-// Unlike editFileImpl, there is no fallback on failure — errors are surfaced directly.
+// When a boundary falls inside a token segment it maps linearly, because a
+// token's text is a verbatim copy of the source bytes it came from. When a
+// boundary falls in a synthetic gap (an inserted separator or merge-prevention
+// space that exists in no source), it snaps to the nearest real token: the start
+// snaps forward to the next token, the end snaps back to the previous token. ok
+// is false when the range cannot be anchored to any token — for example when it
+// lies entirely within synthetic text (an inserted ";" the model matched alone).
+func projectSpan(segs []srcSegment, outStart, outEnd int) (srcStart, srcEnd int, ok bool) {
+	if len(segs) == 0 || outEnd <= outStart {
+		return 0, 0, false
+	}
+
+	// Resolve srcStart from outStart: the first segment whose end is past it.
+	startFound := false
+	for _, s := range segs {
+		if outStart < s.outStart+s.length {
+			if outStart >= s.outStart {
+				srcStart = s.srcStart + (outStart - s.outStart) // inside the token
+			} else {
+				srcStart = s.srcStart // in the gap before it: snap forward
+			}
+			startFound = true
+			break
+		}
+	}
+	if !startFound {
+		return 0, 0, false
+	}
+
+	// Resolve srcEnd from the last matched byte: the last segment at/before it.
+	last := outEnd - 1
+	endFound := false
+	for i := len(segs) - 1; i >= 0; i-- {
+		s := segs[i]
+		if last >= s.outStart {
+			if last < s.outStart+s.length {
+				srcEnd = s.srcStart + (last - s.outStart) + 1 // inside the token
+			} else {
+				srcEnd = s.srcStart + s.length // in the gap after it: snap back
+			}
+			endFound = true
+			break
+		}
+	}
+	if !endFound {
+		return 0, 0, false
+	}
+
+	if srcStart >= srcEnd {
+		return 0, 0, false
+	}
+	return srcStart, srcEnd, true
+}
+
+// VfsEdit performs an edit on a VFS-managed file. The model supplies oldString
+// in the minified representation (as returned by read_minified_file). VfsEdit
+// minifies the current file content while keeping a position map, matches
+// oldString against the minified text, projects the matched span back onto exact
+// byte offsets in the original source, and splices newString into those bytes —
+// touching only the matched region and leaving all surrounding whitespace,
+// indentation, comments, and formatting untouched. The on-disk file is never
+// rewritten in minified form.
+//
+// homeVixDir is retained for signature compatibility with the other Vfs helpers;
+// the splice path needs no formatter.
+//
+// Unlike editFileImpl, there is no fallback on failure — errors are surfaced
+// directly (callers fall back to editFileImpl on errVFSUnsupported).
 func VfsEdit(cwd string, allowedDirs []string, homeVixDir, path, oldString, newString string, keepComments bool) (message string, lineOffset int, err error) {
 	absPath, pathErr := resolvePathInAllowed(cwd, allowedDirs, path)
 	if pathErr != nil {
@@ -221,7 +286,9 @@ func VfsEdit(cwd string, allowedDirs []string, homeVixDir, path, oldString, newS
 		return "", 0, err
 	}
 
-	minifiedText, err := minifyWithTreeSitter(string(rawBytes), path, keepComments)
+	// Minify the current file content and keep the position map so the match
+	// can be projected back onto exact byte offsets in the unminified source.
+	minifiedText, segs, err := minifyWithTreeSitterMapped(string(rawBytes), path, keepComments)
 	if err != nil || minifiedText == "" {
 		return "", 0, errVFSUnsupported
 	}
@@ -234,26 +301,38 @@ func VfsEdit(cwd string, allowedDirs []string, homeVixDir, path, oldString, newS
 		return "", 0, fmt.Errorf("old_string found %d times (must be unique)", count)
 	}
 
-	idx := strings.Index(minifiedText, oldString)
-	lineOffset = strings.Count(minifiedText[:idx], "\n")
+	outStart := strings.Index(minifiedText, oldString)
+	outEnd := outStart + len(oldString)
 
-	newMinified := strings.Replace(minifiedText, oldString, newString, 1)
+	srcStart, srcEnd, ok := projectSpan(segs, outStart, outEnd)
+	if !ok {
+		return "", 0, errors.New("old_string matched only inserted separators and cannot be mapped back to the source file")
+	}
 
-	if err := os.WriteFile(absPath, []byte(newMinified), 0o644); err != nil {
+	// Splice the replacement into the original (unminified) source, touching
+	// only the matched byte range.
+	newSource := make([]byte, 0, srcStart+len(newString)+(len(rawBytes)-srcEnd))
+	newSource = append(newSource, rawBytes[:srcStart]...)
+	newSource = append(newSource, newString...)
+	newSource = append(newSource, rawBytes[srcEnd:]...)
+
+	// lineOffset is reported in the source domain so the diff preview shows real
+	// file line numbers.
+	lineOffset = strings.Count(string(rawBytes[:srcStart]), "\n")
+
+	// Preserve the existing file mode (matches editFileImpl's mode==0 behavior).
+	mode := os.FileMode(0o644)
+	if st, statErr := os.Stat(absPath); statErr == nil {
+		mode = st.Mode().Perm()
+	}
+	if err := os.WriteFile(absPath, newSource, mode); err != nil {
+		return "", 0, err
+	}
+	if err := os.Chmod(absPath, mode); err != nil {
 		return "", 0, err
 	}
 
-	// Run formatter if configured.
-	extMap, formatters, _ := loadFormatterConfigs(defaultSettingsPaths(homeVixDir, cwd))
-	lang := extMap[strings.ToLower(filepath.Ext(path))]
-	msg := fmt.Sprintf("Edited %s (replaced 1 occurrence).", path)
-	if cfg, ok := formatters[lang]; ok {
-		if fmtErr := vfsFormat(absPath, cfg); fmtErr != nil {
-			msg += fmt.Sprintf("\n\nWARNING: %v. File is left on disk in minified form; subsequent edits may fail to match until it is reformatted manually.", fmtErr)
-		}
-	}
-
-	return msg, lineOffset, nil
+	return fmt.Sprintf("Edited %s (replaced 1 occurrence).", path), lineOffset, nil
 }
 
 // VfsWrite writes minified content to a VFS-managed file, then runs the
@@ -285,7 +364,7 @@ func VfsWrite(cwd string, allowedDirs []string, homeVixDir, path, content string
 	}
 
 	// Run formatter if configured.
-	extMap, formatters, _ := loadFormatterConfigs(defaultSettingsPaths(homeVixDir, cwd))
+	extMap, formatters, _ := loadFormatterConfigs(defaultLanguagesPaths(homeVixDir))
 	lang := extMap[strings.ToLower(filepath.Ext(path))]
 	msg := fmt.Sprintf("Wrote %d bytes to %s", len(encoded), path)
 	if cfg, ok := formatters[lang]; ok {

@@ -17,14 +17,14 @@ import (
 
 // orchestratorAllowedTools is the whitelist of tools callable from tool_orchestrator.
 var orchestratorAllowedTools = map[string]bool{
-	"read_file":  true,
-	"write_file": true,
-	"edit_file":  true,
+	"read_file":   true,
+	"write_file":  true,
+	"edit_file":   true,
 	"delete_file": true,
-	"bash":       true,
-	"grep":       true,
-	"glob_files": true,
-	"lsp_query":  true,
+	"bash":        true,
+	"grep":        true,
+	"glob_files":  true,
+	"lsp_query":   true,
 }
 
 // orchestratorTimeout is the maximum duration for a tool_orchestrator workflow.

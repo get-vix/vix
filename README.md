@@ -14,9 +14,19 @@ Sleek, Fast and Token Efficient AI Coding Agent
 
 <div align="center">
 
-## Demo
+## Features
 
 </div>
+
+✦ **Self-Evolving Agent**: vix writes its own scheduled jobs, watchers, and alerts
+
+✦ **Token-Efficient by Design**: stem agents maximize cache reuse across phases, and a Tree-sitter virtual filesystem lets the agent read and edit minified code — 20–50% fewer tokens with zero loss of meaning, benchmark-backed
+
+✦ **Programmable Workflows**: define your own multi-phase agent pipelines in JSON — agent, bash, and tool steps with templating, branching, parallelism, and history forking
+
+✦ **Whiteboard Mode**: have vix present its plan to you on a visual canvas with a voice AI walkthrough, and challenge it like a design review
+
+✦ **All the features you expect from an agent**: skills, MCP servers, subagents, LSP-backed code intelligence, sandboxed execution, multiple providers (Anthropic, OpenAI, OpenRouter, Bedrock...)
 
 <div align="center">
 
@@ -64,7 +74,7 @@ All benchmarks are fully reproducible and include the full LLM transcripts and p
 </div>
 
 > [!WARNING]
-> Works only for macOS and Linus for now.
+> Works only for macOS and Linux for now.
 
 ```bash
 curl -fsSL https://getvix.dev/install.sh | bash
@@ -88,6 +98,21 @@ and then you can start as many instances you want, each of them are isolated:
 ```bash
 vix
 ```
+
+<div align="center">
+
+## Providers & Configuration
+
+</div>
+
+Vix ships with built-in support for **Anthropic, OpenAI, OpenRouter, AWS Bedrock, Ollama, llama.cpp** and more.
+
+You can add your own provider — or override any setting on a built-in one — by dropping a
+`providers.json` file into `~/.vix/` or `./.vix/` (project-level). The file is merged on top
+of the embedded defaults: new providers are appended, existing ones are field-patched.
+
+See **[PROVIDERS.md](PROVIDERS.md)** for the full field reference, common recipes, model
+discovery, and OAuth configuration.
 
 <div align="center">
 

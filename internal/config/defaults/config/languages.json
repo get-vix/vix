@@ -1,0 +1,150 @@
+{
+  "languages": [
+    {
+      "extensions": [
+        ".go"
+      ],
+      "name": "go"
+    },
+    {
+      "extensions": [
+        ".py"
+      ],
+      "name": "python"
+    },
+    {
+      "extensions": [
+        ".js",
+        ".jsx"
+      ],
+      "name": "javascript"
+    },
+    {
+      "extensions": [
+        ".ts",
+        ".tsx"
+      ],
+      "name": "typescript"
+    },
+    {
+      "extensions": [
+        ".rs"
+      ],
+      "name": "rust"
+    },
+    {
+      "extensions": [
+        ".rb"
+      ],
+      "name": "ruby"
+    },
+    {
+      "extensions": [
+        ".java"
+      ],
+      "name": "java"
+    },
+    {
+      "extensions": [
+        ".kt",
+        ".kts"
+      ],
+      "name": "kotlin"
+    },
+    {
+      "extensions": [
+        ".swift"
+      ],
+      "name": "swift"
+    },
+    {
+      "extensions": [
+        ".c",
+        ".h"
+      ],
+      "name": "c"
+    },
+    {
+      "extensions": [
+        ".cpp",
+        ".hpp"
+      ],
+      "name": "cpp"
+    },
+    {
+      "extensions": [
+        ".cs"
+      ],
+      "name": "csharp"
+    },
+    {
+      "extensions": [
+        ".php"
+      ],
+      "name": "php"
+    },
+    {
+      "extensions": [
+        ".lua"
+      ],
+      "name": "lua"
+    },
+    {
+      "extensions": [
+        ".sh",
+        ".bash",
+        ".zsh"
+      ],
+      "name": "shell"
+    },
+    {
+      "extensions": [
+        ".yml",
+        ".yaml"
+      ],
+      "name": "yaml"
+    },
+    {
+      "extensions": [
+        ".json"
+      ],
+      "name": "json"
+    },
+    {
+      "extensions": [
+        ".toml"
+      ],
+      "name": "toml"
+    },
+    {
+      "extensions": [
+        ".md"
+      ],
+      "name": "markdown"
+    },
+    {
+      "extensions": [
+        ".html"
+      ],
+      "name": "html"
+    },
+    {
+      "extensions": [
+        ".css"
+      ],
+      "name": "css"
+    },
+    {
+      "extensions": [
+        ".scss"
+      ],
+      "name": "scss"
+    },
+    {
+      "extensions": [
+        ".sql"
+      ],
+      "name": "sql"
+    }
+  ]
+}

@@ -4,7 +4,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
+	"os"
+	"path/filepath"
 	"testing"
+
+	"github.com/zalando/go-keyring"
 )
 
 // fakeProvider is a test Provider whose APIKey is the access token and whose
@@ -99,6 +104,121 @@ func TestGeneratePKCE(t *testing.T) {
 	want := base64.RawURLEncoding.EncodeToString(sum[:])
 	if challenge != want {
 		t.Errorf("challenge != base64url(sha256(verifier)): got %q want %q", challenge, want)
+	}
+}
+
+func TestFileBackendRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auth.json")
+	f := &fileBackend{path: path}
+
+	if _, ok, _ := f.Get("anthropic-oauth"); ok {
+		t.Fatal("expected no value initially")
+	}
+	if err := f.Set("anthropic-oauth", "secret"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	v, ok, err := f.Get("anthropic-oauth")
+	if err != nil || !ok || v != "secret" {
+		t.Fatalf("Get: v=%q ok=%v err=%v", v, ok, err)
+	}
+	// The plaintext file must be owner-only (0600).
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("auth.json perm = %o, want 600", perm)
+	}
+	if err := f.Delete("anthropic-oauth"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, ok, _ := f.Get("anthropic-oauth"); ok {
+		t.Fatal("expected no value after Delete")
+	}
+	// Deleting an absent key is a no-op, not an error.
+	if err := f.Delete("missing"); err != nil {
+		t.Errorf("Delete(missing): %v", err)
+	}
+}
+
+func TestSelectDefaultBackend(t *testing.T) {
+	authFile := filepath.Join(t.TempDir(), "auth.json")
+	t.Cleanup(func() { SetAuthFilePath("") })
+	SetAuthFilePath(authFile)
+
+	// Keyring usable -> keyring backend.
+	keyring.MockInit()
+	if _, ok := selectDefaultBackend().(keyringBackend); !ok {
+		t.Errorf("keyring usable: expected keyringBackend, got %T", selectDefaultBackend())
+	}
+
+	// Keyring unusable -> plaintext file backend at the configured path (no
+	// opt-in required; mirrors the API-key store).
+	keyring.MockInitWithError(errors.New("no keychain"))
+	b, ok := selectDefaultBackend().(*fileBackend)
+	if !ok {
+		t.Fatalf("keyless: expected *fileBackend, got %T", selectDefaultBackend())
+	}
+	if b.path != authFile {
+		t.Errorf("fileBackend path = %q, want %q", b.path, authFile)
+	}
+}
+
+func TestLoginPersistsToFileFallback(t *testing.T) {
+	p := &fakeProvider{id: "fake-file-login"}
+	RegisterProvider(p)
+	defer UnregisterProvider(p.id)
+
+	authFile := filepath.Join(t.TempDir(), "auth.json")
+	st := NewStorage(&fileBackend{path: authFile})
+
+	if err := st.Login(context.Background(), p.id, LoginCallbacks{}); err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+	creds, ok, err := st.Get(p.id)
+	if err != nil || !ok {
+		t.Fatalf("Get after login: ok=%v err=%v", ok, err)
+	}
+	if creds.Access != "logged-in" {
+		t.Errorf("unexpected stored creds: %+v", creds)
+	}
+	if _, err := os.Stat(authFile); err != nil {
+		t.Errorf("expected auth.json written: %v", err)
+	}
+}
+
+// TestDefaultStorageFallsBackToFileWithoutKeychain is the regression for #56: on
+// a machine with no usable OS keychain, an OAuth login must persist to the
+// plaintext auth.json automatically (no opt-in flag). It also exercises the
+// ordering hazard that broke the old opt-in: DefaultStorage() is used *before*
+// the auth-file path is wired in, and SetAuthFilePath must invalidate the cached
+// backend so the login still lands in the intended auth.json.
+func TestDefaultStorageFallsBackToFileWithoutKeychain(t *testing.T) {
+	p := &fakeProvider{id: "fake-fallback-login"}
+	RegisterProvider(p)
+	defer UnregisterProvider(p.id)
+
+	keyring.MockInitWithError(errors.New("no keychain"))
+	t.Cleanup(func() { SetAuthFilePath("") })
+
+	// Early use before the path is configured (as via startup credential
+	// resolution): builds a storage over a temp-file backend.
+	SetAuthFilePath("")
+	_ = DefaultStorage()
+
+	// The process then wires in the real path; this must rebuild the storage.
+	authFile := filepath.Join(t.TempDir(), "auth.json")
+	SetAuthFilePath(authFile)
+
+	if err := DefaultStorage().Login(context.Background(), p.id, LoginCallbacks{}); err != nil {
+		t.Fatalf("keyless login should fall back to file, got: %v", err)
+	}
+	creds, ok, err := DefaultStorage().Get(p.id)
+	if err != nil || !ok || creds.Access != "logged-in" {
+		t.Fatalf("expected stored creds after fallback login: ok=%v err=%v creds=%+v", ok, err, creds)
+	}
+	if _, err := os.Stat(authFile); err != nil {
+		t.Errorf("expected token persisted to %s: %v", authFile, err)
 	}
 }
 

@@ -14,7 +14,7 @@ func TestEmbeddedLoadsAndValidates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadEmbedded: %v", err)
 	}
-	wantIDs := []string{"anthropic", "openai", "openrouter", "minimax", "mimo"}
+	wantIDs := []string{"anthropic", "openai", "openrouter", "minimax", "mimo", "deepseek", "bedrock", "ollama", "llamacpp", "lemonade"}
 	if got := reg.IDs(); len(got) != len(wantIDs) {
 		t.Fatalf("IDs = %v, want %v", got, wantIDs)
 	}
@@ -46,6 +46,10 @@ func TestGoldenProviderData(t *testing.T) {
 		{"openrouter", "openrouter", WireChatCompletions, EffortOpenAIReasoning, AuthSchemeBearer, "https://openrouter.ai/api/v1", EffortStyleReasoningEffort},
 		{"minimax", "minimax", WireChatCompletions, EffortAdaptive, AuthSchemeBearer, "https://api.minimax.io/v1", EffortStyleReasoningSplit},
 		{"mimo", "mimo", WireChatCompletions, EffortOpenAIReasoning, AuthSchemeBearer, "https://api.xiaomimimo.com/v1", EffortStyleReasoningEffort},
+		{"bedrock", "bedrock", WireMessages, EffortAdaptive, AuthSchemeBearer, "https://bedrock-runtime.us-east-1.amazonaws.com/", EffortStyleNone},
+		{"ollama", "ollama", WireChatCompletions, "", AuthSchemeBearer, "http://localhost:11434/v1", EffortStyleNone},
+		{"llamacpp", "llamacpp", WireChatCompletions, "", AuthSchemeBearer, "http://localhost:8080/v1", EffortStyleNone},
+		{"lemonade", "lemonade", WireChatCompletions, "", AuthSchemeBearer, "http://localhost:13305/v1", EffortStyleNone},
 	}
 	for _, c := range cases {
 		p, ok := reg.Lookup(c.id)
@@ -122,6 +126,7 @@ func TestParseModel(t *testing.T) {
 		{"openrouter/openai/gpt-5.1", "openrouter", "openai/gpt-5.1", false},
 		{"minimax/MiniMax-M2.7", "minimax", "MiniMax-M2.7", false},
 		{"mimo/mimo-v2.5-pro", "mimo", "mimo-v2.5-pro", false},
+		{"bedrock/anthropic.claude-sonnet-4-5-v2:0", "bedrock", "anthropic.claude-sonnet-4-5-v2:0", false},
 		{"", "", "", true},
 		{"claude-sonnet-4-6", "", "", true},
 		{"gemini/pro", "", "", true},
@@ -198,7 +203,7 @@ func TestDefaultEffort(t *testing.T) {
 func TestModelCatalogue(t *testing.T) {
 	reg, _ := loadEmbedded()
 	for _, p := range reg.All() {
-		if len(p.Models) == 0 {
+		if len(p.Models) == 0 && !p.Local {
 			t.Errorf("%s: no models — a shipped provider must list at least one", p.ID)
 		}
 		prefix := p.Prefix()
@@ -359,13 +364,93 @@ func TestValidationRejections(t *testing.T) {
 		return f
 	}
 	for _, name := range []string{"wire", "scheme", "http", "newver", "authhost"} {
-		if err := validate(base(name)); err == nil {
+		if err := validate(base(name), interpolate); err == nil {
 			t.Errorf("validate(%s): expected error, got nil", name)
 		}
 	}
 	// Sanity: the unmodified base validates.
-	if err := validate(base("")); err != nil {
+	if err := validate(base(""), interpolate); err != nil {
 		t.Errorf("validate(ok): unexpected error %v", err)
+	}
+}
+
+// TestLocalProviderValidation covers the local-provider relaxations: a local
+// provider may use a plain-HTTP base URL on any host (loopback or a LAN box),
+// and keyless ("none") credential methods are allowed only within their
+// constraints. Non-local providers still require HTTPS.
+func TestLocalProviderValidation(t *testing.T) {
+	mk := func(local bool, baseURL string, cred []CredentialMethod) File {
+		return File{
+			SchemaVersion: 1,
+			Providers: []ProviderSpec{{
+				ID: "x", ModelPrefix: "x", WireFormat: WireChatCompletions, Local: local,
+				Inference:  InferenceSpec{BaseURL: baseURL, AuthScheme: AuthSchemeBearer},
+				Credential: cred,
+			}},
+		}
+	}
+	noneCred := []CredentialMethod{{Kind: CredNone}}
+	keyCred := []CredentialMethod{{Kind: CredAPIKey, EnvVar: "X"}}
+
+	cases := []struct {
+		name    string
+		f       File
+		wantErr bool
+	}{
+		{"local loopback http ok", mk(true, "http://localhost:11434/v1", noneCred), false},
+		{"local 127.0.0.1 http ok", mk(true, "http://127.0.0.1:8080/v1", noneCred), false},
+		{"local https ok", mk(true, "https://ollama.example/v1", noneCred), false},
+		{"local LAN hostname http ok", mk(true, "http://freyr.local:8080/v1", noneCred), false},
+		{"local LAN ip http ok", mk(true, "http://192.168.1.10:11434/v1", noneCred), false},
+		{"non-local loopback http rejected", mk(false, "http://localhost:11434/v1", keyCred), true},
+		{"non-local LAN http rejected", mk(false, "http://192.168.1.10:11434/v1", keyCred), true},
+		{"none with env_var rejected", mk(true, "http://localhost:11434/v1",
+			[]CredentialMethod{{Kind: CredNone, EnvVar: "X"}}), true},
+		{"none with keyring rejected", mk(true, "http://localhost:11434/v1",
+			[]CredentialMethod{{Kind: CredNone, Keyring: "x-api-key"}}), true},
+		{"api_key then none ok", mk(true, "http://localhost:11434/v1",
+			[]CredentialMethod{{Kind: CredAPIKey, EnvVar: "X"}, {Kind: CredNone}}), false},
+	}
+	for _, c := range cases {
+		err := validate(c.f, interpolate)
+		if c.wantErr && err == nil {
+			t.Errorf("%s: expected error, got nil", c.name)
+		}
+		if !c.wantErr && err != nil {
+			t.Errorf("%s: unexpected error %v", c.name, err)
+		}
+	}
+}
+
+// TestLocalFlagMergeAndGolden pins the shipped local providers and checks an
+// overlay can mark a provider local.
+func TestLocalFlagMergeAndGolden(t *testing.T) {
+	reg, _ := loadEmbedded()
+	for _, id := range []string{"ollama", "llamacpp"} {
+		p, ok := reg.Lookup(id)
+		if !ok || !p.Local {
+			t.Errorf("%s: expected shipped local provider, got %+v", id, p)
+		}
+		hasNone := false
+		for _, m := range p.Credential {
+			if m.Kind == CredNone {
+				hasNone = true
+			}
+		}
+		if !hasNone {
+			t.Errorf("%s: expected a none credential method", id)
+		}
+	}
+	for _, id := range []string{"anthropic", "openai", "openrouter", "minimax", "mimo", "bedrock"} {
+		p, _ := reg.Lookup(id)
+		if p.Local {
+			t.Errorf("%s: must not be local", id)
+		}
+	}
+	// Overlay merge preserves the local flag when patching other fields.
+	merged := mergeProvider(ProviderSpec{ID: "ollama", Local: true}, ProviderSpec{ID: "ollama", DisplayName: "My Ollama"})
+	if !merged.Local || merged.DisplayName != "My Ollama" {
+		t.Errorf("mergeProvider lost local flag or patch: %+v", merged)
 	}
 }
 
@@ -385,4 +470,47 @@ func resetDefault() {
 	defaultMu.Lock()
 	defaultReg = nil
 	defaultMu.Unlock()
+}
+
+// TestEmbeddedLoadIgnoresEnv asserts the embedded load path — which panics on
+// error in production via Default() — validates the shipped file against its
+// built-in defaults, ignoring the process environment. A runtime override of a
+// local provider's base URL, even a malformed one, must never break it. This is
+// the regression guard for the init-time panic reported when LLAMACPP_BASE_URL
+// pointed at a non-loopback host.
+func TestEmbeddedLoadIgnoresEnv(t *testing.T) {
+	for _, val := range []string{"http://freyr.local:8080/v1", "ftp://nope", "not a url"} {
+		t.Setenv("LLAMACPP_BASE_URL", val)
+		if _, err := loadEmbedded(); err != nil {
+			t.Errorf("LLAMACPP_BASE_URL=%q: loadEmbedded must ignore env, got %v", val, err)
+		}
+	}
+}
+
+// TestConfigureValidatesEffectiveURLs covers the Configure path, which resolves
+// ${env:...} against the real environment and reports problems gracefully (a
+// returned error, never a panic). A LAN host over plain HTTP is accepted for a
+// local provider; a malformed override is rejected.
+func TestConfigureValidatesEffectiveURLs(t *testing.T) {
+	t.Run("LAN host accepted", func(t *testing.T) {
+		t.Setenv("LLAMACPP_BASE_URL", "http://freyr.local:8080/v1")
+		t.Cleanup(resetDefault)
+		if err := Configure(nil); err != nil {
+			t.Fatalf("Configure with LAN llamacpp base URL: %v", err)
+		}
+		p, ok := Default().Lookup("llamacpp")
+		if !ok {
+			t.Fatal("llamacpp missing after Configure")
+		}
+		if got := p.Inference.Resolve().BaseURL; got != "http://freyr.local:8080/v1" {
+			t.Errorf("resolved base URL = %q, want LAN host", got)
+		}
+	})
+	t.Run("malformed override rejected gracefully", func(t *testing.T) {
+		t.Setenv("LLAMACPP_BASE_URL", "ftp://nope")
+		t.Cleanup(resetDefault)
+		if err := Configure(nil); err == nil {
+			t.Error("Configure: expected error for non-HTTP(S) base URL, got nil")
+		}
+	})
 }

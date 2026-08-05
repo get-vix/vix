@@ -10,22 +10,22 @@ import (
 	"time"
 )
 
-// newIntegrationSession builds a Session backed by a Server with all tool
+// newIntegrationThread builds a Thread backed by a Server with all tool
 // handlers registered, so executeToolDirect can actually dispatch to
 // read_file / write_file / edit_file / delete_file / bash / grep /
 // glob_files. Only the fields exercised by the deny-list path are set.
-func newIntegrationSession(t *testing.T, cwd string, deny []string) *Session {
-	return newIntegrationSessionFull(t, cwd, deny, nil)
+func newIntegrationThread(t *testing.T, cwd string, deny []string) *Thread {
+	return newIntegrationThreadFull(t, cwd, deny, nil)
 }
 
-// newIntegrationSessionFull is like newIntegrationSession but also seeds
+// newIntegrationThreadFull is like newIntegrationThread but also seeds
 // the URL deny list. Kept as a separate constructor so existing callers
 // don't need updating.
-func newIntegrationSessionFull(t *testing.T, cwd string, denyPaths, denyURLs []string) *Session {
+func newIntegrationThreadFull(t *testing.T, cwd string, denyPaths, denyURLs []string) *Thread {
 	t.Helper()
 	srv := &Server{handlers: make(map[string]HandlerFunc)}
 	RegisterToolHandlers(srv)
-	s := &Session{
+	s := &Thread{
 		server:                         srv,
 		cwd:                            cwd,
 		headless:                       true,
@@ -51,7 +51,7 @@ func TestIntegration_ReadFile_Denied(t *testing.T) {
 	api := filepath.Join(secrets, "api.txt")
 	os.WriteFile(api, []byte("SUPER_SECRET"), 0o600)
 
-	s := newIntegrationSession(t, root, []string{secrets})
+	s := newIntegrationThread(t, root, []string{secrets})
 
 	// Absolute form.
 	res := s.executeToolDirect(context.Background(), "read_file", map[string]any{"path": api})
@@ -76,7 +76,7 @@ func TestIntegration_ReadFile_SafeStillWorks(t *testing.T) {
 	safeFile := filepath.Join(root, "README.md")
 	os.WriteFile(safeFile, []byte("hello world"), 0o600)
 
-	s := newIntegrationSession(t, root, []string{secrets})
+	s := newIntegrationThread(t, root, []string{secrets})
 	res := s.executeToolDirect(context.Background(), "read_file", map[string]any{"path": safeFile})
 	if res == nil {
 		t.Fatal("nil result")
@@ -95,7 +95,7 @@ func TestIntegration_WriteFile_Denied_NoDiskChange(t *testing.T) {
 	os.MkdirAll(secrets, 0o755)
 	target := filepath.Join(secrets, "new.txt")
 
-	s := newIntegrationSession(t, root, []string{secrets})
+	s := newIntegrationThread(t, root, []string{secrets})
 	res := s.executeToolDirect(context.Background(), "write_file", map[string]any{"path": target, "content": "boom"})
 	if res == nil || !res.IsError {
 		t.Fatalf("expected deny, got %+v", res)
@@ -113,7 +113,7 @@ func TestIntegration_EditFile_Denied_NoDiskChange(t *testing.T) {
 	original := "keep me"
 	os.WriteFile(target, []byte(original), 0o600)
 
-	s := newIntegrationSession(t, root, []string{secrets})
+	s := newIntegrationThread(t, root, []string{secrets})
 	// readFiles seeded so read-gate isn't the reason for denial.
 	s.readFiles[target] = true
 
@@ -139,7 +139,7 @@ func TestIntegration_DeleteFile_Denied_StillExists(t *testing.T) {
 	target := filepath.Join(secrets, "keep.txt")
 	os.WriteFile(target, []byte("alive"), 0o600)
 
-	s := newIntegrationSession(t, root, []string{secrets})
+	s := newIntegrationThread(t, root, []string{secrets})
 	res := s.executeToolDirect(context.Background(), "delete_file", map[string]any{"path": target})
 	if res == nil || !res.IsError {
 		t.Fatalf("expected deny, got %+v", res)
@@ -159,7 +159,7 @@ func TestIntegration_Bash_Denied_SideEffectsBlocked(t *testing.T) {
 	target := filepath.Join(secrets, "keep.txt")
 	os.WriteFile(target, []byte("alive"), 0o600)
 
-	s := newIntegrationSession(t, root, []string{secrets})
+	s := newIntegrationThread(t, root, []string{secrets})
 
 	// rm -rf with absolute path
 	res := s.executeToolDirect(context.Background(), "bash", map[string]any{
@@ -192,7 +192,7 @@ func TestIntegration_Bash_SafeCommandRuns(t *testing.T) {
 	secrets := filepath.Join(root, "secrets")
 	os.MkdirAll(secrets, 0o755)
 
-	s := newIntegrationSession(t, root, []string{secrets})
+	s := newIntegrationThread(t, root, []string{secrets})
 	res := s.executeToolDirect(context.Background(), "bash", map[string]any{
 		"command": "echo hello",
 	})
@@ -216,7 +216,7 @@ func TestIntegration_Grep_FiltersDeniedMatches(t *testing.T) {
 	os.WriteFile(filepath.Join(secrets, "s.txt"), []byte("needle"), 0o600)
 	os.WriteFile(filepath.Join(safe, "a.txt"), []byte("needle"), 0o600)
 
-	s := newIntegrationSession(t, root, []string{secrets})
+	s := newIntegrationThread(t, root, []string{secrets})
 	res := s.executeToolDirect(context.Background(), "grep", map[string]any{
 		"pattern": "needle",
 		"path":    ".",
@@ -244,7 +244,7 @@ func TestIntegration_GlobFiles_FiltersDeniedPaths(t *testing.T) {
 	os.WriteFile(filepath.Join(secrets, "s.txt"), []byte("x"), 0o600)
 	os.WriteFile(filepath.Join(safe, "a.txt"), []byte("y"), 0o600)
 
-	s := newIntegrationSession(t, root, []string{secrets})
+	s := newIntegrationThread(t, root, []string{secrets})
 	res := s.executeToolDirect(context.Background(), "glob_files", map[string]any{
 		"pattern": "**/*.txt",
 	})
@@ -269,7 +269,7 @@ func TestIntegration_DenyBeatsAllow(t *testing.T) {
 	target := filepath.Join(secrets, "api.txt")
 	os.WriteFile(target, []byte("x"), 0o600)
 
-	s := newIntegrationSession(t, root, []string{secrets})
+	s := newIntegrationThread(t, root, []string{secrets})
 	// Explicitly allow the same path via allowedDirs — deny must still win.
 	s.addAllowedDir(secrets)
 
@@ -287,7 +287,7 @@ func TestIntegration_WebFetch_Denied_NoNetworkCall(t *testing.T) {
 	// dialing out. (Negative-path test: the rejection itself is the only
 	// observable side effect.)
 	root := testRoot(t)
-	s := newIntegrationSessionFull(t, root, nil, []string{"bad.example.com"})
+	s := newIntegrationThreadFull(t, root, nil, []string{"bad.example.com"})
 
 	res := s.executeToolDirect(context.Background(), "web_fetch", map[string]any{
 		"url": "https://api.bad.example.com/leak",
@@ -305,7 +305,7 @@ func TestIntegration_WebFetch_AllowedURL_HandlerRuns(t *testing.T) {
 	// the handler's network result (it would fetch a real site and be
 	// flaky); we only assert the error message is not the deny-list one.
 	root := testRoot(t)
-	s := newIntegrationSessionFull(t, root, nil, []string{"bad.example.com"})
+	s := newIntegrationThreadFull(t, root, nil, []string{"bad.example.com"})
 
 	res := s.executeToolDirect(context.Background(), "web_fetch", map[string]any{
 		"url": "https://safe.example.org/x",
@@ -324,7 +324,7 @@ func TestIntegration_WebFetch_AllowedURL_HandlerRuns(t *testing.T) {
 // rejected.
 func TestIntegration_WebFetch_PortAndUserinfoBypassAttempts(t *testing.T) {
 	root := testRoot(t)
-	s := newIntegrationSessionFull(t, root, nil, []string{"bad.example.com"})
+	s := newIntegrationThreadFull(t, root, nil, []string{"bad.example.com"})
 
 	for _, attempt := range []string{
 		"https://bad.example.com:8443/x",
@@ -346,7 +346,7 @@ func TestIntegration_Bash_MixedURLs_OneDenied(t *testing.T) {
 		t.Skip()
 	}
 	root := testRoot(t)
-	s := newIntegrationSessionFull(t, root, nil, []string{"bad.example.com"})
+	s := newIntegrationThreadFull(t, root, nil, []string{"bad.example.com"})
 
 	res := s.executeToolDirect(context.Background(), "bash", map[string]any{
 		"command": "curl https://safe.example.org/a; curl https://bad.example.com/b",
@@ -362,7 +362,7 @@ func TestIntegration_Bash_MixedURLs_OneDenied(t *testing.T) {
 // deny_list.)
 func TestIntegration_NeitherListMatches_Passthrough(t *testing.T) {
 	root := testRoot(t)
-	s := newIntegrationSessionFull(t, root, []string{filepath.Join(root, "denied")}, []string{"bad.example.com"})
+	s := newIntegrationThreadFull(t, root, []string{filepath.Join(root, "denied")}, []string{"bad.example.com"})
 
 	res := s.executeToolDirect(context.Background(), "web_fetch", map[string]any{
 		"url": "https://safe.example.org/x",
@@ -377,7 +377,7 @@ func TestIntegration_Bash_DeniedURL_Refused(t *testing.T) {
 		t.Skip()
 	}
 	root := testRoot(t)
-	s := newIntegrationSessionFull(t, root, nil, []string{"bad.example.com"})
+	s := newIntegrationThreadFull(t, root, nil, []string{"bad.example.com"})
 
 	res := s.executeToolDirect(context.Background(), "bash", map[string]any{
 		"command": "curl https://bad.example.com/leak",
@@ -398,7 +398,7 @@ func TestIntegration_SubsequentSafeCallStillWorks(t *testing.T) {
 	safeFile := filepath.Join(root, "README.md")
 	os.WriteFile(safeFile, []byte("readme"), 0o600)
 
-	s := newIntegrationSession(t, root, []string{secrets})
+	s := newIntegrationThread(t, root, []string{secrets})
 
 	// First call: denied.
 	r1 := s.executeToolDirect(context.Background(), "read_file", map[string]any{"path": filepath.Join(secrets, "x.txt")})

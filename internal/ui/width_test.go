@@ -41,7 +41,7 @@ func TestRenderDiffDetailWidthShrinks(t *testing.T) {
 	}
 }
 
-// newWidthTestModel builds a minimal Model with one session at the given width.
+// newWidthTestModel builds a minimal Model with one thread at the given width.
 func newWidthTestModel(width int) *Model {
 	m := &Model{
 		width:      width,
@@ -50,8 +50,8 @@ func newWidthTestModel(width int) *Model {
 		mdRenderer: NewMarkdownRenderer(width-4, true, NewStyles(true).CodeBoxBorderStyle),
 		testMode:   true,
 	}
-	m.sessions = []*SessionState{{}}
-	m.selectedSession = 0
+	m.threads = []*ThreadState{{}}
+	m.selectedThread = 0
 	m.lastChatWidth = m.effectiveChatWidth()
 	return m
 }
@@ -65,8 +65,8 @@ func TestReconcileChatWidthShrinksWhenPanelOpens(t *testing.T) {
 		t.Fatalf("initial renderer width = %d, want %d", got, want)
 	}
 
-	// Open the panel (per-session) without manually syncing width.
-	m.sessions[0].rightPanel.visible = true
+	// Open the panel (per-thread) without manually syncing width.
+	m.threads[0].rightPanel.visible = true
 
 	m.reconcileChatWidth()
 
@@ -90,26 +90,26 @@ func TestReconcileChatWidthNoopWhenUnchanged(t *testing.T) {
 	}
 }
 
-// TestReconcileChatWidthOnSessionSwitch verifies switching to a session whose
+// TestReconcileChatWidthOnThreadSwitch verifies switching to a thread whose
 // panel is open reduces the rendered width even though the renderer is global.
-func TestReconcileChatWidthOnSessionSwitch(t *testing.T) {
+func TestReconcileChatWidthOnThreadSwitch(t *testing.T) {
 	m := newWidthTestModel(120)
-	// Second session has its panel open.
-	panelSess := &SessionState{}
+	// Second thread has its panel open.
+	panelSess := &ThreadState{}
 	panelSess.rightPanel.visible = true
-	m.sessions = append(m.sessions, panelSess)
+	m.threads = append(m.threads, panelSess)
 
 	// Switch to it and reconcile (as the central Update hook would).
-	m.selectedSession = 1
+	m.selectedThread = 1
 	m.reconcileChatWidth()
 
 	wantInner := (120 - panelWidth) - 4
 	if got := m.mdRenderer.width; got != wantInner {
-		t.Errorf("renderer width after session switch = %d, want %d", got, wantInner)
+		t.Errorf("renderer width after thread switch = %d, want %d", got, wantInner)
 	}
 
-	// Switching back to the panel-less session restores full width.
-	m.selectedSession = 0
+	// Switching back to the panel-less thread restores full width.
+	m.selectedThread = 0
 	m.reconcileChatWidth()
 	if got := m.mdRenderer.width; got != 120-4 {
 		t.Errorf("renderer width after switching back = %d, want %d", got, 120-4)

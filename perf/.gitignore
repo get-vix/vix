@@ -1,0 +1,6 @@
+# Generated benchmark corpora — large (hundreds of MB / 100k+ files).
+# Regenerate on demand with `make perf-corpus`.
+corpus/
+
+# Partial output written when a benchmark run fails mid-way.
+results/*.partial

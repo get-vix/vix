@@ -288,6 +288,105 @@ func TestOpenAI_StreamMessage_RequestsIncludeForReasoning(t *testing.T) {
 	}
 }
 
+// TestOpenAI_StreamMessage_CodexBackendPayloadQuirks verifies that requests to
+// the ChatGPT/Codex backend carry store=false and omit max_output_tokens. That
+// endpoint rejects the public Responses API defaults/fields with a 400. The
+// regular OpenAI endpoint must keep the public Responses API shape.
+func TestOpenAI_StreamMessage_CodexBackendPayloadQuirks(t *testing.T) {
+	capture := func(codex bool) map[string]any {
+		t.Helper()
+		var (
+			mu     sync.Mutex
+			bodies []map[string]any
+		)
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			raw, _ := io.ReadAll(r.Body)
+			var parsed map[string]any
+			_ = json.Unmarshal(raw, &parsed)
+			mu.Lock()
+			bodies = append(bodies, parsed)
+			mu.Unlock()
+
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(200)
+			f, _ := w.(http.Flusher)
+			fmt.Fprintf(w, "event: response.completed\ndata: %s\n\n", `{"type":"response.completed","sequence_number":1,"response":{"id":"r","object":"response","created_at":1,"status":"completed","model":"gpt-5","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2,"input_tokens_details":{"cached_tokens":0},"output_tokens_details":{"reasoning_tokens":0}},"parallel_tool_calls":false,"tool_choice":"auto","tools":[]}}`)
+			if f != nil {
+				f.Flush()
+			}
+		}))
+		defer srv.Close()
+
+		client, err := NewOpenAI(Config{
+			Credential: config.Credential{Value: "test-key"},
+			Model:      "gpt-5",
+			MaxTokens:  1024,
+			BaseURL:    srv.URL,
+			StreamIdle: 5 * time.Second,
+		})
+		if err != nil {
+			t.Fatalf("NewOpenAI: %v", err)
+		}
+		// The test server URL can't also contain "chatgpt.com", so flip the
+		// codex flag directly to exercise the store=false branch.
+		client.(*openaiClient).codexBackend = codex
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, _, err := client.StreamMessage(ctx, nil, []MessageParam{
+			NewUserMessage(NewTextBlock("hi")),
+		}, nil, nil, nil); err != nil {
+			t.Fatalf("StreamMessage: %v", err)
+		}
+
+		mu.Lock()
+		defer mu.Unlock()
+		if len(bodies) != 1 {
+			t.Fatalf("expected 1 request body, got %d", len(bodies))
+		}
+		return bodies[0]
+	}
+
+	codexBody := capture(true)
+	store, ok := codexBody["store"]
+	if !ok {
+		t.Fatalf("codex backend: expected store field present; body=%v", codexBody)
+	}
+	if store != false {
+		t.Errorf("codex backend: expected store=false, got %v", store)
+	}
+	if _, ok := codexBody["max_output_tokens"]; ok {
+		t.Errorf("codex backend: expected max_output_tokens omitted, got %v", codexBody["max_output_tokens"])
+	}
+
+	regularBody := capture(false)
+	if _, ok := regularBody["store"]; ok {
+		t.Errorf("regular backend: expected store omitted, got %v", regularBody["store"])
+	}
+	if got := regularBody["max_output_tokens"]; got != float64(1024) {
+		t.Errorf("regular backend: expected max_output_tokens=1024, got %v", got)
+	}
+}
+
+// TestIsCodexBackend pins the base-URL detection used to scope store=false.
+func TestIsCodexBackend(t *testing.T) {
+	cases := []struct {
+		url  string
+		want bool
+	}{
+		{"https://chatgpt.com/backend-api/codex", true},
+		{"https://CHATGPT.com/backend-api/codex", true},
+		{"https://api.openai.com/v1", false},
+		{"http://127.0.0.1:8080", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := isCodexBackend(c.url); got != c.want {
+			t.Errorf("isCodexBackend(%q) = %v, want %v", c.url, got, c.want)
+		}
+	}
+}
+
 // TestOpenAI_StreamMessage_IdleTimeout verifies the watchdog fires when
 // the Responses SSE stream goes silent past the idle window.
 func TestOpenAI_StreamMessage_IdleTimeout(t *testing.T) {
@@ -385,6 +484,97 @@ func TestOpenAI_StreamMessage_FunctionCallReassembly(t *testing.T) {
 	}
 	if got := tc.Input["command"]; got != "ls -la" {
 		t.Errorf("ToolCall.Input[command] = %v, want %q", got, "ls -la")
+	}
+}
+
+// TestOpenAI_StreamMessage_KeepsStreamedTextWhenCompletedOutputEmpty captures
+// the Codex backend shape where text is streamed but response.completed.output
+// is empty. The adapter must not persist an empty assistant message.
+func TestOpenAI_StreamMessage_KeepsStreamedTextWhenCompletedOutputEmpty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sseHeader(w)
+		sseSend(w, "response.output_text.delta", `{"type":"response.output_text.delta","sequence_number":1,"output_index":0,"content_index":0,"item_id":"msg_1","delta":"I'll inspect."}`)
+		sseSend(w, "response.completed", `{"type":"response.completed","sequence_number":2,"response":{"id":"r","object":"response","created_at":1,"status":"completed","model":"gpt-5.5","output":[],"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15,"input_tokens_details":{"cached_tokens":0},"output_tokens_details":{"reasoning_tokens":0}},"parallel_tool_calls":false,"tool_choice":"auto","tools":[]}}`)
+	}))
+	defer srv.Close()
+
+	client, err := NewOpenAI(Config{
+		Credential: config.Credential{Value: "test-key"},
+		Model:      "gpt-5.5",
+		MaxTokens:  1024,
+		BaseURL:    srv.URL,
+		StreamIdle: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewOpenAI: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	msg, _, err := client.StreamMessage(ctx, nil, []MessageParam{
+		NewUserMessage(NewTextBlock("inspect")),
+	}, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("StreamMessage: %v", err)
+	}
+
+	if msg.TextContent != "I'll inspect." {
+		t.Fatalf("TextContent = %q, want %q", msg.TextContent, "I'll inspect.")
+	}
+	if len(msg.Content) != 1 || msg.Content[0].Type != BlockText || msg.Content[0].Text != "I'll inspect." {
+		t.Fatalf("Content = %+v, want one streamed text block", msg.Content)
+	}
+	if msg.StopReason != StopEndTurn {
+		t.Errorf("StopReason = %s, want %s", msg.StopReason, StopEndTurn)
+	}
+}
+
+// TestOpenAI_StreamMessage_KeepsStreamedToolCallWhenCompletedOutputEmpty
+// captures the same Codex backend omission for function calls. Losing this
+// stream state makes the daemon treat a tool-producing turn as a final answer.
+func TestOpenAI_StreamMessage_KeepsStreamedToolCallWhenCompletedOutputEmpty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sseHeader(w)
+		sseSend(w, "response.output_item.added", `{"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"type":"function_call","id":"item_1","call_id":"call_abc","name":"bash","arguments":"","status":"in_progress"}}`)
+		sseSend(w, "response.function_call_arguments.delta", `{"type":"response.function_call_arguments.delta","sequence_number":2,"output_index":0,"item_id":"item_1","delta":"{\"command\":\"ls\"}"}`)
+		sseSend(w, "response.completed", `{"type":"response.completed","sequence_number":3,"response":{"id":"r","object":"response","created_at":1,"status":"completed","model":"gpt-5.5","output":[],"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15,"input_tokens_details":{"cached_tokens":0},"output_tokens_details":{"reasoning_tokens":0}},"parallel_tool_calls":false,"tool_choice":"auto","tools":[]}}`)
+	}))
+	defer srv.Close()
+
+	client, err := NewOpenAI(Config{
+		Credential: config.Credential{Value: "test-key"},
+		Model:      "gpt-5.5",
+		MaxTokens:  1024,
+		BaseURL:    srv.URL,
+		StreamIdle: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewOpenAI: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	msg, _, err := client.StreamMessage(ctx, nil, []MessageParam{
+		NewUserMessage(NewTextBlock("list files")),
+	}, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("StreamMessage: %v", err)
+	}
+
+	if msg.StopReason != StopToolUse {
+		t.Errorf("StopReason = %s, want %s", msg.StopReason, StopToolUse)
+	}
+	if len(msg.ToolCalls) != 1 {
+		t.Fatalf("ToolCalls len = %d, want 1", len(msg.ToolCalls))
+	}
+	tc := msg.ToolCalls[0]
+	if tc.ID != "call_abc" || tc.Name != "bash" {
+		t.Fatalf("ToolCall = %+v, want call_abc bash", tc)
+	}
+	if got := tc.Input["command"]; got != "ls" {
+		t.Errorf("ToolCall.Input[command] = %v, want %q", got, "ls")
 	}
 }
 

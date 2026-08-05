@@ -3,7 +3,137 @@ package ui
 import (
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/get-vix/vix/internal/protocol"
 )
+
+func TestRenderUserMessageAt_ShowsStoredTime(t *testing.T) {
+	strip := func(s string) string { return ansiRe.ReplaceAllString(s, "") }
+	ts := time.Date(2021, 1, 2, 15, 4, 0, 0, time.UTC) // 3:04 PM
+	msg := renderUserMessageAt("hello there", 80, ts)
+
+	if !msg.Timestamp.Equal(ts) {
+		t.Errorf("Timestamp = %v, want %v", msg.Timestamp, ts)
+	}
+	if !strings.Contains(strip(msg.Rendered), "Sent at 3:04 PM") {
+		t.Errorf("rendered message missing stored time; got:\n%s", strip(msg.Rendered))
+	}
+}
+
+func TestRenderUserMessageAt_OmitsWhenZero(t *testing.T) {
+	strip := func(s string) string { return ansiRe.ReplaceAllString(s, "") }
+	msg := renderUserMessageAt("legacy message", 80, time.Time{})
+
+	if !msg.Timestamp.IsZero() {
+		t.Errorf("Timestamp = %v, want zero", msg.Timestamp)
+	}
+	if strings.Contains(strip(msg.Rendered), "Sent at") {
+		t.Errorf("rendered message must omit the Sent at line for a zero timestamp; got:\n%s", strip(msg.Rendered))
+	}
+	if !strings.Contains(strip(msg.Rendered), "legacy message") {
+		t.Errorf("rendered message should still contain the body; got:\n%s", strip(msg.Rendered))
+	}
+}
+
+func TestRerenderUserMessagePreservesTimestamp(t *testing.T) {
+	strip := func(s string) string { return ansiRe.ReplaceAllString(s, "") }
+	ts := time.Date(2021, 1, 2, 9, 7, 0, 0, time.UTC) // 9:07 AM
+	orig := renderUserMessageAt("resize me", 120, ts)
+
+	got := orig.rerender(nil, NewStyles(true), 60)
+	if !got.Timestamp.Equal(ts) {
+		t.Errorf("rerender Timestamp = %v, want %v", got.Timestamp, ts)
+	}
+	if !strings.Contains(strip(got.Rendered), "Sent at 9:07 AM") {
+		t.Errorf("rerender must keep original send time, not now; got:\n%s", strip(got.Rendered))
+	}
+}
+
+func TestRenderUserMessage_ShowsAttachments(t *testing.T) {
+	strip := func(s string) string { return ansiRe.ReplaceAllString(s, "") }
+	msg := renderUserMessage("look at this", 80,
+		protocol.Attachment{Type: "image", Path: "/tmp/shot.png"},
+		protocol.Attachment{Type: "file", Path: "/tmp/notes.pdf"},
+	)
+	out := strip(msg.Rendered)
+	if !strings.Contains(out, "look at this") {
+		t.Errorf("missing body text; got:\n%s", out)
+	}
+	if !strings.Contains(out, "🖼  shot.png") {
+		t.Errorf("missing image attachment line; got:\n%s", out)
+	}
+	if !strings.Contains(out, "📎  notes.pdf") {
+		t.Errorf("missing file attachment line; got:\n%s", out)
+	}
+	if len(msg.Attachments) != 2 {
+		t.Errorf("expected 2 attachments retained, got %d", len(msg.Attachments))
+	}
+}
+
+func TestRenderUserMessage_AttachmentOnly(t *testing.T) {
+	strip := func(s string) string { return ansiRe.ReplaceAllString(s, "") }
+	msg := renderUserMessage("", 80, protocol.Attachment{Type: "image", Path: "/tmp/only.png"})
+	out := strip(msg.Rendered)
+	if !strings.Contains(out, "🖼  only.png") {
+		t.Errorf("attachment-only message should show the chip; got:\n%s", out)
+	}
+}
+
+func TestRerenderUserMessagePreservesAttachments(t *testing.T) {
+	strip := func(s string) string { return ansiRe.ReplaceAllString(s, "") }
+	orig := renderUserMessage("hi", 120, protocol.Attachment{Type: "file", Path: "/tmp/a.txt"})
+	got := orig.rerender(nil, NewStyles(true), 60)
+	if !strings.Contains(strip(got.Rendered), "📎  a.txt") {
+		t.Errorf("rerender must keep the attachment line; got:\n%s", strip(got.Rendered))
+	}
+}
+
+func TestParseAttachmentRefs(t *testing.T) {
+	body, atts := parseAttachmentRefs("[File: /tmp/doc.pdf]\n[Image: /tmp/p.png]\n\nplease review")
+	if body != "please review" {
+		t.Errorf("body = %q, want %q", body, "please review")
+	}
+	if len(atts) != 2 {
+		t.Fatalf("expected 2 attachments, got %d", len(atts))
+	}
+	if atts[0].Type != "file" || atts[0].Path != "/tmp/doc.pdf" {
+		t.Errorf("att[0] = %+v", atts[0])
+	}
+	if atts[1].Type != "image" || atts[1].Path != "/tmp/p.png" {
+		t.Errorf("att[1] = %+v", atts[1])
+	}
+}
+
+func TestParseAttachmentRefs_AttachmentOnly(t *testing.T) {
+	body, atts := parseAttachmentRefs("[Image: /tmp/p.png]")
+	if body != "" {
+		t.Errorf("body = %q, want empty", body)
+	}
+	if len(atts) != 1 || atts[0].Path != "/tmp/p.png" {
+		t.Errorf("atts = %+v", atts)
+	}
+}
+
+func TestParseAttachmentRefs_NoRefs(t *testing.T) {
+	body, atts := parseAttachmentRefs("just a normal message\nwith two lines")
+	if body != "just a normal message\nwith two lines" {
+		t.Errorf("body altered: %q", body)
+	}
+	if atts != nil {
+		t.Errorf("expected no attachments, got %+v", atts)
+	}
+}
+
+func TestWrapLineSkipsLongSpaceRunsWithoutPanic(t *testing.T) {
+	line := strings.Repeat("a", 36) + " " + strings.Repeat(" ", 50) + "b"
+
+	wrapped := wrapLine(line, 37)
+
+	if got := wrapped[len(wrapped)-1]; got != "b" {
+		t.Fatalf("last wrapped line = %q, want %q (all wrapped lines: %#v)", got, "b", wrapped)
+	}
+}
 
 func TestExtractFilePathFromSummary(t *testing.T) {
 	tests := []struct {
@@ -16,7 +146,7 @@ func TestExtractFilePathFromSummary(t *testing.T) {
 		{"write_file", "config.yaml (100 chars)", "config.yaml"},
 		{"read_file", "main.go:10-20", "main.go"},
 		{"read_file", "test.txt", "test.txt"},
-		{"bash", "ls -la", ""}, // Not a file operation
+		{"bash", "ls -la", ""},  // Not a file operation
 		{"grep", "pattern", ""}, // Not a file operation
 	}
 

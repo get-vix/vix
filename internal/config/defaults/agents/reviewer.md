@@ -1,6 +1,5 @@
 ---
 name: reviewer
-model: anthropic/claude-opus-4-8
 tools: read_file, read_minified_file, bash, grep, glob_files, lsp_query
 max_turns: 40
 ---

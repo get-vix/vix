@@ -2,7 +2,7 @@ package config
 
 import "path/filepath"
 
-// VixPaths resolves all .vix-relative filesystem paths for a session.
+// VixPaths resolves all .vix-relative filesystem paths for a thread.
 //
 // When Override is set, every path resolves under the override directory and
 // neither ~/.vix nor cwd/.vix is consulted. This enables fully isolated runs
@@ -18,7 +18,7 @@ type VixPaths struct {
 
 // NewVixPaths constructs a resolver. override may be empty (normal mode).
 // home should be the result of HomeVixDir() (may be empty if UserHomeDir fails).
-// cwd is the session working directory.
+// cwd is the thread working directory.
 func NewVixPaths(override, home, cwd string) VixPaths {
 	return VixPaths{override: override, home: home, cwd: cwd}
 }
@@ -26,7 +26,7 @@ func NewVixPaths(override, home, cwd string) VixPaths {
 // Override returns the override directory, or "" if not set.
 func (p VixPaths) Override() string { return p.override }
 
-// IsOverride reports whether the session is running in config-dir override mode.
+// IsOverride reports whether the thread is running in config-dir override mode.
 func (p VixPaths) IsOverride() bool { return p.override != "" }
 
 // Home returns the home .vix directory. Empty in override mode or if unavailable.
@@ -59,6 +59,38 @@ func (p VixPaths) Layers() []string {
 	}
 	out = append(out, filepath.Join(p.cwd, ".vix"))
 	return out
+}
+
+// ConfigDir returns the directory holding the split config files
+// (workflow.json, languages.json). Override mode: override/config. Normal
+// mode: home/config (home-only by design — these files are not layered with
+// the project directory). Empty when home is unavailable in normal mode.
+func (p VixPaths) ConfigDir() string {
+	if p.override != "" {
+		return filepath.Join(p.override, "config")
+	}
+	if p.home == "" {
+		return ""
+	}
+	return filepath.Join(p.home, "config")
+}
+
+// WorkflowsFile returns the path to workflow.json, or "" if unavailable.
+func (p VixPaths) WorkflowsFile() string {
+	dir := p.ConfigDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "workflow.json")
+}
+
+// LanguagesFile returns the path to languages.json, or "" if unavailable.
+func (p VixPaths) LanguagesFile() string {
+	dir := p.ConfigDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "languages.json")
 }
 
 // Settings returns the settings.json paths to merge, in load order.
@@ -109,7 +141,21 @@ func (p VixPaths) ClaudeMD() []string {
 	return out
 }
 
-// Primary returns the write target for session-scoped state (history, plans,
+// AgentsMD returns the AGENTS.md paths to load, in order.
+// Normal mode also includes the project root AGENTS.md (outside .vix).
+func (p VixPaths) AgentsMD() []string {
+	if p.override != "" {
+		return []string{filepath.Join(p.override, "AGENTS.md")}
+	}
+	var out []string
+	if p.home != "" {
+		out = append(out, filepath.Join(p.home, "AGENTS.md"))
+	}
+	out = append(out, filepath.Join(p.cwd, "AGENTS.md"))
+	return out
+}
+
+// Primary returns the write target for thread-scoped state (history, plans,
 // access stats when override is set, etc.). Override mode: override.
 // Normal mode: cwd/.vix.
 func (p VixPaths) Primary() string {
@@ -119,7 +165,7 @@ func (p VixPaths) Primary() string {
 	return filepath.Join(p.cwd, ".vix")
 }
 
-// Logs returns where LLM logs should be written for this session.
+// Logs returns where LLM logs should be written for this thread.
 // Override mode: override/logs. Normal mode: home/logs (or "" if home empty).
 func (p VixPaths) Logs() string {
 	if p.override != "" {
@@ -131,11 +177,96 @@ func (p VixPaths) Logs() string {
 	return filepath.Join(p.home, "logs")
 }
 
-// AccessStatsDB returns the sqlite path for per-session tool access stats.
+// JobsLog returns the directory holding append-only job-run logs
+// (<date>.jsonl files), a subdirectory of Logs(). Empty when Logs() is empty
+// (home unavailable in normal mode).
+func (p VixPaths) JobsLog() string {
+	base := p.Logs()
+	if base == "" {
+		return ""
+	}
+	return filepath.Join(base, "jobs")
+}
+
+// HooksLog returns the directory holding append-only hook-run logs
+// (<date>.jsonl files), a subdirectory of Logs(). Empty when Logs() is empty.
+func (p VixPaths) HooksLog() string {
+	base := p.Logs()
+	if base == "" {
+		return ""
+	}
+	return filepath.Join(base, "hooks")
+}
+
+// Threads returns the directory where persisted thread records live.
+// Threads are stored globally (not project-scoped): override mode uses
+// override/threads; normal mode uses home/threads (empty if home is
+// unavailable). Each record carries its own cwd so the daemon can filter the
+// open list by the launching project.
+func (p VixPaths) Threads() string {
+	if p.override != "" {
+		return filepath.Join(p.override, "threads")
+	}
+	if p.home == "" {
+		return ""
+	}
+	return filepath.Join(p.home, "threads")
+}
+
+// LegacyThreads returns the pre-rename directory ("sessions") that threads used
+// to live in, mirroring Threads()'s override/home resolution. Empty when
+// Threads() is empty. Used only by the one-time startup migration that renames
+// the old sessions/ tree to threads/.
+func (p VixPaths) LegacyThreads() string {
+	if p.override != "" {
+		return filepath.Join(p.override, "sessions")
+	}
+	if p.home == "" {
+		return ""
+	}
+	return filepath.Join(p.home, "sessions")
+}
+
+// ThreadsOpen returns the subdirectory holding open (TUI-visible) threads.
+// Empty when Threads() is empty.
+func (p VixPaths) ThreadsOpen() string {
+	base := p.Threads()
+	if base == "" {
+		return ""
+	}
+	return filepath.Join(base, "open")
+}
+
+// ThreadsClosed returns the subdirectory holding closed threads (retained on
+// disk but not reopened on launch). Empty when Threads() is empty.
+func (p VixPaths) ThreadsClosed() string {
+	base := p.Threads()
+	if base == "" {
+		return ""
+	}
+	return filepath.Join(base, "closed")
+}
+
+// AccessStatsDB returns the sqlite path for per-thread tool access stats.
 // Override mode: override/access_stats.db.
 // Normal mode:   cwd/.vix/access_stats.db.
 func (p VixPaths) AccessStatsDB() string {
 	return filepath.Join(p.Primary(), "access_stats.db")
+}
+
+// AuthFile returns the path of the plaintext credential fallback (auth.json),
+// used only when no OS keyring is available. Credentials are user-global, so it
+// lives alongside threads: override mode uses override/auth.json; normal mode
+// uses home/auth.json (empty when home is unavailable). It is deliberately not
+// under cwd/.vix so secrets never land in a project repo.
+func (p VixPaths) AuthFile() string {
+	if p.override != "" {
+		return filepath.Join(p.override, "auth.json")
+	}
+	if p.home == "" {
+		return ""
+	}
+	return filepath.Join(p.home, "auth.json")
 }
 
 // History returns the TUI input history file path.
@@ -160,6 +291,90 @@ func (p VixPaths) Brain() string {
 // writes to the override dir; normal mode writes to cwd/.vix.
 func (p VixPaths) ProjectSettingsWrite() string {
 	return filepath.Join(p.Primary(), "settings.json")
+}
+
+// StateFile returns the path to the global thread-state file (state.json),
+// used for cross-thread bookkeeping that is not project-scoped — e.g. the
+// once-per-day update-check record. Override mode: override/state.json. Normal
+// mode: home/state.json (empty when home is unavailable).
+func (p VixPaths) StateFile() string {
+	if p.override != "" {
+		return filepath.Join(p.override, "state.json")
+	}
+	if p.home == "" {
+		return ""
+	}
+	return filepath.Join(p.home, "state.json")
+}
+
+// Jobs returns the directory holding scheduled job specs (<id>.json files).
+// Jobs are user-global like threads — each spec carries its own cwd — so the
+// store lives next to threads/: override mode uses override/jobs; normal mode
+// uses home/jobs (empty when home is unavailable, which disables the scheduler).
+func (p VixPaths) Jobs() string {
+	if p.override != "" {
+		return filepath.Join(p.override, "jobs")
+	}
+	if p.home == "" {
+		return ""
+	}
+	return filepath.Join(p.home, "jobs")
+}
+
+// JobState returns the path of one job's machine-written runtime state file
+// (next/last run times, statuses, error counters), kept separate from the
+// user-authored spec (job.json) so spec files never churn. It lives inside the
+// job's own subdirectory, a sibling of job.json: override mode:
+// override/jobs/<id>/state.json; normal mode: home/jobs/<id>/state.json. Empty
+// when the jobs directory is unavailable (no home directory).
+func (p VixPaths) JobState(id string) string {
+	dir := p.Jobs()
+	if dir == "" || id == "" {
+		return ""
+	}
+	return filepath.Join(dir, id, "state.json")
+}
+
+// Hooks returns the directory holding lifecycle-hook specs (<id>.json files).
+// Hooks are user-global like jobs — each spec carries its own cwd — so the
+// store lives next to jobs/: override mode uses override/hooks; normal mode
+// uses home/hooks (empty when home is unavailable, which disables the engine).
+func (p VixPaths) Hooks() string {
+	if p.override != "" {
+		return filepath.Join(p.override, "hooks")
+	}
+	if p.home == "" {
+		return ""
+	}
+	return filepath.Join(p.home, "hooks")
+}
+
+// HookState returns the path of one hook's machine-written runtime state file
+// (recent-fire history and last-fire summary), kept separate from the
+// user-authored spec (hook.json) so spec files never churn. It lives inside the
+// hook's own subdirectory, a sibling of hook.json: override mode:
+// override/hooks/<id>/state.json; normal mode: home/hooks/<id>/state.json.
+// Empty when the hooks directory is unavailable (no home directory).
+func (p VixPaths) HookState(id string) string {
+	dir := p.Hooks()
+	if dir == "" || id == "" {
+		return ""
+	}
+	return filepath.Join(dir, id, "state.json")
+}
+
+// HeartbeatMD returns the path of the heartbeat whiteboard file read by the
+// default heartbeat job's prompt. It lives inside the heartbeat job's own
+// subdirectory, a sibling of its job.json: override mode:
+// override/jobs/heartbeat/heartbeat.md; normal mode:
+// home/jobs/heartbeat/heartbeat.md. Empty when the jobs directory is
+// unavailable (no home directory).
+func (p VixPaths) HeartbeatMD() string {
+	dir := p.Jobs()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "heartbeat", "heartbeat.md")
 }
 
 func (p VixPaths) subdirs(name string) []string {

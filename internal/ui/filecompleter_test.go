@@ -389,6 +389,115 @@ func TestFileCompleter_Descend(t *testing.T) {
 	}
 }
 
+// --- Directory picker (dirs-only mode) ---
+
+func TestFileCompleter_OpenDir_FiltersToDirectories(t *testing.T) {
+	dir := t.TempDir()
+	os.Mkdir(filepath.Join(dir, "pkg"), 0755)
+	os.Mkdir(filepath.Join(dir, "cmd"), 0755)
+	os.WriteFile(filepath.Join(dir, "main.go"), []byte(""), 0644)
+	os.WriteFile(filepath.Join(dir, "README.md"), []byte(""), 0644)
+
+	var f FileCompleter
+	f.OpenDir(dir)
+	if !f.IsVisible() {
+		t.Fatal("picker should be visible after OpenDir")
+	}
+	if f.CurrentDir() != dir {
+		t.Errorf("CurrentDir: want %q, got %q", dir, f.CurrentDir())
+	}
+	if len(f.entries) != 2 {
+		t.Fatalf("expected 2 directory entries, got %d: %v", len(f.entries), f.entries)
+	}
+	for _, e := range f.entries {
+		if !e.IsDir() {
+			t.Errorf("entry %q is not a directory but appeared in dirs-only listing", e.Name())
+		}
+	}
+}
+
+func TestFileCompleter_OpenDir_SetsTitle(t *testing.T) {
+	var f FileCompleter
+	f.OpenDir(t.TempDir())
+	if f.title == "" {
+		t.Error("OpenDir should set a non-empty picker title")
+	}
+	// Switching back to file mode clears the title.
+	f.Open(t.TempDir(), "")
+	if f.title != "" {
+		t.Errorf("Open should clear the title, got %q", f.title)
+	}
+	if f.dirsOnly {
+		t.Error("Open should clear dirsOnly")
+	}
+}
+
+func TestFileCompleter_Parent(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "child")
+	os.Mkdir(sub, 0755)
+
+	var f FileCompleter
+	f.OpenDir(sub)
+	f.Parent()
+	if f.CurrentDir() != dir {
+		t.Errorf("Parent: want %q, got %q", dir, f.CurrentDir())
+	}
+}
+
+func TestFileCompleter_Parent_StopsAtRoot(t *testing.T) {
+	var f FileCompleter
+	f.OpenDir("/")
+	f.Parent() // must not move above root or panic
+	if f.CurrentDir() != "/" {
+		t.Errorf("Parent at root: want %q, got %q", "/", f.CurrentDir())
+	}
+}
+
+// --- resolveWorkDir ---
+
+func TestResolveWorkDir_TildeExpansion(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home dir")
+	}
+	if got := resolveWorkDir("~"); got != home {
+		t.Errorf("resolveWorkDir(~): want %q, got %q", home, got)
+	}
+	if got := resolveWorkDir("~/sub"); got != filepath.Join(home, "sub") {
+		t.Errorf("resolveWorkDir(~/sub): want %q, got %q", filepath.Join(home, "sub"), got)
+	}
+}
+
+func TestResolveWorkDir_MakesAbsolute(t *testing.T) {
+	got := resolveWorkDir("relative/path")
+	if !filepath.IsAbs(got) {
+		t.Errorf("resolveWorkDir should return an absolute path, got %q", got)
+	}
+}
+
+func TestResolveWorkDir_Empty(t *testing.T) {
+	wd, _ := os.Getwd()
+	if got := resolveWorkDir("   "); got != wd {
+		t.Errorf("resolveWorkDir(blank): want cwd %q, got %q", wd, got)
+	}
+}
+
+// --- truncatePathLeft ---
+
+func TestTruncatePathLeft(t *testing.T) {
+	if got := truncatePathLeft("/a/b", 10); got != "/a/b" {
+		t.Errorf("short path should be unchanged, got %q", got)
+	}
+	got := truncatePathLeft("/very/long/path/here", 8)
+	if []rune(got)[0] != '…' {
+		t.Errorf("truncated path should start with ellipsis, got %q", got)
+	}
+	if len([]rune(got)) != 8 {
+		t.Errorf("truncated path should be width 8 runes, got %d (%q)", len([]rune(got)), got)
+	}
+}
+
 // --- Integration: descend keeps @ active in input ---
 
 // TestDescendKeepsAtActiveInInput verifies that when a directory is chosen from

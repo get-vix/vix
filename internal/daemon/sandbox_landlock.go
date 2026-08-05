@@ -136,7 +136,7 @@ func landlockBashCmd(ctx context.Context, command, cwd string, extraDirs []strin
 	// as-is so the helper just needs to syscall.Exec(argv[0], argv).
 	cmd := exec.CommandContext(ctx, self, "landlock-exec", resolveBashPath(), "-c", command)
 	cmd.Dir = cwd
-	cmd.Env = append(os.Environ(), envLandlockRules+"="+string(rulesJSON))
+	cmd.Env = append(sanitizedBashEnv(), envLandlockRules+"="+string(rulesJSON))
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.WaitDelay = 2 * time.Second
 	cmd.Cancel = func() error {
@@ -156,7 +156,7 @@ func landlockBashCmd(ctx context.Context, command, cwd string, extraDirs []strin
 // The default RO/RW set comes from platformPolicies["linux"], so the
 // allow surface stays in sync with what the dispatcher's outside-paths
 // check considers acceptable. cwd is always RW; HOME is RW (uv/apt
-// caches live there); extraDirs from the session are RW too.
+// caches live there); extraDirs from the thread are RW too.
 //
 // Anything not in either list is denied by absence — any path the
 // operator hasn't explicitly opened up stays inaccessible.
@@ -367,6 +367,7 @@ func applyLandlockRuleset(rules landlockRules) error {
 func unsandboxedBashCmd(ctx context.Context, command, cwd string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "bash", "-c", command)
 	cmd.Dir = cwd
+	cmd.Env = sanitizedBashEnv()
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.WaitDelay = 2 * time.Second
 	cmd.Cancel = func() error {

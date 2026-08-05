@@ -64,44 +64,44 @@ func TestCalculateCost(t *testing.T) {
 
 		// --- OpenAI ---
 		{
-			name:    "openai gpt-5.1",
-			model:   "openai/gpt-5.1",
-			input:   1_000_000,
-			output:  100_000,
+			name:   "openai gpt-5.1",
+			model:  "openai/gpt-5.1",
+			input:  1_000_000,
+			output: 100_000,
 			// uncached input 1M * 2.5/1M + 100k * 10/1M = 2.5 + 1.0 = 3.5
 			wantMin: 3.49, wantMax: 3.51,
 		},
 		{
-			name:    "openai o3",
-			model:   "openai/o3",
-			input:   1_000_000,
-			output:  100_000,
+			name:   "openai o3",
+			model:  "openai/o3",
+			input:  1_000_000,
+			output: 100_000,
 			// 1M * 2.0/1M + 100k * 8/1M = 2.0 + 0.8 = 2.8
 			wantMin: 2.79, wantMax: 2.81,
 		},
 		{
-			name:    "openai gpt-4o-mini",
-			model:   "openai/gpt-4o-mini",
-			input:   1_000_000,
-			output:  100_000,
+			name:   "openai gpt-4o-mini",
+			model:  "openai/gpt-4o-mini",
+			input:  1_000_000,
+			output: 100_000,
 			// 1M * 0.15/1M + 100k * 0.60/1M = 0.15 + 0.06 = 0.21
 			wantMin: 0.20, wantMax: 0.22,
 		},
 
 		// --- MiniMax ---
 		{
-			name:    "minimax M2.7",
-			model:   "minimax/MiniMax-M2.7",
-			input:   1_000_000,
-			output:  100_000,
+			name:   "minimax M2.7",
+			model:  "minimax/MiniMax-M2.7",
+			input:  1_000_000,
+			output: 100_000,
 			// 1M * 0.279/1M + 100k * 1.20/1M = 0.279 + 0.12 = 0.399
 			wantMin: 0.39, wantMax: 0.41,
 		},
 		{
-			name:    "minimax M2.5",
-			model:   "minimax/MiniMax-M2.5",
-			input:   1_000_000,
-			output:  100_000,
+			name:   "minimax M2.5",
+			model:  "minimax/MiniMax-M2.5",
+			input:  1_000_000,
+			output: 100_000,
 			// 1M * 0.15/1M + 100k * 0.60/1M = 0.15 + 0.06 = 0.21
 			wantMin: 0.20, wantMax: 0.22,
 		},
@@ -188,9 +188,9 @@ func TestCalculateCostPrefixOrdering(t *testing.T) {
 
 func TestSplitModelSpec(t *testing.T) {
 	cases := []struct {
-		spec            string
-		wantProvider    string
-		wantBare        string
+		spec         string
+		wantProvider string
+		wantBare     string
 	}{
 		{"anthropic/claude-opus-4-8", "anthropic", "claude-opus-4-8"},
 		{"openai/o3", "openai", "o3"},

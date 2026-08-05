@@ -25,7 +25,7 @@ func TestToolOrchestratorSimpleReturn(t *testing.T) {
 	s := newTestServer(nil)
 	cwd := t.TempDir()
 
-	result, err := toolOrchestratorImpl(context.Background(), s,`return {"hello": "world"}`, cwd)
+	result, err := toolOrchestratorImpl(context.Background(), s, `return {"hello": "world"}`, cwd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -99,7 +99,7 @@ for m in matches:
     contents[m["file"]] = read_file(m["file"], "read impl")
 return {"count": len(matches), "files": list(contents.keys())}`
 
-	result, err := toolOrchestratorImpl(context.Background(), s,workflow, cwd)
+	result, err := toolOrchestratorImpl(context.Background(), s, workflow, cwd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestToolOrchestratorToolError(t *testing.T) {
 	workflow := `content = read_file("/nonexistent/file.txt", "should fail")
 return {"content": content}`
 
-	result, err := toolOrchestratorImpl(context.Background(), s,workflow, cwd)
+	result, err := toolOrchestratorImpl(context.Background(), s, workflow, cwd)
 	// The Python RuntimeError should cause the script to exit with error
 	if err == nil && !strings.Contains(result, "Error") && !strings.Contains(result, "error") {
 		t.Fatalf("expected error, got result: %s", result)
@@ -152,7 +152,7 @@ except RuntimeError:
     content = "fallback"
 return {"content": content}`
 
-	result, err := toolOrchestratorImpl(context.Background(), s,workflow, cwd)
+	result, err := toolOrchestratorImpl(context.Background(), s, workflow, cwd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestToolOrchestratorSyntaxError(t *testing.T) {
 	workflow := `def broken(
     return {}`
 
-	_, err := toolOrchestratorImpl(context.Background(), s,workflow, cwd)
+	_, err := toolOrchestratorImpl(context.Background(), s, workflow, cwd)
 	if err == nil {
 		t.Fatal("expected error for syntax error, got nil")
 	}
@@ -196,7 +196,7 @@ func TestToolOrchestratorTimeout(t *testing.T) {
 time.sleep(999)
 return {}`
 
-	_, err := toolOrchestratorImpl(context.Background(), s,workflow, cwd)
+	_, err := toolOrchestratorImpl(context.Background(), s, workflow, cwd)
 	if err == nil {
 		t.Fatal("expected timeout error, got nil")
 	}
@@ -213,7 +213,7 @@ func TestToolOrchestratorDisallowedTool(t *testing.T) {
 	workflow := `result = _call_tool("spawn_agent", {"prompt": "test"})
 return {"result": result}`
 
-	result, err := toolOrchestratorImpl(context.Background(), s,workflow, cwd)
+	result, err := toolOrchestratorImpl(context.Background(), s, workflow, cwd)
 	// Should get an error because spawn_agent is not allowed
 	if err == nil && !strings.Contains(result, "Error") && !strings.Contains(result, "not allowed") {
 		// The Python side should raise RuntimeError since is_error=true
@@ -233,7 +233,7 @@ func TestToolOrchestratorLargeOutput(t *testing.T) {
 
 	workflow := `return {"data": "x" * 30000}`
 
-	result, err := toolOrchestratorImpl(context.Background(), s,workflow, cwd)
+	result, err := toolOrchestratorImpl(context.Background(), s, workflow, cwd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -258,7 +258,7 @@ func TestToolOrchestratorEditFileErrorNoCrash(t *testing.T) {
 	workflow := `result = edit_file("test.go", "nonexistent", "replacement")
 return result`
 
-	result, err := toolOrchestratorImpl(context.Background(), s,workflow, cwd)
+	result, err := toolOrchestratorImpl(context.Background(), s, workflow, cwd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -301,7 +301,7 @@ func TestToolOrchestratorEditFileErrorThenContinue(t *testing.T) {
 r2 = edit_file("test.go", "existing", "replacement")
 return {"first": r1, "second": r2}`
 
-	result, err := toolOrchestratorImpl(context.Background(), s,workflow, cwd)
+	result, err := toolOrchestratorImpl(context.Background(), s, workflow, cwd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -338,7 +338,7 @@ func TestToolOrchestratorEditFileSuccessReturnsDict(t *testing.T) {
 	workflow := `result = edit_file("test.go", "old", "new")
 return result`
 
-	result, err := toolOrchestratorImpl(context.Background(), s,workflow, cwd)
+	result, err := toolOrchestratorImpl(context.Background(), s, workflow, cwd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

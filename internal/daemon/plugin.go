@@ -12,19 +12,34 @@ import (
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go/option"
+
+	"github.com/get-vix/vix/internal/config"
 )
 
 // PluginConfig type lives in package llm (see llm.go) — this file only
 // hosts the discovery/exec/merge logic and the SDK header-strip middleware.
 
-// LoadPlugins discovers and runs all executable plugin files found in dirs,
+// NewPluginSource returns a PluginSource that discovers and runs the
+// executable plugin files in dirs every time an LLM client is built. Each
+// plugin receives the target provider, model, and credential metadata (never
+// the secret itself) as a JSON object on stdin — {"version", "model",
+// "provider", "credential_source"} — so a plugin can emit "{}" for
+// providers/credentials it does not target.
+func NewPluginSource(dirs []string, version string) PluginSource {
+	return func(provider, model string, cred config.Credential) PluginConfig {
+		return loadPlugins(dirs, version, provider, model, cred)
+	}
+}
+
+// loadPlugins discovers and runs all executable plugin files found in dirs,
 // merges their output, and returns the combined PluginConfig.
-// version and model are sent to each plugin on stdin as a JSON context object.
 // Errors (non-zero exit, timeout, invalid JSON) are logged and skipped.
-func LoadPlugins(dirs []string, version, model string) PluginConfig {
+func loadPlugins(dirs []string, version, provider, model string, cred config.Credential) PluginConfig {
 	input, _ := json.Marshal(map[string]string{
-		"version": version,
-		"model":   model,
+		"version":           version,
+		"model":             model,
+		"provider":          provider,
+		"credential_source": string(cred.Source),
 	})
 
 	var merged PluginConfig
@@ -62,7 +77,7 @@ func LoadPlugins(dirs []string, version, model string) PluginConfig {
 				continue
 			}
 			mergePluginConfig(&merged, result)
-			log.Printf("[vixd] plugin loaded: %s", path)
+			log.Printf("[vixd] plugin loaded: %s (provider=%s cred=%s)", path, provider, cred.Source)
 		}
 	}
 	return merged

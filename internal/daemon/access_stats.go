@@ -9,14 +9,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/get-vix/vix/internal/daemon/brain"
+	"github.com/google/uuid"
 
 	_ "modernc.org/sqlite"
 )
 
-// generateSessionID creates a random UUID session ID.
-func generateSessionID() string {
+// generateThreadID creates a random UUID thread ID.
+func generateThreadID() string {
 	return uuid.New().String()
 }
 
@@ -67,23 +67,23 @@ func initAccessStatsDB(dbPath string) (*sql.DB, error) {
 		return nil, err
 	}
 
-	// Add session_id column (idempotent — ignores error if column already exists)
-	db.Exec("ALTER TABLE file_access ADD COLUMN session_id TEXT NOT NULL DEFAULT ''")
-	db.Exec("ALTER TABLE function_access ADD COLUMN session_id TEXT NOT NULL DEFAULT ''")
+	// Add thread_id column (idempotent — ignores error if column already exists)
+	db.Exec("ALTER TABLE file_access ADD COLUMN thread_id TEXT NOT NULL DEFAULT ''")
+	db.Exec("ALTER TABLE function_access ADD COLUMN thread_id TEXT NOT NULL DEFAULT ''")
 
 	// Add language column to file_access (idempotent)
 	db.Exec("ALTER TABLE file_access ADD COLUMN language TEXT NOT NULL DEFAULT ''")
 
 	// Create indexes for query performance (idempotent)
 	db.Exec("CREATE INDEX IF NOT EXISTS idx_file_access_path ON file_access(path)")
-	db.Exec("CREATE INDEX IF NOT EXISTS idx_file_access_session ON file_access(session_id)")
+	db.Exec("CREATE INDEX IF NOT EXISTS idx_file_access_thread ON file_access(thread_id)")
 	db.Exec("CREATE INDEX IF NOT EXISTS idx_function_access_file ON function_access(file)")
 
 	return db, nil
 }
 
 // logFileAccess logs a file access event to the database.
-func logFileAccess(db *sql.DB, sessionID, path, tool, language string, params map[string]any) error {
+func logFileAccess(db *sql.DB, threadID, path, tool, language string, params map[string]any) error {
 	paramsJSON, err := json.Marshal(params)
 	if err != nil {
 		return err
@@ -91,14 +91,14 @@ func logFileAccess(db *sql.DB, sessionID, path, tool, language string, params ma
 
 	timestamp := time.Now().Unix()
 	_, err = db.Exec(
-		"INSERT INTO file_access (path, tool, parameters, timestamp, session_id, language) VALUES (?, ?, ?, ?, ?, ?)",
-		path, tool, string(paramsJSON), timestamp, sessionID, language,
+		"INSERT INTO file_access (path, tool, parameters, timestamp, thread_id, language) VALUES (?, ?, ?, ?, ?, ?)",
+		path, tool, string(paramsJSON), timestamp, threadID, language,
 	)
 	return err
 }
 
 // logFunctionAccess logs a function access event to the database.
-func logFunctionAccess(db *sql.DB, sessionID, file, function, tool string, params map[string]any) error {
+func logFunctionAccess(db *sql.DB, threadID, file, function, tool string, params map[string]any) error {
 	paramsJSON, err := json.Marshal(params)
 	if err != nil {
 		return err
@@ -106,8 +106,8 @@ func logFunctionAccess(db *sql.DB, sessionID, file, function, tool string, param
 
 	timestamp := time.Now().Unix()
 	_, err = db.Exec(
-		"INSERT INTO function_access (file, function, tool, parameters, timestamp, session_id) VALUES (?, ?, ?, ?, ?, ?)",
-		file, function, tool, string(paramsJSON), timestamp, sessionID,
+		"INSERT INTO function_access (file, function, tool, parameters, timestamp, thread_id) VALUES (?, ?, ?, ?, ?, ?)",
+		file, function, tool, string(paramsJSON), timestamp, threadID,
 	)
 	return err
 }
@@ -120,17 +120,17 @@ func languageForFile(path string) string {
 
 // logToolAccess is the centralized access logging function.
 // It extracts file/function info from tool params and logs to both tables as needed.
-func logToolAccess(db *sql.DB, sessionID, toolName string, params map[string]any) {
+func logToolAccess(db *sql.DB, threadID, toolName string, params map[string]any) {
 	file, function := extractAccessInfo(toolName, params)
 	if file == "" {
 		return
 	}
 	language := languageForFile(file)
-	if err := logFileAccess(db, sessionID, file, toolName, language, params); err != nil {
+	if err := logFileAccess(db, threadID, file, toolName, language, params); err != nil {
 		LogError("Failed to log file access: %v", err)
 	}
 	if function != "" {
-		if err := logFunctionAccess(db, sessionID, file, function, toolName, params); err != nil {
+		if err := logFunctionAccess(db, threadID, file, function, toolName, params); err != nil {
 			LogError("Failed to log function access: %v", err)
 		}
 	}

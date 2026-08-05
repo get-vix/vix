@@ -1,0 +1,22 @@
+# Build-context ignore file scoped to ./Dockerfile only.
+#
+# BuildKit honors a per-Dockerfile ignore file named "<dockerfile>.dockerignore"
+# in preference to the repo-root .dockerignore. Keeping these rules here (and NOT
+# in a root .dockerignore) means they apply ONLY to `docker build -f Dockerfile`,
+# and do NOT affect other docker builds that use this repo as their context —
+# notably script/build.sh, whose stdin (`-f -`) Linux builds COPY the full
+# source tree (go.mod, go.sum, ./) and would break if it were excluded.
+#
+# release mode: the installer downloads vix over the network, so the Dockerfile
+# needs no repo files at all — exclude everything except the Dockerfile to avoid
+# uploading the whole repo (node_modules, vendor, …).
+#
+# source mode (VIX_INSTALL_MODE=source): COPYs the static Linux binaries built
+# by script/build.sh, so those specific files are un-ignored below. They're only
+# read when the `source` stage is built.
+*
+!Dockerfile
+!bin/vix-linux-amd64
+!bin/vixd-linux-amd64
+!bin/vix-linux-arm64
+!bin/vixd-linux-arm64

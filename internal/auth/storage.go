@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/zalando/go-keyring"
@@ -14,19 +17,12 @@ import (
 // internal/config so vix's secrets live under one service.
 const keyringService = "vix"
 
-// keyringProbeUser is a never-written key used to non-destructively probe
-// whether the OS keychain is reachable.
+// keyringProbeUser is a sentinel key written and immediately deleted to probe
+// whether the OS keychain is reachable (see keyringAvailable).
 const keyringProbeUser = "__vix_keyring_probe__"
 
 // ErrNoCredentials is returned when no OAuth login is stored for a provider.
 var ErrNoCredentials = errors.New("no OAuth credentials stored")
-
-// ErrKeychainUnavailable is returned when an operation that must persist a
-// secret cannot reach the OS keychain. vix deliberately has no plaintext file
-// fallback: secrets live in the keychain or not at all.
-var ErrKeychainUnavailable = errors.New("OS keychain unavailable: vix stores credentials only in the OS keychain. " +
-	"On headless Linux/WSL/containers, run vix with a working keychain (e.g. gnome-keyring + D-Bus) " +
-	"or authenticate via an API key env var instead of an interactive login")
 
 // oauthKeyringUser returns the keychain "user" field holding a provider's
 // OAuth credentials, e.g. "anthropic" -> "anthropic-oauth". This is distinct
@@ -36,7 +32,8 @@ func oauthKeyringUser(provider string) string {
 }
 
 // Backend abstracts where OAuth credentials are persisted. The production
-// backend is the OS keychain; tests use an in-memory backend.
+// backend is the OS keychain; the opt-in plaintext fallback is fileBackend;
+// tests use an in-memory backend.
 type Backend interface {
 	Get(key string) (value string, ok bool, err error)
 	Set(key, value string) error
@@ -67,6 +64,89 @@ func (keyringBackend) Delete(key string) error {
 		return nil
 	}
 	return err
+}
+
+// fileBackend persists OAuth credentials in a plaintext auth.json (a flat
+// {key: value} JSON map, written 0600 via temp+rename) when the OS keychain is
+// unusable. It shares the same home-global auth.json that internal/config uses
+// for API keys; OAuth keys ("<provider>-oauth") never collide with API-key
+// entries ("<provider>-api-key").
+//
+// SECURITY: OAuth refresh tokens are stored in cleartext here. This backend is
+// selected only on machines without a usable keychain; the UI and logs surface
+// that tokens are unencrypted on disk.
+type fileBackend struct {
+	path string
+	mu   sync.Mutex
+}
+
+func (f *fileBackend) load() (map[string]string, error) {
+	data, err := os.ReadFile(f.path)
+	if errors.Is(err, os.ErrNotExist) {
+		return map[string]string{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	m := map[string]string{}
+	if len(data) == 0 {
+		return m, nil
+	}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+func (f *fileBackend) save(m map[string]string) error {
+	if err := os.MkdirAll(filepath.Dir(f.path), 0o700); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := f.path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, f.path)
+}
+
+func (f *fileBackend) Get(key string) (string, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	m, err := f.load()
+	if err != nil {
+		return "", false, err
+	}
+	v, ok := m[key]
+	return v, ok, nil
+}
+
+func (f *fileBackend) Set(key, value string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	m, err := f.load()
+	if err != nil {
+		return err
+	}
+	m[key] = value
+	return f.save(m)
+}
+
+func (f *fileBackend) Delete(key string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	m, err := f.load()
+	if err != nil {
+		return err
+	}
+	if _, ok := m[key]; !ok {
+		return nil
+	}
+	delete(m, key)
+	return f.save(m)
 }
 
 // MemoryBackend is an in-memory Backend for tests.
@@ -101,8 +181,8 @@ func (b *MemoryBackend) Delete(key string) error {
 	return nil
 }
 
-// Storage manages OAuth credentials with automatic refresh-on-expiry, backed
-// exclusively by the OS keychain.
+// Storage manages OAuth credentials with automatic refresh-on-expiry, backed by
+// the OS keychain, or a plaintext auth.json when the keychain is unusable.
 type Storage struct {
 	backend   Backend
 	refreshMu sync.Mutex // serializes refreshes within this process
@@ -114,31 +194,85 @@ func NewStorage(b Backend) *Storage {
 }
 
 var (
-	defaultStorageOnce sync.Once
-	defaultStorage     *Storage
+	defaultStorageMu sync.Mutex
+	defaultStorage   *Storage
 )
 
-// DefaultStorage returns the process-wide Storage, always backed by the OS
-// keychain. There is no file fallback: operations that must persist a secret
-// fail with ErrKeychainUnavailable when the keychain is unreachable.
+var (
+	authFileMu   sync.Mutex
+	authFilePath string
+)
+
+// SetAuthFilePath records where OAuth tokens are written when the OS keychain is
+// unusable (the home-global auth.json shared with API keys). It is called once
+// at process startup (cmd/vix, cmd/vixd) with VixPaths.AuthFile(). Setting it
+// invalidates any storage already built so the next DefaultStorage() re-selects
+// with the correct path, making backend selection order-independent. When the
+// path is left empty, the fallback lands in a system-temp file.
+func SetAuthFilePath(path string) {
+	authFileMu.Lock()
+	authFilePath = path
+	authFileMu.Unlock()
+
+	defaultStorageMu.Lock()
+	defaultStorage = nil
+	defaultStorageMu.Unlock()
+}
+
+func authFile() string {
+	authFileMu.Lock()
+	defer authFileMu.Unlock()
+	return authFilePath
+}
+
+// DefaultStorage returns the process-wide Storage: backed by the OS keychain
+// when reachable, otherwise by a plaintext auth.json (see selectDefaultBackend).
+// The backend is built lazily and cached; SetAuthFilePath invalidates the cache.
 func DefaultStorage() *Storage {
-	defaultStorageOnce.Do(func() {
-		defaultStorage = NewStorage(keyringBackend{})
-	})
+	defaultStorageMu.Lock()
+	defer defaultStorageMu.Unlock()
+	if defaultStorage == nil {
+		defaultStorage = NewStorage(selectDefaultBackend())
+	}
 	return defaultStorage
 }
 
-// keyringAvailable reports whether the OS keychain can be reached. It performs
-// a read-only probe: a working keychain returns either a value or ErrNotFound,
-// while an unreachable one (no D-Bus Secret Service, etc.) returns a transport
-// error.
+// selectDefaultBackend picks the process-wide backend: the OS keychain when
+// usable, otherwise a plaintext auth.json fallback so credentials persist on
+// keyless machines (headless Linux/WSL/containers) instead of being refused.
+// The fallback path comes from SetAuthFilePath, defaulting to a system-temp file
+// when unset. This mirrors the API-key store (internal/config/credstore.go).
+func selectDefaultBackend() Backend {
+	if keyringAvailable() {
+		return keyringBackend{}
+	}
+	path := authFile()
+	if path == "" {
+		path = filepath.Join(os.TempDir(), "vix-auth.json")
+	}
+	log.Printf("[auth] OS keychain unusable; OAuth tokens will be stored in plaintext at %s (0600). "+
+		"Use an API key env var (e.g. ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN) to avoid on-disk storage.", path)
+	return &fileBackend{path: path}
+}
+
+// keyringAvailable reports whether the OS keychain can actually store and
+// retrieve a secret, via a sentinel write/read/delete round-trip. This is more
+// reliable than a read-only probe: the failure seen on keyring-less Linux
+// (no D-Bus Secret Service, or `dbus-launch` missing) only surfaces on a real
+// Set. The sentinel is deleted immediately.
 func keyringAvailable() bool {
-	_, err := keyring.Get(keyringService, keyringProbeUser)
-	return err == nil || errors.Is(err, keyring.ErrNotFound)
+	const sentinel = "ok"
+	if err := keyring.Set(keyringService, keyringProbeUser, sentinel); err != nil {
+		return false
+	}
+	v, err := keyring.Get(keyringService, keyringProbeUser)
+	_ = keyring.Delete(keyringService, keyringProbeUser)
+	return err == nil && v == sentinel
 }
 
 // KeychainAvailable is the exported form of keyringAvailable, for callers
-// (e.g. the UI) that want to warn before offering an interactive login.
+// (e.g. the UI) that want to warn that a login's token will be stored in
+// plaintext on a keyless machine.
 func KeychainAvailable() bool { return keyringAvailable() }
 
 // Get returns the stored credentials for a provider.
@@ -154,8 +288,8 @@ func (s *Storage) Get(provider string) (Credentials, bool, error) {
 	return creds, true, nil
 }
 
-// Set persists credentials for a provider. It fails with ErrKeychainUnavailable
-// when the keychain cannot be reached rather than writing secrets elsewhere.
+// Set persists credentials for a provider (OS keychain, or the plaintext
+// auth.json fallback on a keyless machine).
 func (s *Storage) Set(provider string, creds Credentials) error {
 	data, err := json.Marshal(creds)
 	if err != nil {
@@ -164,9 +298,6 @@ func (s *Storage) Set(provider string, creds Credentials) error {
 	}
 	if err := s.backend.Set(oauthKeyringUser(provider), string(data)); err != nil {
 		lg().Error("storage: persist credentials failed", "provider", provider, "err", err)
-		if !keyringAvailable() {
-			return ErrKeychainUnavailable
-		}
 		return err
 	}
 	lg().Debug("storage: credentials persisted", "provider", provider, "bytes", len(data))
@@ -268,17 +399,13 @@ func (s *Storage) AccessTokenRefreshing(ctx context.Context, provider string) (s
 }
 
 // Login runs the provider's interactive login flow and persists the resulting
-// credentials. It checks keychain reachability up front so the user is not
-// asked to authenticate in the browser only to have storage fail afterwards.
+// credentials (OS keychain, or the plaintext auth.json fallback on a keyless
+// machine).
 func (s *Storage) Login(ctx context.Context, providerID string, cb LoginCallbacks) error {
 	p, ok := GetProvider(providerID)
 	if !ok {
 		lg().Error("login: unknown provider", "provider", providerID)
 		return fmt.Errorf("unknown OAuth provider: %s", providerID)
-	}
-	if !keyringAvailable() {
-		lg().Error("login: keychain unavailable", "provider", providerID)
-		return ErrKeychainUnavailable
 	}
 	lg().Info("login: starting", "provider", providerID)
 	creds, err := p.Login(ctx, cb)

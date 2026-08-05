@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -61,6 +62,10 @@ type ChatMessage struct {
 	IsGrouped  bool   // true if this is part of a file group
 	GroupIndex int    // index within the group (0 = header, >0 = sub-items)
 
+	// Attachments sent with a user message, rendered as icon+filename lines
+	// under the text. Retained so the message re-renders correctly on resize.
+	Attachments []protocol.Attachment
+
 	// Re-render metadata: fields needed to re-render at a different width.
 	ShowToolName bool          // mirrors the showToolName arg of renderToolResultWithContext
 	TurnModel    string        // model name passed to renderTurnInfo
@@ -69,12 +74,27 @@ type ChatMessage struct {
 	TurnNum      int           // 1-based turn number passed to renderTurnInfo
 }
 
-// renderUserMessage creates a rendered user message.
-// width is the total terminal width used for wrapping long lines.
-func renderUserMessage(text string, width int) ChatMessage {
-	now := time.Now()
+// renderUserMessage creates a rendered user message stamped with the current
+// time (live sends).
+func renderUserMessage(text string, width int, attachments ...protocol.Attachment) ChatMessage {
+	return renderUserMessageAt(text, width, renderNow(), attachments...)
+}
+
+// attachmentIcon returns the display icon for an attachment: an image glyph for
+// images, a paperclip for files and PDFs.
+func attachmentIcon(att protocol.Attachment) string {
+	if att.Type == "image" {
+		return "🖼"
+	}
+	return "📎"
+}
+
+// renderUserMessageAt creates a rendered user message stamped with ts. A zero
+// ts (e.g. a legacy replayed message with no persisted timestamp) omits the
+// "Sent at …" line entirely rather than showing a misleading time. Any
+// attachments are shown as icon+filename lines under the text.
+func renderUserMessageAt(text string, width int, ts time.Time, attachments ...protocol.Attachment) ChatMessage {
 	bar := userPromptIcon.Render("▎")
-	ts := userTimestampStyle.Render("Sent at " + now.Format("3:04 PM"))
 
 	// bar(1) + 2 spaces = 3 columns of prefix per visual line
 	const prefix = 3
@@ -83,22 +103,41 @@ func renderUserMessage(text string, width int) ChatMessage {
 		contentWidth = 20
 	}
 
-	lines := strings.Split(text, "\n")
 	var sb strings.Builder
 	sb.WriteString("\n")
-	for _, line := range lines {
-		wrapped := wrapLine(line, contentWidth)
-		for _, wl := range wrapped {
-			sb.WriteString(fmt.Sprintf("%s  %s\n", bar, userPromptStyle.Render(wl)))
+	// Skip the text block entirely when empty so an attachment-only message
+	// doesn't render a stray blank prompt line.
+	if text != "" {
+		for _, line := range strings.Split(text, "\n") {
+			wrapped := wrapLine(line, contentWidth)
+			for _, wl := range wrapped {
+				sb.WriteString(fmt.Sprintf("%s  %s\n", bar, userPromptStyle.Render(wl)))
+			}
 		}
 	}
-	sb.WriteString(fmt.Sprintf("%s  %s\n", bar, ts))
+	for _, att := range attachments {
+		label := attachmentIcon(att) + "  " + filepath.Base(att.Path)
+		label = lipgloss.NewStyle().MaxWidth(contentWidth).Render(label)
+		sb.WriteString(fmt.Sprintf("%s  %s\n", bar, userAttachmentStyle.Render(label)))
+	}
+	if !ts.IsZero() {
+		// In test-render mode the displayed instant is frozen for byte-stable
+		// screenshots; the struct still carries the real ts. Production renders
+		// the actual stored time.
+		shown := ts
+		if testRenderMode {
+			shown = frozenClock
+		}
+		tsLine := userTimestampStyle.Render("Sent at " + shown.Format("3:04 PM"))
+		sb.WriteString(fmt.Sprintf("%s  %s\n", bar, tsLine))
+	}
 	rendered := sb.String() + "\n"
 	return ChatMessage{
-		Type:      MsgUser,
-		Text:      text,
-		Timestamp: now,
-		Rendered:  rendered,
+		Type:        MsgUser,
+		Text:        text,
+		Timestamp:   ts,
+		Rendered:    rendered,
+		Attachments: attachments,
 	}
 }
 
@@ -118,6 +157,9 @@ func wrapLine(line string, maxWidth int) []string {
 	lastSpace := -1
 
 	for i, r := range runes {
+		if i < start {
+			continue
+		}
 		w := 1
 		if r >= 0x1100 { // rough check for wide chars
 			w = 2
@@ -276,6 +318,15 @@ func summarizeToolOutput(name, output string) string {
 	}
 
 	switch name {
+	case "skill":
+		// The skill tool's output is the full rendered body (sent to the model);
+		// in the viewport just preview its first non-empty line.
+		for _, line := range strings.Split(output, "\n") {
+			if trimmed := strings.TrimSpace(line); trimmed != "" {
+				return trimmed
+			}
+		}
+		return "skill loaded"
 	case "read_file", "read_minified_file":
 		return fmt.Sprintf("%d lines read", lines)
 	case "grep":
@@ -1162,6 +1213,44 @@ func renderWorkflowStart(name string, totalSteps int, s Styles) ChatMessage {
 	}
 }
 
+// renderWorkflowStatus renders a workflow run status transition (paused,
+// blocked, budget limited) as a dim system line in the transcript.
+func renderWorkflowStatus(name, status, stepID string, iteration int, tokensUsed, tokenBudget int64, note string, s Styles) ChatMessage {
+	var label string
+	switch status {
+	case "paused":
+		label = "Workflow paused"
+	case "blocked":
+		label = "Workflow blocked"
+	case "budget_limited":
+		label = "Workflow budget exhausted"
+	default:
+		label = "Workflow " + status
+	}
+	detail := fmt.Sprintf("%s — %q", label, name)
+	if stepID != "" {
+		detail += fmt.Sprintf(" at step '%s'", stepID)
+	}
+	if iteration > 0 {
+		detail += fmt.Sprintf(" (iteration %d", iteration)
+		if tokenBudget > 0 {
+			detail += fmt.Sprintf(" · %d/%d tokens", tokensUsed, tokenBudget)
+		} else if tokensUsed > 0 {
+			detail += fmt.Sprintf(" · %d tokens", tokensUsed)
+		}
+		detail += ")"
+	}
+	if note != "" {
+		detail += ": " + note
+	}
+	rendered := fmt.Sprintf("\n%s\n", s.PlanDescStyle.Render(detail))
+	return ChatMessage{
+		Type:     MsgSystem,
+		Text:     detail,
+		Rendered: rendered,
+	}
+}
+
 // renderWorkflowStepStart renders a workflow step starting indicator.
 func renderWorkflowStepStart(stepID string, stepIdx, total int, explanation string) ChatMessage {
 	var prefix string
@@ -1468,9 +1557,7 @@ func formatModelName(model string) string {
 func (msg ChatMessage) rerender(md *MarkdownRenderer, s Styles, width int) ChatMessage {
 	switch msg.Type {
 	case MsgUser:
-		result := renderUserMessage(msg.Text, width-4)
-		result.Timestamp = msg.Timestamp
-		return result
+		return renderUserMessageAt(msg.Text, width-4, msg.Timestamp, msg.Attachments...)
 	case MsgAssistant:
 		return renderAssistantMessage(msg.Text, md)
 	case MsgThinking:
@@ -1573,6 +1660,9 @@ func renderTurnInfo(model string, elapsed time.Duration, cost float64, turnNum i
 	dimStyle := lipgloss.NewStyle().Foreground(s.ColorDimGray)
 
 	secs := int(elapsed.Seconds())
+	if testRenderMode {
+		secs = 0
+	}
 	info := fmt.Sprintf("◇ %s · %ds · $%.2f ", formatModelName(model), secs, cost)
 	infoRendered := dimStyle.Render(info)
 

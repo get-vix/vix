@@ -3,11 +3,14 @@
 // MiMo.
 package llm
 
+import "time"
+
 // ProviderID identifies one of the supported upstream providers.
 type ProviderID string
 
 const (
 	ProviderAnthropic  ProviderID = "anthropic"
+	ProviderBedrock    ProviderID = "bedrock"
 	ProviderOpenAI     ProviderID = "openai"
 	ProviderOpenRouter ProviderID = "openrouter"
 	ProviderMiniMax    ProviderID = "minimax"
@@ -58,24 +61,24 @@ const (
 // and adapters drop the marker. OpenRouter forwards it when routing to
 // Anthropic-family models.
 type CacheControl struct {
-	Type string // currently always "ephemeral"
+	Type string `json:"type"` // currently always "ephemeral"
 }
 
 // ContentBlock is one element of message content. The fields used depend
 // on Type — see the const docs for each variant.
 type ContentBlock struct {
-	Type         ContentBlockType
-	Text         string         // BlockText, BlockThinking
-	ID           string         // BlockToolUse
-	Name         string         // BlockToolUse
-	Input        map[string]any // BlockToolUse — already-parsed; never a raw JSON string
-	ToolUseID    string         // BlockToolResult
-	Output       string         // BlockToolResult
-	IsError      bool           // BlockToolResult
-	MediaType    string         // BlockImage (e.g. "image/png")
-	Data         string         // BlockImage (base64-encoded payload)
-	Signature    string         // BlockThinking — Anthropic signature or OpenAI reasoning-item ID
-	CacheControl *CacheControl
+	Type         ContentBlockType `json:"type"`
+	Text         string           `json:"text,omitempty"`        // BlockText, BlockThinking
+	ID           string           `json:"id,omitempty"`          // BlockToolUse
+	Name         string           `json:"name,omitempty"`        // BlockToolUse
+	Input        map[string]any   `json:"input,omitempty"`       // BlockToolUse — already-parsed; never a raw JSON string
+	ToolUseID    string           `json:"tool_use_id,omitempty"` // BlockToolResult
+	Output       string           `json:"output,omitempty"`      // BlockToolResult
+	IsError      bool             `json:"is_error,omitempty"`    // BlockToolResult
+	MediaType    string           `json:"media_type,omitempty"`  // BlockImage (e.g. "image/png")
+	Data         string           `json:"data,omitempty"`        // BlockImage (base64-encoded payload)
+	Signature    string           `json:"signature,omitempty"`   // BlockThinking — Anthropic signature or OpenAI reasoning-item ID
+	CacheControl *CacheControl    `json:"cache_control,omitempty"`
 }
 
 // SystemBlock is one block of the system prompt.
@@ -86,8 +89,15 @@ type SystemBlock struct {
 
 // MessageParam is one turn in the conversation history.
 type MessageParam struct {
-	Role    Role
-	Content []ContentBlock
+	Role    Role           `json:"role"`
+	Content []ContentBlock `json:"content"`
+	// Timestamp is when this turn was created. It is persisted with the
+	// thread and projected into replay so a restored conversation shows
+	// original send times instead of the relaunch time. Stamped by the
+	// daemon when the message is appended to history; never sent to
+	// providers (request bodies are built from Role/Content only). Zero for
+	// legacy records persisted before this field existed.
+	Timestamp time.Time `json:"timestamp,omitempty"`
 }
 
 // ToolParam describes one tool exposed to the model.
@@ -161,6 +171,19 @@ func NewImageBlock(mediaType, data string) ContentBlock {
 // NewToolUseBlock builds an assistant tool_use block.
 func NewToolUseBlock(id, name string, input map[string]any) ContentBlock {
 	return ContentBlock{Type: BlockToolUse, ID: id, Name: name, Input: input}
+}
+
+// normalizeToolInput guarantees a non-nil object for a tool_use block's input.
+// Every provider API requires `input` to be an object even when the tool takes
+// no arguments; a no-arg call streams in as an empty map, which the
+// `json:"input,omitempty"` tag drops on persist, leaving a nil map after
+// reload. Coercing nil to an empty map at the request boundary keeps the
+// serialized `input` a valid object (`{}`) instead of null/omitted.
+func normalizeToolInput(in map[string]any) map[string]any {
+	if in == nil {
+		return map[string]any{}
+	}
+	return in
 }
 
 // NewToolResultBlock builds a user tool_result block.

@@ -60,18 +60,31 @@ func StartWebServer(ctx context.Context, s *Server, port int) {
 	mux.Handle("/assets/", fileServer)
 
 	// Existing API routes — unchanged
-	mux.HandleFunc("/api/sessions", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/threads", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		data, _ := json.Marshal(s.Sessions())
+		data, _ := json.Marshal(s.Threads())
 		w.Write(data)
 	})
 
-	// New per-session API routes
-	mux.HandleFunc("/api/session/{id}/interview-data", handleInterviewData(s))
-	mux.HandleFunc("/api/session/{id}/signed-url", handleSignedURL(s))
-	mux.HandleFunc("/api/session/{id}/call-agent", handleCallAgent(s))
+	// Create a scheduled job from the web UI (local origins only).
+	mux.HandleFunc("/api/jobs", handleCreateJob(s))
 
-	// WebSocket for live session updates
+	// Fire an existing job immediately (add + trigger from the web UI).
+	mux.HandleFunc("/api/jobs/{id}/run", handleRunJob(s))
+
+	// OAuth redirect target for MCP url servers. Shared, fixed callback host so a
+	// single redirect URI (http://127.0.0.1:<web-port>/mcp/oauth/callback) can be
+	// registered once and reused for every OAuth MCP server. Unauthenticated by
+	// design (the provider's browser redirect carries no vix token); it validates
+	// an unguessable state token against a live pending flow.
+	mux.HandleFunc("/mcp/oauth/callback", s.handleMCPOAuthCallback)
+
+	// New per-thread API routes
+	mux.HandleFunc("/api/thread/{id}/interview-data", handleInterviewData(s))
+	mux.HandleFunc("/api/thread/{id}/signed-url", handleSignedURL(s))
+	mux.HandleFunc("/api/thread/{id}/call-agent", handleCallAgent(s))
+
+	// WebSocket for live thread updates
 	mux.Handle("/ws", websocket.Handler(func(conn *websocket.Conn) {
 		ch := s.Subscribe()
 		defer s.Unsubscribe(ch)
@@ -90,18 +103,18 @@ func StartWebServer(ctx context.Context, s *Server, port int) {
 			}
 		}()
 
-		if err := sendUpdate(conn, s.Sessions(), collectVitals()); err != nil {
+		if err := sendUpdate(conn, s); err != nil {
 			return
 		}
 
 		for {
 			select {
 			case <-ch:
-				if err := sendUpdate(conn, s.Sessions(), collectVitals()); err != nil {
+				if err := sendUpdate(conn, s); err != nil {
 					return
 				}
 			case <-ticker.C:
-				if err := sendUpdate(conn, s.Sessions(), collectVitals()); err != nil {
+				if err := sendUpdate(conn, s); err != nil {
 					return
 				}
 			case <-readDone:
@@ -168,7 +181,7 @@ func handleInterviewData(s *Server) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		title := id
-		for _, sess := range s.Sessions() {
+		for _, sess := range s.Threads() {
 			if sess.ID == id {
 				title = sess.CWD
 				break
@@ -254,18 +267,25 @@ func handleCallAgent(s *Server) http.HandlerFunc {
 		}
 
 		id := r.PathValue("id")
-		sess := s.getSession(id)
-		if sess == nil {
-			http.Error(w, `{"error":"session not found"}`, http.StatusNotFound)
-			return
-		}
-
 		var body struct {
 			Agent  string `json:"agent"`
 			Prompt string `json:"prompt"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Agent == "" || body.Prompt == "" {
 			http.Error(w, `{"error":"agent and prompt are required"}`, http.StatusBadRequest)
+			return
+		}
+
+		sess, cleanup, err := s.threadForWebCall(id)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
+			return
+		}
+		if cleanup != nil {
+			defer cleanup()
+		}
+		if sess == nil {
+			http.Error(w, `{"error":"thread not found"}`, http.StatusNotFound)
 			return
 		}
 
@@ -288,8 +308,15 @@ func handleCallAgent(s *Server) http.HandlerFunc {
 	}
 }
 
-func sendUpdate(conn *websocket.Conn, sessions []SessionInfo, vitals ServerVitals) error {
-	data, err := json.Marshal(wsMessage{Sessions: sessions, Vitals: vitals})
+func sendUpdate(conn *websocket.Conn, s *Server) error {
+	data, err := json.Marshal(wsMessage{
+		Threads:    s.Threads(),
+		Vitals:     collectVitals(),
+		Jobs:       s.Jobs(),
+		Hooks:      s.Hooks(),
+		DefaultCWD: s.DefaultCWD(),
+		Version:    s.Version(),
+	})
 	if err != nil {
 		return err
 	}

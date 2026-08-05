@@ -13,6 +13,7 @@ import (
 
 	"github.com/get-vix/vix/internal/daemon"
 	"github.com/get-vix/vix/internal/protocol"
+	"github.com/get-vix/vix/internal/telemetry"
 )
 
 // OutputFormat controls how the headless result is printed.
@@ -33,7 +34,7 @@ func (f OutputFormat) Valid() bool {
 type result struct {
 	Type       string         `json:"type"`
 	Result     string         `json:"result"`
-	SessionID  string         `json:"session_id"`
+	ThreadID   string         `json:"thread_id"`
 	IsError    bool           `json:"is_error"`
 	NumTurns   int            `json:"num_turns"`
 	DurationMs int64          `json:"duration_ms"`
@@ -49,7 +50,7 @@ type stepDuration struct {
 	DurationMs int64  `json:"duration_ms"`
 }
 
-// timestampedEvent wraps a SessionEvent with a wall-clock timestamp so
+// timestampedEvent wraps a ThreadEvent with a wall-clock timestamp so
 // stream-json consumers can compute per-event durations after the fact
 // (e.g. find which workflow step or tool call took the longest).
 type timestampedEvent struct {
@@ -65,9 +66,9 @@ type usageStats struct {
 	CacheReadTokens     int64 `json:"cache_read_tokens"`
 }
 
-// Run executes a single prompt in headless mode, consuming session events
+// Run executes a single prompt in headless mode, consuming thread events
 // and producing output in the requested format.
-func Run(session *daemon.SessionClient, prompt string, format OutputFormat, workflow string) error {
+func Run(thread *daemon.ThreadClient, prompt string, format OutputFormat, workflow string, model string) error {
 	start := time.Now()
 
 	// Handle signals for clean shutdown
@@ -75,22 +76,23 @@ func Run(session *daemon.SessionClient, prompt string, format OutputFormat, work
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigCh
-		session.SendCancel()
-		session.SendClose()
+		thread.SendCancel()
+		thread.SendClose()
 		os.Exit(130)
 	}()
 	defer signal.Stop(sigCh)
 
 	// Send the prompt (or trigger a workflow)
 	if workflow != "" {
-		if err := session.SendWorkflow(workflow, prompt); err != nil {
+		if err := thread.SendWorkflow(workflow, prompt); err != nil {
 			return fmt.Errorf("send workflow: %w", err)
 		}
 	} else {
-		if err := session.SendInput(prompt, nil); err != nil {
+		if err := thread.SendInput(prompt, nil); err != nil {
 			return fmt.Errorf("send input: %w", err)
 		}
 	}
+	telemetry.TrackTurn(model)
 
 	var (
 		textBuf  strings.Builder
@@ -105,7 +107,7 @@ func Run(session *daemon.SessionClient, prompt string, format OutputFormat, work
 	jsonEnc := json.NewEncoder(stdoutW)
 
 	for {
-		event, err := session.ReadEvent()
+		event, err := thread.ReadEvent()
 		if err != nil {
 			if err == io.EOF {
 				break
@@ -139,22 +141,22 @@ func Run(session *daemon.SessionClient, prompt string, format OutputFormat, work
 
 		case "event.confirm_request":
 			// Auto-approve in headless mode (never persist dirs)
-			session.SendConfirm(true, false)
+			thread.SendConfirm(true, false)
 
 		case "event.user_question":
 			// Auto-select first option in headless mode
 			uq := decodeEvent[protocol.EventUserQuestion](event.Data)
 			if len(uq.RichOptions) > 0 {
-				session.SendUserAnswer(uq.RichOptions[0].Title, "")
+				thread.SendUserAnswer(uq.RichOptions[0].Title, "")
 			} else if len(uq.Options) > 0 {
-				session.SendUserAnswer(uq.Options[0], "")
+				thread.SendUserAnswer(uq.Options[0], "")
 			} else {
-				session.SendUserAnswer("", "")
+				thread.SendUserAnswer("", "")
 			}
 
 		case "event.plan_proposed":
 			// Auto-approve plans in headless mode
-			session.SendPlanAction("approve", "")
+			thread.SendPlanAction("approve", "")
 
 		case "event.tool_call":
 			if format == FormatText {
@@ -220,7 +222,7 @@ func Run(session *daemon.SessionClient, prompt string, format OutputFormat, work
 				r := result{
 					Type:       "result",
 					Result:     resultText,
-					SessionID:  session.SessionID(),
+					ThreadID:   thread.ThreadID(),
 					IsError:    hadError,
 					NumTurns:   numTurns,
 					DurationMs: durationMs,

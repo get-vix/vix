@@ -17,8 +17,8 @@ type toolEntry struct {
 	def           ToolDef
 }
 
-// Pool manages MCP server connections for a single session.
-// It is created in session.initBrain and torn down when the session context
+// Pool manages MCP server connections for a single thread.
+// It is created in thread.initBrain and torn down when the thread context
 // is cancelled (stdio child processes are killed via their exec.CommandContext).
 type Pool struct {
 	clients map[string]client // server name → client
@@ -27,9 +27,128 @@ type Pool struct {
 	configs map[string]serverMeta
 }
 
+// options holds optional dependencies for NewPool/ProbeServers.
+type options struct {
+	store TokenStore
+}
+
+// Option configures NewPool/ProbeServers.
+type Option func(*options)
+
+// WithTokenStore supplies the OAuth token store used by url servers configured
+// with `oauth`. Without it, such servers fail to connect (ErrNeedsAuth).
+func WithTokenStore(store TokenStore) Option {
+	return func(o *options) { o.store = store }
+}
+
+func applyOptions(opts []Option) options {
+	var o options
+	for _, fn := range opts {
+		fn(&o)
+	}
+	return o
+}
+
 // serverMeta holds security-relevant config for a connected server.
 type serverMeta struct {
 	requireConfirmation bool
+}
+
+// normalizedType returns the canonical transport label ("stdio" or "url") for a
+// server config, used in status reporting and the MCP tab.
+func normalizedType(cfg ServerConfig) string {
+	switch strings.ToLower(cfg.Type) {
+	case "url", "http", "sse":
+		return "url"
+	default:
+		return "stdio"
+	}
+}
+
+// connectClient dials a single MCP server, dispatching on its transport, and
+// runs the initialize + tools/list handshake. Returns a validation error for
+// misconfigured entries (missing url/command) without attempting a connection.
+// store supplies OAuth tokens for url servers configured with `oauth`; it may be
+// nil when no OAuth server is involved.
+func connectClient(ctx context.Context, cfg ServerConfig, store TokenStore) (client, error) {
+	switch strings.ToLower(cfg.Type) {
+	case "url", "http", "sse":
+		if cfg.URL == "" {
+			return nil, fmt.Errorf("type=%q requires a 'url' field", cfg.Type)
+		}
+		var oauth bearerSource
+		if cfg.UsesOAuth() {
+			src, err := buildOAuthSource(ctx, cfg, store)
+			if err != nil {
+				return nil, err
+			}
+			oauth = src
+		}
+		return newHTTPClient(cfg.Name, cfg.URL, cfg.Headers, oauth)
+	default: // "stdio" or empty → stdio
+		if cfg.Command == "" {
+			return nil, fmt.Errorf("stdio transport requires a 'command' field")
+		}
+		return newStdioClient(ctx, cfg.Name, cfg.Command, cfg.Args, cfg.Env)
+	}
+}
+
+// buildOAuthSource resolves cfg's OAuth config and returns a refreshing token
+// source, or ErrNeedsAuth when no token is stored yet.
+func buildOAuthSource(ctx context.Context, cfg ServerConfig, store TokenStore) (bearerSource, error) {
+	if store == nil {
+		return nil, fmt.Errorf("oauth server %q: no token store available", cfg.Name)
+	}
+	oc, err := resolveOAuthConfig(ctx, cfg, "")
+	if err != nil {
+		return nil, err
+	}
+	return newTokenSource(ctx, cfg, store, oc)
+}
+
+// allowedToolCount returns how many of c's tools survive cfg's AllowedTools
+// filter (all of them when AllowedTools is empty).
+func allowedToolCount(cfg ServerConfig, c client) int {
+	if len(cfg.AllowedTools) == 0 {
+		return len(c.ListTools())
+	}
+	allow := make(map[string]bool, len(cfg.AllowedTools))
+	for _, t := range cfg.AllowedTools {
+		allow[t] = true
+	}
+	n := 0
+	for _, tool := range c.ListTools() {
+		if allow[tool.Name] {
+			n++
+		}
+	}
+	return n
+}
+
+// ProbeServers connects to each configured server, records whether it came up
+// and how many tools it exposes, then tears the connection down. It is used by
+// the MCP tab to report status without an active chat thread. Servers with an
+// empty name are skipped. The probe respects ctx for cancellation/timeout.
+func ProbeServers(ctx context.Context, configs []ServerConfig, opts ...Option) []ServerStatus {
+	o := applyOptions(opts)
+	out := make([]ServerStatus, 0, len(configs))
+	for _, cfg := range configs {
+		if cfg.Name == "" {
+			continue
+		}
+		st := ServerStatus{Name: cfg.Name, Type: normalizedType(cfg)}
+		c, err := connectClient(ctx, cfg, o.store)
+		if err != nil {
+			st.Error = err.Error()
+			out = append(out, st)
+			continue
+		}
+		st.Connected = true
+		st.ToolCount = allowedToolCount(cfg, c)
+		c.Close()
+		out = append(out, st)
+	}
+	return out
 }
 
 // NewPool connects to all configured MCP servers, runs the initialize+tools/list
@@ -39,8 +158,9 @@ type serverMeta struct {
 // does not prevent the rest from working.
 //
 // The caller is responsible for deny-list URL filtering before passing configs;
-// see session.initBrain which calls isURLDenied before adding an entry.
-func NewPool(ctx context.Context, configs []ServerConfig) *Pool {
+// see thread.initBrain which calls isURLDenied before adding an entry.
+func NewPool(ctx context.Context, configs []ServerConfig, opts ...Option) *Pool {
+	o := applyOptions(opts)
 	p := &Pool{
 		clients: make(map[string]client, len(configs)),
 		configs: make(map[string]serverMeta, len(configs)),
@@ -54,20 +174,7 @@ func NewPool(ctx context.Context, configs []ServerConfig) *Pool {
 		var c client
 		var err error
 
-		switch strings.ToLower(cfg.Type) {
-		case "url", "http", "sse":
-			if cfg.URL == "" {
-				log.Printf("[mcp] server %q: type=%q requires a 'url' field, skipping", cfg.Name, cfg.Type)
-				continue
-			}
-			c, err = newHTTPClient(cfg.Name, cfg.URL, cfg.Headers)
-		default: // "stdio" or empty → stdio
-			if cfg.Command == "" {
-				log.Printf("[mcp] server %q: stdio transport requires a 'command' field, skipping", cfg.Name)
-				continue
-			}
-			c, err = newStdioClient(ctx, cfg.Name, cfg.Command, cfg.Args, cfg.Env)
-		}
+		c, err = connectClient(ctx, cfg, o.store)
 
 		if err != nil {
 			log.Printf("[mcp] server %q: failed to connect: %v (skipping)", cfg.Name, err)
@@ -152,7 +259,7 @@ func (p *Pool) ToolSchemas() []llm.ToolParam {
 
 // Call dispatches a tool call to the appropriate MCP server and returns the
 // result. qualifiedName must be of the form "mcp__<server>__<tool>".
-// Internal vix params (cwd, allowed_dirs, headless, _session, confirmed) are
+// Internal vix params (cwd, allowed_dirs, headless, _thread, confirmed) are
 // stripped before forwarding to the server.
 func (p *Pool) Call(qualifiedName string, args map[string]any) (string, bool, error) {
 	serverName := serverNameFrom(qualifiedName)
@@ -211,7 +318,7 @@ var internalParams = map[string]bool{
 	"cwd":          true,
 	"allowed_dirs": true,
 	"headless":     true,
-	"_session":     true,
+	"_thread":      true,
 	"confirmed":    true,
 }
 

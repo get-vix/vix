@@ -182,7 +182,7 @@ func TestIntegration_WriteFile_ExecutableMode(t *testing.T) {
 	}
 	root := testRoot(t)
 	target := filepath.Join(root, "shim.sh")
-	s := newIntegrationSession(t, root, nil)
+	s := newIntegrationThread(t, root, nil)
 
 	res := s.executeToolDirect(context.Background(), "write_file", map[string]any{
 		"path":    target,
@@ -204,7 +204,7 @@ func TestIntegration_WriteFile_ExecutableMode(t *testing.T) {
 func TestIntegration_WriteFile_BadMode(t *testing.T) {
 	root := testRoot(t)
 	target := filepath.Join(root, "x")
-	s := newIntegrationSession(t, root, nil)
+	s := newIntegrationThread(t, root, nil)
 
 	res := s.executeToolDirect(context.Background(), "write_file", map[string]any{
 		"path":    target,

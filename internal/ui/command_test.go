@@ -51,6 +51,75 @@ func TestSlashCommandInsertText(t *testing.T) {
 	}
 }
 
+func TestBuildRows(t *testing.T) {
+	cmds := []Command{
+		{Name: "fork", Action: "slash_fork", Group: "Conversation"},
+		{Name: "clear", Action: "slash_clear", Group: "Conversation"},
+		{Name: "skills", Action: "slash_skills", Group: "Skills"},
+		{Name: "commit", Action: "slash_skill:commit", Group: "Skills"},
+		{Name: "loose", Action: "slash_loose"}, // no group -> trailing, no header
+	}
+	rows := buildRows(cmds)
+
+	// Expected sequence: "Conversation" header, fork, clear, "Skills" header,
+	// skills, commit, then the ungrouped loose command (no header).
+	type exp struct {
+		header   string
+		cmdIndex int
+	}
+	want := []exp{
+		{"Conversation", -1},
+		{"", 0},
+		{"", 1},
+		{"Skills", -1},
+		{"", 2},
+		{"", 3},
+		{"", 4},
+	}
+	if len(rows) != len(want) {
+		t.Fatalf("buildRows len = %d, want %d (%+v)", len(rows), len(want), rows)
+	}
+	for i, w := range want {
+		if rows[i].header != w.header || rows[i].cmdIndex != w.cmdIndex {
+			t.Errorf("row %d = {header:%q cmdIndex:%d}, want {header:%q cmdIndex:%d}",
+				i, rows[i].header, rows[i].cmdIndex, w.header, w.cmdIndex)
+		}
+	}
+}
+
+func TestBuildRowsSkipsEmptyGroupHeaders(t *testing.T) {
+	// Only Skills commands present: the Conversation header must not appear.
+	cmds := []Command{
+		{Name: "skills", Action: "slash_skills", Group: "Skills"},
+		{Name: "commit", Action: "slash_skill:commit", Group: "Skills"},
+	}
+	rows := buildRows(cmds)
+	if len(rows) == 0 || rows[0].header != "Skills" {
+		t.Fatalf("expected first row to be the Skills header, got %+v", rows)
+	}
+	for _, r := range rows {
+		if r.header == "Conversation" {
+			t.Errorf("Conversation header should be omitted when its group is empty")
+		}
+	}
+}
+
+func TestSlashMenuSelectedActionWithGroups(t *testing.T) {
+	cmds := []Command{
+		{Name: "fork", Action: "slash_fork", Group: "Conversation"},
+		{Name: "skills", Action: "slash_skills", Group: "Skills"},
+	}
+	var m SlashMenu
+	m.Open(cmds, "")
+	if got := m.SelectedAction(); got != "slash_fork" {
+		t.Errorf("initial SelectedAction = %q, want slash_fork", got)
+	}
+	m.MoveDown()
+	if got := m.SelectedAction(); got != "slash_skills" {
+		t.Errorf("after MoveDown SelectedAction = %q, want slash_skills", got)
+	}
+}
+
 func TestCountTurnSeparators(t *testing.T) {
 	msgs := []ChatMessage{
 		{Type: MsgUser, Text: "hi"},
@@ -72,7 +141,7 @@ func TestTurnSepByNumber(t *testing.T) {
 		styles:     NewStyles(true),
 		mdRenderer: NewMarkdownRenderer(80, true, NewStyles(true).CodeBoxBorderStyle),
 	}
-	sess := &SessionState{
+	sess := &ThreadState{
 		chatMessages: []ChatMessage{
 			{Type: MsgUser, Text: "hi", Rendered: "hi\n"},
 			{Type: MsgAssistant, Text: "a", Rendered: "a\n"},
@@ -115,7 +184,7 @@ func TestGotoTurn(t *testing.T) {
 			ChatMessage{Type: MsgSystem, TurnModel: "m", Rendered: fmt.Sprintf("sep%d\n", i)},
 		)
 	}
-	sess := &SessionState{chatMessages: msgs}
+	sess := &ThreadState{chatMessages: msgs}
 
 	// Independently recompute the rendered layout to find which logical line
 	// lands at the top of the viewport after gotoTurn.
@@ -144,7 +213,7 @@ func TestGotoTurn(t *testing.T) {
 
 	// Turn 1 always starts at the very top of the conversation.
 	m.gotoTurn(sess, 1)
-	if got := m.sessionMaxScrollOffset(sess); sess.chatScrollOffset != got {
+	if got := m.threadMaxScrollOffset(sess); sess.chatScrollOffset != got {
 		t.Errorf("gotoTurn(1) offset = %d, want max %d", sess.chatScrollOffset, got)
 	}
 }

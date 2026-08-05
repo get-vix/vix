@@ -1,0 +1,335 @@
+{
+  "workflows": [
+    {
+      "name": "Goal",
+      "budget": {
+        "max_iterations": 30,
+        "on_exceeded": {
+          "id": "wrap_up"
+        }
+      },
+      "entry_point": {
+        "id": "pursue",
+        "params": {
+          "objective": "$(workflow.prompt)",
+          "feedback": ""
+        }
+      },
+      "steps": {
+        "pursue": {
+          "type": "agent",
+          "agent": "general",
+          "effort": "adaptive",
+          "signal": true,
+          "explanation": "Working toward the goal",
+          "input_params": {
+            "objective": {
+              "description": "The user's goal objective"
+            },
+            "feedback": {
+              "description": "Auditor feedback or continuation note from the previous iteration; empty on the first pass"
+            }
+          },
+          "prompt": "$(file:prompts/goal/pursue.md)",
+          "stream": true,
+          "on_error": {
+            "id": "wrap_up"
+          },
+          "next_steps": [
+            {
+              "id": "route_after_pursue"
+            }
+          ]
+        },
+        "route_after_pursue": {
+          "type": "if",
+          "condition": "[ \"$(workflow.signal.status)\" = \"blocked\" ]",
+          "then": {
+            "id": "wrap_up"
+          },
+          "else": {
+            "id": "route_pursue_complete"
+          }
+        },
+        "route_pursue_complete": {
+          "type": "if",
+          "condition": "[ \"$(workflow.signal.status)\" = \"complete\" ]",
+          "then": {
+            "id": "verify",
+            "params": {
+              "objective": "$(workflow.prompt)"
+            }
+          },
+          "else": {
+            "id": "pursue",
+            "params": {
+              "objective": "$(workflow.prompt)",
+              "feedback": "Previous iteration ended without a completion signal. Continue from where you left off."
+            }
+          }
+        },
+        "verify": {
+          "type": "agent",
+          "agent": "general",
+          "effort": "adaptive",
+          "explanation": "Independently auditing the completion claim",
+          "json_output": true,
+          "display_key": "feedback",
+          "input_params": {
+            "objective": {
+              "description": "The goal objective to audit against the current state"
+            }
+          },
+          "prompt": "$(file:prompts/goal/verify.md)",
+          "stream": true,
+          "next_steps": [
+            {
+              "id": "route_after_verify"
+            }
+          ]
+        },
+        "route_after_verify": {
+          "type": "if",
+          "condition": "[ \"$(step.verify.verdict)\" = \"pass\" ]",
+          "then": {
+            "id": "wrap_up"
+          },
+          "else": {
+            "id": "pursue",
+            "params": {
+              "objective": "$(workflow.prompt)",
+              "feedback": "An independent audit rejected the completion claim. Address these gaps before signalling complete again:\n$(step.verify.feedback)"
+            }
+          }
+        },
+        "wrap_up": {
+          "type": "agent",
+          "fork_from": "pursue",
+          "effort": "low",
+          "explanation": "Wrapping up the goal run",
+          "prompt": "$(file:prompts/goal/wrap_up.md)",
+          "stream": true
+        }
+      }
+    },
+    {
+      "entry_point": {
+        "id": "explore",
+        "params": {
+          "prompt": "$(workflow.prompt)"
+        }
+      },
+      "name": "Plan",
+      "steps": {
+        "execute": {
+          "agent": "general",
+          "effort": "adaptive",
+          "explanation": "Executing the approved plan",
+          "input_params": {
+            "plan": {
+              "description": "The LLM's plan for updating the code"
+            }
+          },
+          "prompt": "$(file:prompts/plan_workflow/execute.md)",
+          "stream": true,
+          "type": "agent"
+        },
+        "explore": {
+          "agent": "plan",
+          "effort": "adaptive",
+          "explanation": "Exploring the codebase to understand relevant files and patterns",
+          "input_params": {
+            "prompt": {
+              "description": "The user's plan description"
+            }
+          },
+          "next_steps": [
+            {
+              "id": "plan",
+              "params": {
+                "prompt": "$(step.explore.prompt)"
+              }
+            }
+          ],
+          "prompt": "$(file:prompts/plan_workflow/explore.md)",
+          "stream": true,
+          "type": "agent"
+        },
+        "plan": {
+          "effort": "adaptive",
+          "explanation": "Generating a draft implementation plan",
+          "fork_from": "explore",
+          "input_params": {
+            "prompt": {
+              "description": "The user's plan description"
+            }
+          },
+          "json_output": false,
+          "next_steps": [
+            {
+              "id": "review",
+              "params": {
+                "plan": "$(step.plan)"
+              }
+            }
+          ],
+          "prompt": "$(file:prompts/plan_workflow/plan.md)",
+          "stream": true,
+          "type": "agent"
+        },
+        "refine": {
+          "effort": "adaptive",
+          "explanation": "Refining the plan based on critique feedback",
+          "fork_from": "plan",
+          "input_params": {
+            "feedback": {
+              "description": "User feedback to refine the plan"
+            }
+          },
+          "json_output": false,
+          "next_steps": [
+            {
+              "id": "review",
+              "params": {
+                "plan": "$(step.refine)"
+              }
+            }
+          ],
+          "prompt": "$(file:prompts/plan_workflow/refine.md)",
+          "stream": true,
+          "type": "agent"
+        },
+        "generate_whiteboard": {
+          "type": "agent",
+          "fork_from": "plan",
+          "effort": "adaptive",
+          "explanation": "Generating whiteboard scenes for the plan",
+          "input_params": {
+            "plan": {
+              "description": "The plan to visualise"
+            }
+          },
+          "next_steps": [
+            {
+              "id": "open_whiteboard",
+              "params": {
+                "plan": "$(step.generate_whiteboard.plan)"
+              }
+            }
+          ],
+          "prompt": "$(file:prompts/plan_workflow/whiteboard.md)",
+          "output": ".vix/whiteboards/$(thread.id).json",
+          "stream": false
+        },
+        "open_whiteboard": {
+          "type": "tool",
+          "tool": "whiteboard_open",
+          "explanation": "Opening whiteboard in your browser",
+          "input_params": {
+            "plan": {
+              "description": "The implementation plan to pass to the whiteboard"
+            }
+          },
+          "silent": true,
+          "next_steps": [
+            {
+              "id": "review",
+              "params": {
+                "plan": "$(plan)"
+              }
+            }
+          ]
+        },
+        "review": {
+          "category": "Plan Review",
+          "explanation": "Reviewing the plan",
+          "input_params": {
+            "plan": {
+              "description": "The LLM's plan to address the user ask"
+            }
+          },
+          "options": [
+            {
+              "description": "Approve the plan and proceed to execution",
+              "steps": [
+                {
+                  "id": "execute",
+                  "params": {
+                    "plan": "$(plan)"
+                  }
+                }
+              ],
+              "title": "Accept"
+            },
+            {
+              "description": "Provide feedback to refine the plan",
+              "has_user_input": true,
+              "steps": [
+                {
+                  "id": "refine",
+                  "params": {
+                    "feedback": "The user reviewed the plan and gave you the following feedback you need to address: $(user_text)"
+                  }
+                }
+              ],
+              "title": "Modify"
+            },
+            {
+              "description": "Reject the plan and stop the workflow",
+              "steps": [
+                {
+                  "id": "stop"
+                }
+              ],
+              "title": "Reject"
+            },
+            {
+              "description": "Generate and open a visual whiteboard to walk through the plan",
+              "steps": [
+                {
+                  "id": "generate_whiteboard",
+                  "params": {
+                    "plan": "$(plan)"
+                  }
+                }
+              ],
+              "title": "Whiteboard"
+            }
+          ],
+          "question": "Review the plan above. What would you like to do?",
+          "tool": "ask_question_to_user",
+          "type": "tool"
+        }
+      }
+    },
+    {
+      "name": "heartbeat",
+      "display_in_tui": false,
+      "budget": {
+        "max_iterations": 5,
+        "max_seconds": 480
+      },
+      "entry_point": {
+        "id": "check",
+        "params": {
+          "instructions": "$(workflow.prompt)"
+        }
+      },
+      "steps": {
+        "check": {
+          "type": "agent",
+          "agent": "general",
+          "effort": "low",
+          "explanation": "Heartbeat check",
+          "input_params": {
+            "instructions": {
+              "description": "The heartbeat whiteboard contents plus the HEARTBEAT_OK contract"
+            }
+          },
+          "prompt": "$(instructions)",
+          "stream": true
+        }
+      }
+    }
+  ]
+}

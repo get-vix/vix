@@ -32,8 +32,8 @@ const (
 )
 
 var (
-	detectedSandbox     sandboxMode
-	detectSandboxOnce   sync.Once
+	detectedSandbox   sandboxMode
+	detectSandboxOnce sync.Once
 )
 
 // detectSandbox checks which sandbox mechanism is available on the current platform.
@@ -97,13 +97,43 @@ func seatbeltProfile(cwd string, extraDirs []string) string {
 	b.WriteString("(version 1)\n(deny default)\n\n")
 
 	b.WriteString(";; Allow process execution and standard operations\n")
-	b.WriteString("(allow process-exec)\n")
+	b.WriteString("(allow process-exec*)\n")
 	b.WriteString("(allow process-fork)\n")
 	b.WriteString("(allow signal)\n")
 	b.WriteString("(allow sysctl-read)\n")
 	b.WriteString("(allow mach-lookup)\n")
-	b.WriteString("(allow ipc-posix-shm-read-data)\n")
-	b.WriteString("(allow ipc-posix-shm-write-data)\n\n")
+	// mach-register lets child processes register mach services via the
+	// bootstrap server. Needed by multi-process tools such as headless Chrome
+	// (its crashpad handler does bootstrap_check_in); without it they fail to
+	// start under the sandbox.
+	b.WriteString("(allow mach-register)\n")
+	b.WriteString("(allow ipc-posix-shm*)\n")
+	// iokit-open lets processes open IOKit user clients (IOServiceOpen).
+	// Chromium/WebKit open graphics user clients (e.g. IOSurfaceRootUserClient)
+	// during early startup even in --headless mode; without this the open
+	// returns kIOReturnNotPermitted (0xe00002e2) and the browser dereferences
+	// the NULL client → SIGSEGV before it finishes launching. This is required
+	// to run headless browsers / Playwright e2e under the sandbox. Allowed
+	// broadly (any user client) rather than scoped to specific graphics classes,
+	// since the exact set varies by GPU/macOS version. Note: "iokit-open" (not
+	// the runtime API's "iokit-open-user-client" name) is the token the SBPL
+	// compiler accepts.
+	b.WriteString("(allow iokit-open)\n")
+	// pseudo-tty allows PTY allocation (grantpt/TIOCPTYGRANT, forkpty).
+	// Without it, tools that need a controlling terminal — tmux, script,
+	// expect, some REPLs — fail with "fork failed: Operation not permitted"
+	// even though process-fork is allowed, because the denial is on the pty
+	// grant, not on fork itself.
+	b.WriteString("(allow pseudo-tty)\n")
+	// pseudo-tty is necessary but not sufficient: grantpt(3) issues an
+	// ioctl(TIOCPTYGRANT) on /dev/ptmx, and that ioctl is a distinct
+	// Seatbelt operation (file-ioctl) which file-write* does NOT imply. On
+	// macOS 26+ the grant fails with EPERM without it, so tmux/script/expect
+	// still can't allocate a controlling terminal. Mirror Apple's own
+	// profiles (e.g. /System/Library/Sandbox/Profiles/application.sb) by
+	// allowing file-ioctl on the pty master and the cloned /dev/ttys* slaves.
+	b.WriteString("(allow file-ioctl (literal \"/dev/ptmx\"))\n")
+	b.WriteString("(allow file-ioctl (regex #\"^/dev/ttys[0-9]*\"))\n\n")
 
 	b.WriteString(";; cwd: read-write\n")
 	fmt.Fprintf(&b, "(allow file-read* (subpath %q))\n", realCwd)
@@ -148,6 +178,35 @@ func seatbeltProfile(cwd string, extraDirs []string) string {
 	return b.String()
 }
 
+// bashEnvBlocklist names environment variables that must not leak from the
+// daemon into the bash commands it spawns (workflow/job steps, the bash tool).
+// GODEBUG in particular is a vixd-only debug knob, but it makes every Go child
+// binary a step invokes (e.g. the GitHub CLI) emit runtime trace lines such as
+// "SCHED 0ms: gomaxprocs=..." on stderr. Those lines then contaminate the
+// captured step output and corrupt downstream parsing (e.g. a URL list).
+var bashEnvBlocklist = map[string]bool{
+	"GODEBUG": true,
+}
+
+// sanitizedBashEnv returns the current process environment with daemon-only
+// debug variables (see bashEnvBlocklist) removed, so the external tools a bash
+// step runs start from a clean slate.
+func sanitizedBashEnv() []string {
+	src := os.Environ()
+	out := make([]string, 0, len(src))
+	for _, kv := range src {
+		key := kv
+		if i := strings.IndexByte(kv, '='); i >= 0 {
+			key = kv[:i]
+		}
+		if bashEnvBlocklist[key] {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
 // sandboxedBashCmd builds an exec.Cmd that runs a bash command inside the
 // appropriate sandbox for the current platform. Falls back to a plain bash
 // invocation if no sandbox is available.
@@ -162,6 +221,7 @@ func sandboxedBashCmd(ctx context.Context, command, cwd string, extraDirs []stri
 		profile := seatbeltProfile(cwd, extraDirs)
 		cmd := exec.CommandContext(ctx, "sandbox-exec", "-p", profile, "bash", "-c", command)
 		cmd.Dir = cwd
+		cmd.Env = sanitizedBashEnv()
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		cmd.WaitDelay = 2 * time.Second
 		cmd.Cancel = func() error {
@@ -203,12 +263,13 @@ func sandboxedBashCmd(ctx context.Context, command, cwd string, extraDirs []stri
 			return err
 		}
 		// Propagate env through bwrap
-		cmd.Env = os.Environ()
+		cmd.Env = sanitizedBashEnv()
 		return cmd
 
 	default:
 		cmd := exec.CommandContext(ctx, "bash", "-c", command)
 		cmd.Dir = cwd
+		cmd.Env = sanitizedBashEnv()
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		cmd.WaitDelay = 2 * time.Second
 		cmd.Cancel = func() error {
@@ -350,9 +411,9 @@ func buildRestrictedPath() string {
 		"/bin",
 		"/usr/sbin",
 		"/sbin",
-		"/opt/homebrew/bin",  // macOS ARM homebrew
+		"/opt/homebrew/bin", // macOS ARM homebrew
 		"/opt/homebrew/sbin",
-		"/usr/local/go/bin",  // Go toolchain
+		"/usr/local/go/bin", // Go toolchain
 	}
 	// Preserve any GOPATH/bin, cargo, etc. from the user's PATH
 	existing := strings.Split(os.Getenv("PATH"), ":")

@@ -89,18 +89,18 @@ func streamDebugMiddleware(req *http.Request, next option.MiddlewareNext) (*http
 	t0 := time.Now()
 
 	var (
-		dnsStart, dnsDone     time.Time
-		connStart, connDone   time.Time
-		tlsStart, tlsDone     time.Time
-		wroteReq              time.Time
-		firstByte             time.Time
-		reused                bool
-		remoteAddr            string
-		connectErr, tlsErr    error
+		dnsStart, dnsDone   time.Time
+		connStart, connDone time.Time
+		tlsStart, tlsDone   time.Time
+		wroteReq            time.Time
+		firstByte           time.Time
+		reused              bool
+		remoteAddr          string
+		connectErr, tlsErr  error
 	)
 	trace := &httptrace.ClientTrace{
-		DNSStart: func(httptrace.DNSStartInfo) { dnsStart = time.Now() },
-		DNSDone:  func(httptrace.DNSDoneInfo) { dnsDone = time.Now() },
+		DNSStart:     func(httptrace.DNSStartInfo) { dnsStart = time.Now() },
+		DNSDone:      func(httptrace.DNSDoneInfo) { dnsDone = time.Now() },
 		ConnectStart: func(_, _ string) { connStart = time.Now() },
 		ConnectDone: func(_, _ string, err error) {
 			connDone = time.Now()
@@ -117,7 +117,7 @@ func streamDebugMiddleware(req *http.Request, next option.MiddlewareNext) (*http
 				remoteAddr = info.Conn.RemoteAddr().String()
 			}
 		},
-		WroteRequest: func(httptrace.WroteRequestInfo) { wroteReq = time.Now() },
+		WroteRequest:         func(httptrace.WroteRequestInfo) { wroteReq = time.Now() },
 		GotFirstResponseByte: func() { firstByte = time.Now() },
 	}
 	ctx := httptrace.WithClientTrace(req.Context(), trace)

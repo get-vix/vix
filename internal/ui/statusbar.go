@@ -31,6 +31,7 @@ func renderStatusBar(
 	width int,
 	connected bool,
 	reconnecting bool,
+	draft bool,
 	msg StatusMessage,
 	s Styles,
 	activeTab TabKind,
@@ -45,12 +46,12 @@ func renderStatusBar(
 	type shortcut struct{ key, label string }
 	var defs []shortcut
 	switch activeTab {
-	case TabKindSessions:
+	case TabKindThreads:
 		defs = []shortcut{
-			{"t", "new session"},
-			{"d", "duplicate session"},
-			{"x", "delete session"},
-			{"↑↓", "navigate sessions"},
+			{"t", "new thread"},
+			{"d", "duplicate thread"},
+			{"x", "delete thread"},
+			{"↑↓", "navigate threads"},
 			{"enter", "open in workspace"},
 		}
 	case TabKindModels:
@@ -59,9 +60,16 @@ func renderStatusBar(
 			{"Tab", "Switch focus"},
 			{"Enter", "Select"},
 		}
+	case TabKindJobs:
+		defs = []shortcut{
+			{"↑↓", "navigate"},
+			{"space", "enable/disable"},
+		}
 	case TabKindSettings:
 		defs = []shortcut{
+			{"↑↓", "navigate"},
 			{"Enter", "Toggle"},
+			{"←→", "Adjust"},
 		}
 	default: // TabKindChat (Workspace)
 		switch focus {
@@ -70,24 +78,24 @@ func renderStatusBar(
 				{"g", "top"},
 				{"Shift+G", "bottom"},
 				{"Tab", "Switch focus"},
-				{"Ctrl+T", "New session"},
-				{"Ctrl+P", "Previous session"},
-				{"Ctrl+N", "Next session"},
+				{"Ctrl+T", "New thread"},
+				{"Ctrl+P", "Previous thread"},
+				{"Ctrl+N", "Next thread"},
 			}
 		case FocusRightPanel:
 			defs = []shortcut{
 				{"Tab", "Switch focus"},
-				{"Ctrl+T", "New session"},
-				{"Ctrl+P", "Previous session"},
-				{"Ctrl+N", "Next session"},
+				{"Ctrl+T", "New thread"},
+				{"Ctrl+P", "Previous thread"},
+				{"Ctrl+N", "Next thread"},
 			}
 		default: // FocusEditor
 			defs = []shortcut{
 				{"Tab", "Switch focus"},
 				{"Shift+Tab", "Workflows"},
-				{"Ctrl+T", "New session"},
-				{"Ctrl+P", "Previous session"},
-				{"Ctrl+N", "Next session"},
+				{"Ctrl+T", "New thread"},
+				{"Ctrl+P", "Previous thread"},
+				{"Ctrl+N", "Next thread"},
 			}
 		}
 	}
@@ -104,6 +112,8 @@ func renderStatusBar(
 		connStatus = statusConnectedStyle.Render("● Connected")
 	} else if reconnecting {
 		connStatus = statusReconnectingStyle.Render("● Reconnecting")
+	} else if draft {
+		connStatus = lipgloss.NewStyle().Foreground(s.ColorDimGray).Render("○ Draft — not started")
 	} else {
 		connStatus = statusDisconnectedStyle.Render("● Disconnected")
 	}

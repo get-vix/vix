@@ -9,15 +9,19 @@ import (
 
 const slashMenuMaxVisible = 8
 
+// slashGroupOrder is the display order of slash-menu sections. Commands whose
+// Group is empty or unrecognized fall into a trailing default section.
+var slashGroupOrder = []string{"Conversation", "Skills"}
+
 // slashCommands is the fixed list of built-in slash commands shown in the menu.
 var slashCommands = []Command{
-	{Name: "fork", Description: "Fork a new session from a turn (/fork N)", Action: "slash_fork"},
-	{Name: "trim", Description: "Delete all messages AFTER a turn (/trim N)", Action: "slash_trim"},
-	{Name: "copy", Description: "Copy a turn, or the whole conversation (/copy [N])", Action: "slash_copy"},
-	{Name: "goto", Description: "Scroll to a turn's start (/goto N)", Action: "slash_goto"},
-	{Name: "clear", Description: "Clear conversation history", Action: "slash_clear"},
-	{Name: "compact", Description: "Summarize older turns to free context (/compact [N])", Action: "slash_compact"},
-	{Name: "skills", Description: "List available skills", Action: "slash_skills"},
+	{Name: "fork", Description: "Fork a new thread from a turn (/fork N)", Action: "slash_fork", Group: "Conversation"},
+	{Name: "trim", Description: "Delete all messages AFTER a turn (/trim N)", Action: "slash_trim", Group: "Conversation"},
+	{Name: "copy", Description: "Copy a turn, or the whole conversation (/copy [N])", Action: "slash_copy", Group: "Conversation"},
+	{Name: "goto", Description: "Scroll to a turn's start (/goto N)", Action: "slash_goto", Group: "Conversation"},
+	{Name: "clear", Description: "Clear conversation history", Action: "slash_clear", Group: "Conversation"},
+	{Name: "compact", Description: "Summarize older turns to free context (/compact [N])", Action: "slash_compact", Group: "Conversation"},
+	{Name: "skills", Description: "List available skills", Action: "slash_skills", Group: "Skills"},
 }
 
 // slashCommandInsertText returns the input text to insert when a parameterized
@@ -42,10 +46,10 @@ func slashCommandInsertText(action string) (string, bool) {
 	return "", false
 }
 
-// sessionSlashCommands returns the built-in slash commands followed by one
+// threadSlashCommands returns the built-in slash commands followed by one
 // entry per loaded skill, so skills autocomplete alongside built-ins. Selecting
 // a skill inserts "/<name> " for the user to add arguments and submit.
-func sessionSlashCommands(sess *SessionState) []Command {
+func threadSlashCommands(sess *ThreadState) []Command {
 	if sess == nil || len(sess.skills) == 0 {
 		return slashCommands
 	}
@@ -60,6 +64,7 @@ func sessionSlashCommands(sess *SessionState) []Command {
 			Name:        sk.Name,
 			Description: desc,
 			Action:      "slash_skill:" + sk.Name,
+			Group:       "Skills",
 		})
 	}
 	return cmds
@@ -151,7 +156,63 @@ func extractSlashQuery(value string) (query string, found bool) {
 	return rest, true
 }
 
-// View renders the slash menu popup. Returns an empty string when not visible.
+// menuRow is a single rendered line in the slash menu: either a section header
+// (header != "") or a command row. cmdIndex points into the filtered slice for
+// command rows and is -1 for headers.
+type menuRow struct {
+	header   string
+	cmd      Command
+	cmdIndex int
+}
+
+// buildRows groups filtered commands into ordered sections, emitting a header
+// row before each non-empty group. Groups listed in slashGroupOrder come first
+// in that order; any commands with an unrecognized or empty Group fall into a
+// trailing default section (header omitted so a single ungrouped list looks
+// flat).
+func buildRows(filtered []Command) []menuRow {
+	if len(filtered) == 0 {
+		return nil
+	}
+	// Collect command indices per group, preserving first-seen order for any
+	// groups not named in slashGroupOrder.
+	byGroup := map[string][]int{}
+	var extraOrder []string
+	known := map[string]bool{}
+	for _, g := range slashGroupOrder {
+		known[g] = true
+	}
+	for i, cmd := range filtered {
+		g := cmd.Group
+		if _, seen := byGroup[g]; !seen && g != "" && !known[g] {
+			extraOrder = append(extraOrder, g)
+		}
+		byGroup[g] = append(byGroup[g], i)
+	}
+
+	var rows []menuRow
+	emit := func(group string, withHeader bool) {
+		idxs := byGroup[group]
+		if len(idxs) == 0 {
+			return
+		}
+		if withHeader && group != "" {
+			rows = append(rows, menuRow{header: group, cmdIndex: -1})
+		}
+		for _, i := range idxs {
+			rows = append(rows, menuRow{cmd: filtered[i], cmdIndex: i})
+		}
+	}
+	for _, g := range slashGroupOrder {
+		emit(g, true)
+	}
+	for _, g := range extraOrder {
+		emit(g, false)
+	}
+	emit("", false) // ungrouped commands, no header
+	return rows
+}
+
 func (s *SlashMenu) View(width, maxHeight int, styles Styles) string {
 	if !s.visible {
 		return ""
@@ -196,33 +257,65 @@ func (s *SlashMenu) View(width, maxHeight int, styles Styles) string {
 		}
 	}
 
-	total := len(s.filtered)
+	// Group filtered commands into ordered sections with header rows.
+	allRows := buildRows(s.filtered)
+	total := len(allRows)
 	if maxRows > total {
 		maxRows = total
 	}
 
-	// Sliding window around selected
+	// Row index of the selected command (selection indexes s.filtered, never headers).
+	selRow := 0
+	for i, r := range allRows {
+		if r.cmdIndex == s.selected {
+			selRow = i
+			break
+		}
+	}
+
+	// Sliding window around the selected row, including header rows in the budget.
 	startIdx := 0
-	if s.selected >= maxRows {
-		startIdx = s.selected - maxRows + 1
+	if selRow >= maxRows {
+		startIdx = selRow - maxRows + 1
 	}
 	endIdx := startIdx + maxRows
 	if endIdx > total {
 		endIdx = total
 		startIdx = max(0, endIdx-maxRows)
 	}
+	// Keep the selected command's section header in view when the command would
+	// otherwise sit flush against the top edge of the window.
+	if startIdx > 0 && allRows[startIdx].cmdIndex == s.selected && allRows[startIdx-1].header != "" {
+		startIdx--
+		endIdx = startIdx + maxRows
+		if endIdx > total {
+			endIdx = total
+		}
+	}
+
+	// Width available for the description column: inner width minus the 2-char
+	// row prefix, the name column, and the 3-space separator. Truncate to keep
+	// each entry on a single line so long descriptions don't wrap.
+	descWidth := innerWidth - maxNameLen - 5
 
 	var rows []string
 	for i := startIdx; i < endIdx; i++ {
-		cmd := s.filtered[i]
-		if i == s.selected {
+		r := allRows[i]
+		if r.header != "" {
+			line := lipgloss.NewStyle().Bold(true).Foreground(colorDim).Width(innerWidth).Render(r.header)
+			rows = append(rows, line)
+			continue
+		}
+		cmd := r.cmd
+		desc := truncateLabel(cmd.Description, descWidth)
+		if r.cmdIndex == s.selected {
 			nameStr := lipgloss.NewStyle().Bold(true).Foreground(colorPrimary).Width(maxNameLen).Render(cmd.Name)
-			descStr := lipgloss.NewStyle().Foreground(colorPrimary).Render(cmd.Description)
+			descStr := lipgloss.NewStyle().Foreground(colorPrimary).Render(desc)
 			line := lipgloss.NewStyle().Width(innerWidth).Render("▸ " + nameStr + "   " + descStr)
 			rows = append(rows, line)
 		} else {
 			nameStr := lipgloss.NewStyle().Foreground(colorAccentCool).Width(maxNameLen).Render(cmd.Name)
-			descStr := lipgloss.NewStyle().Foreground(colorDim).Render(cmd.Description)
+			descStr := lipgloss.NewStyle().Foreground(colorDim).Render(desc)
 			line := lipgloss.NewStyle().Width(innerWidth).Render("  " + nameStr + "   " + descStr)
 			rows = append(rows, line)
 		}

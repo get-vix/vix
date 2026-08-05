@@ -10,6 +10,21 @@ import (
 // expands to "". Unknown ${...} forms are left verbatim. The function makes a
 // single left-to-right pass and does not re-expand substituted text.
 func interpolate(s string) string {
+	return interpolateWith(s, os.Getenv)
+}
+
+// interpolateDefaults expands the same references as interpolate but ignores
+// the process environment, always falling back to the embedded ${env:VAR:-def}
+// default (or "" when there is none). It is used to validate the shipped
+// providers.json structurally — independent of the user's environment — so a
+// runtime env override can never turn embedded-file validation into a panic.
+func interpolateDefaults(s string) string {
+	return interpolateWith(s, func(string) string { return "" })
+}
+
+// interpolateWith is the shared engine: lookup resolves a variable name to its
+// value (an empty result falls back to the inline default, if any).
+func interpolateWith(s string, lookup func(string) string) string {
 	const open = "${env:"
 	if !strings.Contains(s, open) {
 		return s
@@ -30,7 +45,7 @@ func interpolate(s string) string {
 			break
 		}
 		expr := rest[:j]
-		b.WriteString(resolveEnvExpr(expr))
+		b.WriteString(resolveEnvExpr(expr, lookup))
 		s = rest[j+1:]
 	}
 	return b.String()
@@ -38,7 +53,7 @@ func interpolate(s string) string {
 
 // resolveEnvExpr resolves the inside of a ${env:...} reference: either "VAR"
 // or "VAR:-default". An unset or empty VAR falls back to the default (or "").
-func resolveEnvExpr(expr string) string {
+func resolveEnvExpr(expr string, lookup func(string) string) string {
 	name := expr
 	def := ""
 	hasDef := false
@@ -47,7 +62,7 @@ func resolveEnvExpr(expr string) string {
 		def = expr[k+2:]
 		hasDef = true
 	}
-	if v := os.Getenv(name); v != "" {
+	if v := lookup(name); v != "" {
 		return v
 	}
 	if hasDef {

@@ -17,7 +17,7 @@ type History struct {
 }
 
 // NewHistory creates a new history manager, loading from <baseDir>/history.txt.
-// baseDir should be the session's primary .vix directory (cfg.Paths.Primary()).
+// baseDir should be the thread's primary .vix directory (cfg.Paths.Primary()).
 func NewHistory(baseDir string) *History {
 	if baseDir == "" {
 		baseDir = ".vix"

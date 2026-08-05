@@ -16,6 +16,11 @@ type StreamOpts = llm.StreamOpts
 // works unchanged.
 type PluginConfig = llm.PluginConfig
 
+// PluginSource is the daemon-side alias for llm.PluginSource — the callback
+// NewFromModel invokes at client-construction time to obtain the plugin
+// config for a specific provider/model/credential.
+type PluginSource = llm.PluginSource
+
 // ThinkingStallError is the daemon-side alias for llm.ThinkingStallError.
 type ThinkingStallError = llm.ThinkingStallError
 

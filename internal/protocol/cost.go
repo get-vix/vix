@@ -53,7 +53,7 @@ var pricingByProvider = map[string][]modelPricing{
 		{"mimo-v2-flash", 0.07, 0.14, 0, 0},
 	},
 	// "openrouter" intentionally absent — its CostUSD is server-reported
-	// and short-circuits in the caller (see daemon/session.go costFor).
+	// and short-circuits in the caller (see daemon/thread.go costFor).
 }
 
 // CalculateCost returns the estimated dollar cost for the given token usage.

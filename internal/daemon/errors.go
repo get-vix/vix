@@ -4,12 +4,59 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/get-vix/vix/internal/daemon/llm"
 	"github.com/openai/openai-go"
 )
+
+// rateLimitRetryAfter returns the server-suggested retry delay for a 429 error,
+// reading Retry-After-Ms then Retry-After from the HTTP response headers.
+// Falls back to 0 (caller uses its own backoff) if not present or not a 429.
+func rateLimitRetryAfter(err error) time.Duration {
+	var apiErr *anthropic.Error
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != 429 || apiErr.Response == nil {
+		return 0
+	}
+	h := apiErr.Response.Header
+	if ms := h.Get("Retry-After-Ms"); ms != "" {
+		if n, err := strconv.ParseInt(ms, 10, 64); err == nil && n > 0 {
+			return time.Duration(n) * time.Millisecond
+		}
+	}
+	if s := h.Get("Retry-After"); s != "" {
+		if n, err := strconv.ParseFloat(s, 64); err == nil && n > 0 {
+			return time.Duration(n * float64(time.Second))
+		}
+	}
+	return 0
+}
+
+// isRateLimitError reports whether err is a 429 rate-limit response from any
+// supported provider. Used by retry loops to apply a longer backoff cap for
+// subscription-tier accounts whose rate-limit windows exceed 60 s.
+func isRateLimitError(err error) bool {
+	var apiErr *anthropic.Error
+	if errors.As(err, &apiErr) {
+		return apiErr.StatusCode == 429
+	}
+	var oaiErr *openai.Error
+	if errors.As(err, &oaiErr) {
+		return oaiErr.StatusCode == 429
+	}
+	var bedrockErr *llm.BedrockHTTPError
+	if errors.As(err, &bedrockErr) {
+		return bedrockErr.Code == 429
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "rate_limit_error") ||
+		strings.Contains(msg, "too many requests")
+}
 
 // extractStatusCodeAnthropic returns the HTTP status code from an
 // anthropic.Error wrapped in err, or 0 otherwise. Anthropic-only — the
@@ -36,6 +83,42 @@ func apiErrorMessage(apiErr *anthropic.Error) string {
 		return body.Error.Message
 	}
 	return ""
+}
+
+// openAIErrorDetail returns the most informative human-readable detail for an
+// OpenAI API error. The SDK populates oaiErr.Message only when the body uses
+// the standard {"error":{"message":...}} envelope. The ChatGPT/Codex backend
+// instead returns shapes like {"detail":...}, which the SDK unwraps to nothing
+// — leaving Message empty and discarding the reason. In that case we fall back
+// to reading the original response body (still attached to oaiErr.Response) and
+// parse it for "detail" or "error.message", finally degrading to a truncated
+// raw body so the user always sees something actionable.
+func openAIErrorDetail(oaiErr *openai.Error) string {
+	if oaiErr.Message != "" {
+		return oaiErr.Message
+	}
+	if oaiErr.Response == nil || oaiErr.Response.Body == nil {
+		return ""
+	}
+	raw, err := io.ReadAll(io.LimitReader(oaiErr.Response.Body, 4096))
+	if err != nil || len(raw) == 0 {
+		return ""
+	}
+	var body struct {
+		Detail string `json:"detail"`
+		Error  struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(raw, &body) == nil {
+		if body.Detail != "" {
+			return body.Detail
+		}
+		if body.Error.Message != "" {
+			return body.Error.Message
+		}
+	}
+	return strings.TrimSpace(string(raw))
 }
 
 // classifyError determines if an API error is retryable and returns a
@@ -79,7 +162,7 @@ func classifyError(err error) (retryable bool, friendlyMsg string) {
 
 	var oaiErr *openai.Error
 	if errors.As(err, &oaiErr) {
-		detail := oaiErr.Message
+		detail := openAIErrorDetail(oaiErr)
 		withDetail := func(label string) string {
 			if detail != "" {
 				return fmt.Sprintf("%s: %s", label, detail)
@@ -110,6 +193,18 @@ func classifyError(err error) (retryable bool, friendlyMsg string) {
 				return true, withDetail("API server error")
 			}
 			return false, withDetail("API error")
+		}
+	}
+
+	var bedrockErr *llm.BedrockHTTPError
+	if errors.As(err, &bedrockErr) {
+		switch {
+		case bedrockErr.Code == 429:
+			return true, "Rate limited by API"
+		case bedrockErr.Code >= 500:
+			return true, "API server error"
+		default:
+			return false, "Bad request"
 		}
 	}
 

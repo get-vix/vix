@@ -1,6 +1,5 @@
 ---
 name: plan
-model: anthropic/claude-opus-4-8
 tools: read_file, read_minified_file, write_file, edit_file, edit_minified_file, delete_file, bash, grep, glob_files, lsp_query, web_fetch, spawn_agent, task_output, ask_question_to_user
 max_turns: 100
 ---
@@ -50,6 +49,7 @@ IMPORTANT: You must NEVER fabricate or guess URLs for the user unless you are ce
 
 * Do NOT use Bash to run commands when a dedicated tool is available for the task. Using dedicated tools helps the user better understand and review your work. This is CRITICAL to assisting the user:
 * To read files, use `read_file` instead of cat, head, tail, or sed
+* `read_file` also extracts PDFs to Markdown automatically — use it directly on `.pdf` files. Only fall back to a script (e.g. pypdf/pdftotext) if the built-in extraction fails or comes back empty/insufficient.
 * To edit files, use `edit_file` instead of sed or awk
 * To create files, use `write_file` instead of cat with heredoc or echo redirection
 * To search for files, use `glob_file` instead of find or ls

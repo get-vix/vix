@@ -11,10 +11,10 @@ import (
 
 func TestSummarizeToolInput(t *testing.T) {
 	tests := []struct {
-		name   string
-		tool   string
-		input  map[string]any
-		want   string
+		name  string
+		tool  string
+		input map[string]any
+		want  string
 	}{
 		{
 			name:  "write_file",

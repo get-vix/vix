@@ -41,15 +41,14 @@ func ProviderSupportsLogin(uiProvider string) bool {
 
 // startProviderLogin runs the OAuth login flow for a UI provider in the
 // background, pushing status updates to the program. On success the credential
-// is stored in the keychain by the auth subsystem.
-func startProviderLogin(uiProvider string) {
+// is stored by the auth subsystem (OS keychain, or the plaintext auth.json when
+// the OS keychain is unusable). It returns a tea.Cmd so any immediate error
+// is delivered through the Bubble Tea event loop; emitting it synchronously via
+// sendToProgram from within Update would deadlock Program.Send (issue #53).
+func startProviderLogin(uiProvider string) tea.Cmd {
 	loginID, ok := oauthLoginID(uiProvider)
 	if !ok {
-		return
-	}
-	if !auth.KeychainAvailable() {
-		sendToProgram(loginDoneMsg{provider: uiProvider, err: auth.ErrKeychainUnavailable})
-		return
+		return nil
 	}
 	go func() {
 		cb := auth.LoginCallbacks{
@@ -73,6 +72,7 @@ func startProviderLogin(uiProvider string) {
 		err := auth.DefaultStorage().Login(context.Background(), loginID, cb)
 		sendToProgram(loginDoneMsg{provider: uiProvider, err: err})
 	}()
+	return nil
 }
 
 // sendToProgram delivers a message to the running Bubble Tea program, if any.

@@ -7,7 +7,7 @@ import (
 
 // TestAvailableModels_AllPrefixed asserts every catalogue entry's Spec
 // starts with its declared Provider name plus a slash. The settings UI
-// dispatches Spec verbatim to session.set_model; if a row leaks a bare
+// dispatches Spec verbatim to thread.set_model; if a row leaks a bare
 // name through, ParseModel rejects it and the model picker breaks.
 func TestAvailableModels_AllPrefixed(t *testing.T) {
 	for _, m := range AvailableModels() {
@@ -20,10 +20,12 @@ func TestAvailableModels_AllPrefixed(t *testing.T) {
 
 // TestModelsForProvider_GroupsCorrectly asserts the filter returns models
 // whose Provider matches AND covers every provider in AvailableProviders.
+// Local providers (Ollama, llama.cpp) are exempt from the non-empty check:
+// their models are discovered live from the running server, not catalogued.
 func TestModelsForProvider_GroupsCorrectly(t *testing.T) {
 	for _, p := range AvailableProviders() {
 		models := ModelsForProvider(p.Name)
-		if len(models) == 0 {
+		if len(models) == 0 && !p.Local {
 			t.Errorf("provider %q has no models in AvailableModels", p.Name)
 		}
 		for _, m := range models {

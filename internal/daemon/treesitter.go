@@ -7,12 +7,12 @@ import (
 	"path/filepath"
 	"strings"
 
-	sitter "github.com/tree-sitter/go-tree-sitter"
 	tree_sitter_swift "github.com/gridlhq-dev/tree-sitter-swift/bindings/go"
 	tree_sitter_kotlin "github.com/tree-sitter-grammars/tree-sitter-kotlin/bindings/go"
+	sitter "github.com/tree-sitter/go-tree-sitter"
 	tree_sitter_bash "github.com/tree-sitter/tree-sitter-bash/bindings/go"
-	tree_sitter_c "github.com/tree-sitter/tree-sitter-c/bindings/go"
 	tree_sitter_csharp "github.com/tree-sitter/tree-sitter-c-sharp/bindings/go"
+	tree_sitter_c "github.com/tree-sitter/tree-sitter-c/bindings/go"
 	tree_sitter_cpp "github.com/tree-sitter/tree-sitter-cpp/bindings/go"
 	tree_sitter_css "github.com/tree-sitter/tree-sitter-css/bindings/go"
 	tree_sitter_go "github.com/tree-sitter/tree-sitter-go/bindings/go"
@@ -97,15 +97,25 @@ func newParserForFile(filePath string) *sitter.Parser {
 // minifyWithTreeSitter uses Tree-sitter to parse and minify source code.
 // When keepComments is true, comments are preserved in the output.
 func minifyWithTreeSitter(content string, filePath string, keepComments bool) (string, error) {
+	out, _, err := minifyWithTreeSitterMapped(content, filePath, keepComments)
+	return out, err
+}
+
+// minifyWithTreeSitterMapped is like minifyWithTreeSitter but also returns a
+// position map (one srcSegment per emitted token) describing where each token
+// in the minified output came from in the original source. The map lets edit
+// tooling project a match found in the minified string back onto exact byte
+// offsets in the unminified file. segs is nil when the file cannot be minified.
+func minifyWithTreeSitterMapped(content string, filePath string, keepComments bool) (string, []srcSegment, error) {
 	parser := newParserForFile(filePath)
 	if parser == nil {
-		return "", nil
+		return "", nil, nil
 	}
 	defer parser.Close()
 
 	tree := parser.Parse([]byte(content), nil)
 	if tree == nil || tree.RootNode() == nil {
-		return "", nil
+		return "", nil, nil
 	}
 	defer tree.Close()
 
@@ -148,7 +158,7 @@ func minifyWithTreeSitter(content string, filePath string, keepComments bool) (s
 		preserveSemicolons(tokens, source, ext)
 	}
 
-	out := minifyTokens(tokens)
+	out, segs := minifyTokensWithMap(tokens)
 
 	// Validation: re-parse the minified output and reject if minification
 	// introduced new syntax errors that weren't in the input. This catches
@@ -156,11 +166,11 @@ func minifyWithTreeSitter(content string, filePath string, keepComments bool) (s
 	// output reaches disk and breaks downstream formatters.
 	if out != "" && !tree.RootNode().HasError() {
 		if err := revalidateMinified(ext, out, parser); err != nil {
-			return "", fmt.Errorf("minifier produced invalid syntax for %s: %w", filePath, err)
+			return "", nil, fmt.Errorf("minifier produced invalid syntax for %s: %w", filePath, err)
 		}
 	}
 
-	return out, nil
+	return out, segs, nil
 }
 
 // usesSemicolonSeparator reports whether the language uses `;` as an
@@ -786,13 +796,36 @@ func annotateHTML(tokens []minifyToken) {
 	}
 }
 
+// srcSegment maps a contiguous run of bytes in the minified output back to the
+// original source. Each emitted token produces one segment: the byte range
+// [outStart, outStart+length) in the minified string corresponds, byte-for-byte,
+// to [srcStart, srcStart+length) in the original source, because a token's text
+// is a verbatim copy of the source bytes it came from. The gaps between segments
+// are synthetic — inserted separators (";", "\n", indentation) and
+// merge-prevention spaces that exist nowhere in the source.
+type srcSegment struct {
+	outStart int // byte offset in the minified output where the token begins
+	length   int // byte length of the token (== byteEnd-byteStart in source)
+	srcStart int // byte offset in the original source where the token begins
+}
+
 // minifyTokens joins tokens with minimal spacing.
 func minifyTokens(tokens []minifyToken) string {
+	out, _ := minifyTokensWithMap(tokens)
+	return out
+}
+
+// minifyTokensWithMap joins tokens with minimal spacing (producing output
+// byte-identical to minifyTokens) and additionally returns a position map: one
+// srcSegment per token, in output order, mapping the minified string back to
+// the original source.
+func minifyTokensWithMap(tokens []minifyToken) (string, []srcSegment) {
 	if len(tokens) == 0 {
-		return ""
+		return "", nil
 	}
 
 	var result strings.Builder
+	segs := make([]srcSegment, 0, len(tokens))
 	for i, tok := range tokens {
 		if i > 0 {
 			prev := tokens[i-1]
@@ -816,10 +849,20 @@ func minifyTokens(tokens []minifyToken) string {
 				}
 			}
 		}
+		segs = append(segs, srcSegment{
+			outStart: result.Len(),
+			length:   len(tok.text),
+			srcStart: int(tok.byteStart),
+		})
 		result.WriteString(tok.text)
 	}
 
-	return strings.TrimSpace(result.String())
+	// The first token is written before any separator (so the output never has
+	// leading whitespace) and no separator is emitted after the last token (so
+	// it never has trailing whitespace). TrimSpace is therefore a no-op in
+	// practice and leaves every segment offset valid; it is kept to guarantee
+	// byte-identical output with the pre-refactor minifyTokens.
+	return strings.TrimSpace(result.String()), segs
 }
 
 // isAtomicNode returns true for tree-sitter node types that should be emitted as a

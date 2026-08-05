@@ -13,7 +13,7 @@ import (
 
 // ToolSchemas returns the tool definitions in the provider-neutral
 // llm.ToolParam shape, using the package-level default timeout bounds.
-// Sessions that want bounds-aware descriptions should use
+// Threads that want bounds-aware descriptions should use
 // ToolSchemasWithBounds instead.
 func ToolSchemas() []llm.ToolParam {
 	return toolSchemasToNeutral(buildToolSchemas(defaultToolTimeoutDefault, defaultToolTimeoutMax))
@@ -108,7 +108,7 @@ func buildToolSchemas(def, max time.Duration) []anthropic.ToolUnionParam {
 	return []anthropic.ToolUnionParam{
 		{OfTool: &anthropic.ToolParam{
 			Name:        "read_file",
-			Description: anthropic.String("Read a file from disk. Returns content with line numbers. Use offset/limit for large files."),
+			Description: anthropic.String("Read a file from disk. Returns text content with line numbers. PDFs are automatically extracted to Markdown (headings, paragraphs, best-effort tables) — no external tools or scripts needed in the common case. Use offset/limit for large files."),
 			InputSchema: anthropic.ToolInputSchemaParam{
 				Properties: map[string]any{
 					"path":   map[string]any{"type": "string", "description": "The absolute path to the file."},
@@ -414,7 +414,7 @@ func buildToolSchemas(def, max time.Duration) []anthropic.ToolUnionParam {
 		}},
 		{OfTool: &anthropic.ToolParam{
 			Name:        "todo_write",
-			Description: anthropic.String("Replace the session's TODO list with the provided items. Use this as a scratchpad to plan and track multi-step work: write the full list, then call again later to flip statuses, add items, or remove finished ones. Replace semantics — the list you send fully overwrites the previous one. Keep `id` values stable across updates so you can refer back to the same item. Each item has an optional `depends_on` listing other ids that must be `completed` before this item may transition to `in_progress`. Server-side validation rejects: duplicate ids, self-dependencies, dangling references, dependency cycles, and any item marked `in_progress` whose dependencies are not yet `completed`. Prefer keeping at most one item `in_progress` at a time."),
+			Description: anthropic.String("Replace the thread's TODO list with the provided items. This list is USER-FACING: it renders live in the user's UI as a progress panel, so it is how the user follows what you are doing. Keep it current — call this tool every time you add a new item, change an item's status (e.g. mark one `in_progress` before starting it and `completed` immediately after finishing), or remove finished work. Do not batch updates or let the displayed state drift behind reality; an out-of-date list misleads the user. Use this as a scratchpad to plan and track multi-step work: write the full list, then call again later to flip statuses, add items, or remove finished ones. Replace semantics — the list you send fully overwrites the previous one. Keep `id` values stable across updates so you can refer back to the same item. Each item has an optional `depends_on` listing other ids that must be `completed` before this item may transition to `in_progress`. Server-side validation rejects: duplicate ids, self-dependencies, dangling references, dependency cycles, and any item marked `in_progress` whose dependencies are not yet `completed`. Prefer keeping at most one item `in_progress` at a time."),
 			InputSchema: anthropic.ToolInputSchemaParam{
 				Properties: map[string]any{
 					"todos": map[string]any{
@@ -441,7 +441,7 @@ func buildToolSchemas(def, max time.Duration) []anthropic.ToolUnionParam {
 		}},
 		{OfTool: &anthropic.ToolParam{
 			Name:        "todo_read",
-			Description: anthropic.String("Return the session's current TODO list. Use this to recover authoritative state when prior turns may have been compacted out of context, or whenever you want to double-check what is pending, in progress, completed, or blocked by an unmet dependency."),
+			Description: anthropic.String("Return the thread's current TODO list. Use this to recover authoritative state when prior turns may have been compacted out of context, or whenever you want to double-check what is pending, in progress, completed, or blocked by an unmet dependency."),
 			InputSchema: anthropic.ToolInputSchemaParam{
 				Properties: map[string]any{},
 				Required:   []string{},
@@ -481,7 +481,7 @@ var readOnlyToolNames = map[string]bool{
 // SkillToolSchema returns the neutral schema for the `skill` tool, which loads
 // a named skill's full instructions (and a listing of its bundled files) on
 // demand — the second level of progressive disclosure. It is only added to a
-// session's tool list when at least one skill is loaded.
+// thread's tool list when at least one skill is loaded.
 func SkillToolSchema() llm.ToolParam {
 	return llm.ToolParam{
 		Name:        "skill",
@@ -499,6 +499,33 @@ func SkillToolSchema() llm.ToolParam {
 				},
 			},
 			"required": []string{"name"},
+		},
+	}
+}
+
+// WorkflowSignalToolSchema returns the workflow_signal tool definition. It is
+// appended to a workflow agent step's tool list when the step declares
+// "signal": true, and is intercepted by the workflow engine rather than the
+// thread tool dispatcher: the agent uses it to declare the run complete or
+// blocked, and the workflow's next_steps route on $(workflow.signal.status).
+func WorkflowSignalToolSchema() llm.ToolParam {
+	return llm.ToolParam{
+		Name:        "workflow_signal",
+		Description: "Declare the outcome of the goal/workflow you are pursuing. Call with status \"complete\" ONLY when the full objective is verifiably met, or \"blocked\" ONLY when you are truly at an impasse that requires user input or an external change. Do not call it otherwise — simply end your turn to continue working in the next iteration.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"status": map[string]any{
+					"type":        "string",
+					"enum":        []string{"complete", "blocked"},
+					"description": "The outcome being declared.",
+				},
+				"note": map[string]any{
+					"type":        "string",
+					"description": "Short justification: what evidence proves completion, or what exactly is blocking progress.",
+				},
+			},
+			"required": []string{"status"},
 		},
 	}
 }
@@ -773,7 +800,7 @@ func ExcludeTools(tools []llm.ToolParam, names ...string) []llm.ToolParam {
 }
 
 // FilterToolSchemas returns only the tool schemas whose names appear in the
-// allowed list, using the package-level default timeout bounds. Sessions that
+// allowed list, using the package-level default timeout bounds. Threads that
 // want the schemas to reflect their configured tool_timeouts should use
 // FilterToolSchemasWithBounds instead.
 // If allowed is nil, returns all tools.

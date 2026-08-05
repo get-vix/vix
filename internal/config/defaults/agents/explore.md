@@ -1,6 +1,5 @@
 ---
 name: explore
-model: anthropic/claude-sonnet-4-6
 tools: read_file, read_minified_file, write_file, edit_file, edit_minified_file, delete_file, bash, grep, glob_files, lsp_query
 max_turns: 25
 ---

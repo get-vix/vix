@@ -55,7 +55,7 @@ func (l *Loader) Load(templatePath string, vars map[string]string, brainDir stri
 
 	// Strip YAML frontmatter if present
 	raw := stripFrontmatter(string(content))
-	
+
 	// Cache the processed template (after frontmatter removal)
 	l.mu.Lock()
 	l.cache[templatePath] = raw

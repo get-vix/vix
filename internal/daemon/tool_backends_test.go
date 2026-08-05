@@ -53,6 +53,49 @@ func TestNewGlobRunnerFd(t *testing.T) {
 	}
 }
 
+func TestBackendNames(t *testing.T) {
+	if got := (&systemGrepBackend{}).Name(); got != "grep" {
+		t.Errorf("systemGrepBackend.Name() = %q, want grep", got)
+	}
+	if got := (&rgBackend{}).Name(); got != "rg" {
+		t.Errorf("rgBackend.Name() = %q, want rg", got)
+	}
+	if got := (&builtinGlobBackend{}).Name(); got != "builtin" {
+		t.Errorf("builtinGlobBackend.Name() = %q, want builtin", got)
+	}
+	if got := (&fdGlobBackend{}).Name(); got != "fd" {
+		t.Errorf("fdGlobBackend.Name() = %q, want fd", got)
+	}
+}
+
+// TestNewRunnerNameFallback verifies the effective Name() reflects PATH fallback:
+// with an empty PATH, rg/fd are unresolvable, so the runners resolve to the
+// builtin/system defaults.
+func TestNewRunnerNameFallback(t *testing.T) {
+	t.Setenv("PATH", "")
+	if got := newGrepRunner("rg").Name(); got != "grep" {
+		t.Errorf("newGrepRunner(rg).Name() with empty PATH = %q, want grep", got)
+	}
+	if got := newGlobRunner("fd").Name(); got != "builtin" {
+		t.Errorf("newGlobRunner(fd).Name() with empty PATH = %q, want builtin", got)
+	}
+}
+
+// TestNewRunnerNamePresent verifies the effective Name() is the requested
+// backend when the tool is on PATH. Skips the assertion when not installed.
+func TestNewRunnerNamePresent(t *testing.T) {
+	if _, err := exec.LookPath("rg"); err == nil {
+		if got := newGrepRunner("rg").Name(); got != "rg" {
+			t.Errorf("newGrepRunner(rg).Name() = %q, want rg", got)
+		}
+	}
+	if _, err := exec.LookPath("fd"); err == nil {
+		if got := newGlobRunner("fd").Name(); got != "fd" {
+			t.Errorf("newGlobRunner(fd).Name() = %q, want fd", got)
+		}
+	}
+}
+
 func TestLoadToolsConfigMissing(t *testing.T) {
 	cfg := loadToolsConfig([]string{"/nonexistent/path/settings.json"})
 	if cfg.Grep.Backend != "" || cfg.Glob.Backend != "" {
@@ -224,6 +267,89 @@ func TestFdGlobBackendMultiplePatterns(t *testing.T) {
 	}
 	if strings.Contains(result, "c.go") {
 		t.Errorf("did not expect c.go in output, got %q", result)
+	}
+}
+
+// globParityTree writes a small nested tree used to compare backends. Returns
+// the root dir.
+func globParityTree(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, f := range []string{
+		"top.go",
+		"README.md",
+		"a/c.go",
+		"a/b/SKILL.md",
+		"pkg/skills/hooks/SKILL.md",
+		"pkg/skills/jobs/SKILL.md",
+		"x/y/z/deep.txt",
+	} {
+		p := filepath.Join(dir, filepath.FromSlash(f))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+// TestGlobBackendParity locks the fd backend to identical output as the builtin
+// doublestar backend across representative patterns — including the
+// `**`-in-the-middle shape (`**/skills/**/SKILL.md`) that regressed the
+// review-github-prs job, plus anchored (`a/**/...`) and top-level (`*.go`)
+// patterns fd's native `--glob` gets wrong.
+func TestGlobBackendParity(t *testing.T) {
+	if _, err := exec.LookPath("fd"); err != nil {
+		t.Skip("fd not installed")
+	}
+	dir := globParityTree(t)
+	builtin := &builtinGlobBackend{}
+	fd := &fdGlobBackend{}
+
+	for _, pat := range []string{
+		"**/SKILL.md",
+		"**/skills/**/SKILL.md",
+		"**/*.go",
+		"a/**/SKILL.md",
+		"*.go",
+		"**/*/deep.txt",
+		"nomatch/**/*.zzz",
+	} {
+		bOut, err := builtin.Run(context.Background(), []string{pat}, []string{dir}, dir, "", true, 1000)
+		if err != nil {
+			t.Fatalf("builtin %q: %v", pat, err)
+		}
+		fOut, err := fd.Run(context.Background(), []string{pat}, []string{dir}, dir, "", true, 1000)
+		if err != nil {
+			t.Fatalf("fd %q: %v", pat, err)
+		}
+		if bOut != fOut {
+			t.Errorf("backend mismatch for %q:\n--- builtin ---\n%s\n--- fd ---\n%s", pat, bOut, fOut)
+		}
+	}
+}
+
+// TestFdGlobBackendMatchesNestedGlobstar is the direct regression for the
+// reported bug: a `**`-in-the-middle pattern must match under the fd backend.
+func TestFdGlobBackendMatchesNestedGlobstar(t *testing.T) {
+	if _, err := exec.LookPath("fd"); err != nil {
+		t.Skip("fd not installed")
+	}
+	dir := globParityTree(t)
+	target := filepath.Join(dir, "pkg", "skills", "hooks", "SKILL.md")
+
+	fd := &fdGlobBackend{}
+	out, err := fd.Run(context.Background(), []string{"**/skills/**/SKILL.md"}, []string{dir}, dir, "", true, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, target) {
+		t.Errorf("fd failed to match **-in-the-middle pattern; got %q, want to contain %s", out, target)
+	}
+	if strings.Contains(out, "no matches") {
+		t.Errorf("fd returned no matches for a pattern that should match: %q", out)
 	}
 }
 

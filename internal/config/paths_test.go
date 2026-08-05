@@ -31,6 +31,17 @@ func TestVixPaths_NormalMode(t *testing.T) {
 		t.Errorf("Logs = %q, want %q", got, filepath.Join("/home/.vix", "logs"))
 	}
 
+	if got := p.JobsLog(); got != filepath.Join("/home/.vix", "logs", "jobs") {
+		t.Errorf("JobsLog = %q", got)
+	}
+	if got := p.HooksLog(); got != filepath.Join("/home/.vix", "logs", "hooks") {
+		t.Errorf("HooksLog = %q", got)
+	}
+
+	if got := p.HeartbeatMD(); got != filepath.Join("/home/.vix", "jobs", "heartbeat", "heartbeat.md") {
+		t.Errorf("HeartbeatMD = %q", got)
+	}
+
 	if got := p.AccessStatsDB(); got != filepath.Join("/project", ".vix", "access_stats.db") {
 		t.Errorf("AccessStatsDB = %q", got)
 	}
@@ -54,6 +65,18 @@ func TestVixPaths_NormalMode(t *testing.T) {
 	}
 	if claudeMD[1] != filepath.Join("/project", "CLAUDE.md") {
 		t.Errorf("ClaudeMD[1] = %q, want cwd CLAUDE.md", claudeMD[1])
+	}
+
+	agentsMD := p.AgentsMD()
+	// Normal mode: [home/AGENTS.md, cwd/AGENTS.md]
+	if len(agentsMD) != 2 {
+		t.Fatalf("AgentsMD length = %d, want 2", len(agentsMD))
+	}
+	if agentsMD[0] != filepath.Join("/home/.vix", "AGENTS.md") {
+		t.Errorf("AgentsMD[0] = %q, want home AGENTS.md", agentsMD[0])
+	}
+	if agentsMD[1] != filepath.Join("/project", "AGENTS.md") {
+		t.Errorf("AgentsMD[1] = %q, want cwd AGENTS.md", agentsMD[1])
 	}
 }
 
@@ -94,6 +117,17 @@ func TestVixPaths_OverrideMode(t *testing.T) {
 		t.Errorf("Logs = %q", got)
 	}
 
+	if got := p.JobsLog(); got != filepath.Join("/custom", "logs", "jobs") {
+		t.Errorf("JobsLog = %q", got)
+	}
+	if got := p.HooksLog(); got != filepath.Join("/custom", "logs", "hooks") {
+		t.Errorf("HooksLog = %q", got)
+	}
+
+	if got := p.HeartbeatMD(); got != filepath.Join("/custom", "jobs", "heartbeat", "heartbeat.md") {
+		t.Errorf("HeartbeatMD = %q", got)
+	}
+
 	if got := p.AccessStatsDB(); got != filepath.Join("/custom", "access_stats.db") {
 		t.Errorf("AccessStatsDB = %q", got)
 	}
@@ -114,6 +148,11 @@ func TestVixPaths_OverrideMode(t *testing.T) {
 	if len(claudeMD) != 1 || claudeMD[0] != filepath.Join("/custom", "CLAUDE.md") {
 		t.Errorf("ClaudeMD = %v", claudeMD)
 	}
+
+	agentsMD := p.AgentsMD()
+	if len(agentsMD) != 1 || agentsMD[0] != filepath.Join("/custom", "AGENTS.md") {
+		t.Errorf("AgentsMD = %v", agentsMD)
+	}
 }
 
 func TestVixPaths_NormalModeWithoutHome(t *testing.T) {
@@ -127,5 +166,14 @@ func TestVixPaths_NormalModeWithoutHome(t *testing.T) {
 
 	if got := p.Logs(); got != "" {
 		t.Errorf("Logs should be empty without home, got %q", got)
+	}
+	if got := p.JobsLog(); got != "" {
+		t.Errorf("JobsLog should be empty without home, got %q", got)
+	}
+	if got := p.HooksLog(); got != "" {
+		t.Errorf("HooksLog should be empty without home, got %q", got)
+	}
+	if got := p.HeartbeatMD(); got != "" {
+		t.Errorf("HeartbeatMD should be empty without home, got %q", got)
 	}
 }

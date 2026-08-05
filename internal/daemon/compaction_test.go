@@ -36,7 +36,7 @@ func (f *fakeCompactionLLM) Credential() config.Credential { return config.Crede
 func (f *fakeCompactionLLM) MaxTokens() int64              { return 0 }
 func (f *fakeCompactionLLM) Effort() string                { return "" }
 
-// newCompactionTestSession builds a Session wired with a fake LLM, a drained
+// newCompactionTestThread builds a Thread wired with a fake LLM, a drained
 // event channel, and three turns of history that include a tool_use/tool_result
 // pair in the first turn.
 //
@@ -50,11 +50,11 @@ func (f *fakeCompactionLLM) Effort() string                { return "" }
 //	5 assistant "a1"               ─┘
 //	6 user "u2"                    ─┐ turn 2 (snapshot len 8)
 //	7 assistant "a2"               ─┘
-func newCompactionTestSession(t *testing.T, fake *fakeCompactionLLM) (*Session, chan protocol.SessionEvent) {
+func newCompactionTestThread(t *testing.T, fake *fakeCompactionLLM) (*Thread, chan protocol.ThreadEvent) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	events := make(chan protocol.SessionEvent, 64)
+	events := make(chan protocol.ThreadEvent, 64)
 
 	msgs := []llm.MessageParam{
 		llm.NewUserMessage(llm.NewTextBlock("u0")),
@@ -72,7 +72,7 @@ func newCompactionTestSession(t *testing.T, fake *fakeCompactionLLM) (*Session, 
 		return snap
 	}
 
-	s := &Session{
+	s := &Thread{
 		ctx:       ctx,
 		eventChan: events,
 		llm:       fake,
@@ -94,7 +94,7 @@ func newCompactionTestSession(t *testing.T, fake *fakeCompactionLLM) (*Session, 
 	return s, events
 }
 
-func drainCompacted(t *testing.T, events chan protocol.SessionEvent) protocol.EventCompacted {
+func drainCompacted(t *testing.T, events chan protocol.ThreadEvent) protocol.EventCompacted {
 	t.Helper()
 	for {
 		select {
@@ -157,7 +157,7 @@ func TestResolveCompactionKeep(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			s, _ := newCompactionTestSession(t, &fakeCompactionLLM{summary: "S"})
+			s, _ := newCompactionTestThread(t, &fakeCompactionLLM{summary: "S"})
 			s.projectConfig.Compaction.KeepLastNTurns = c.keepLastN
 			s.projectConfig.Compaction.KeepRatio = c.keepRatio
 			idx, turns, ok := s.resolveCompactionKeep(c.explicitN)
@@ -170,7 +170,7 @@ func TestResolveCompactionKeep(t *testing.T) {
 }
 
 func TestResolveCompactionKeep_NoSnapshots(t *testing.T) {
-	s := &Session{}
+	s := &Thread{}
 	s.projectConfig.Compaction = Compaction{KeepLastNTurns: -1, KeepRatio: 0.25}
 	if _, _, ok := s.resolveCompactionKeep(0); ok {
 		t.Errorf("expected ok=false with no snapshots")
@@ -179,7 +179,7 @@ func TestResolveCompactionKeep_NoSnapshots(t *testing.T) {
 
 func TestCompactMessages_KeepsToolPairsAndTail(t *testing.T) {
 	fake := &fakeCompactionLLM{summary: "SUMMARY-TEXT"}
-	s, events := newCompactionTestSession(t, fake)
+	s, events := newCompactionTestThread(t, fake)
 
 	// /compact 1: drop turn 0 (which holds the tool pair), keep turns 1 & 2.
 	s.compactMessages(4, 1, false)
@@ -240,7 +240,7 @@ func TestCompactMessages_KeepsToolPairsAndTail(t *testing.T) {
 
 func TestCompactMessages_GuardsInvalidBoundary(t *testing.T) {
 	fake := &fakeCompactionLLM{summary: "S"}
-	s, events := newCompactionTestSession(t, fake)
+	s, events := newCompactionTestThread(t, fake)
 
 	s.compactMessages(0, 0, false) // invalid boundary → error, no LLM call
 

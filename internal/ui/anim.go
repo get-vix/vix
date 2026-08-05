@@ -11,6 +11,9 @@ import (
 )
 
 const (
+	// animFPS sets the thinking spinner cadence. Every tick re-runs the full
+	// Model.View, so this directly multiplies render cost; 30fps for a fluid
+	// spinner.
 	animFPS      = 30
 	animNumChars = 12
 )
@@ -27,7 +30,7 @@ var (
 // animStepMsg triggers the next animation frame.
 // anim must point to the ThinkingAnim that scheduled the tick, and gen must
 // match its current generation. Together they ensure ticks from a different
-// session (same gen by coincidence) and stale ticks from a previous Start/Stop
+// thread (same gen by coincidence) and stale ticks from a previous Start/Stop
 // cycle are both silently dropped.
 type animStepMsg struct {
 	gen  int
@@ -39,6 +42,14 @@ type animStepMsg struct {
 type tabBlinkMsg struct{ gen int }
 
 const tabBlinkHalfPeriod = 500 * time.Millisecond
+
+// threadsSpinnerMsg advances the threads-list loading spinner.
+// gen must match Model.threadsSpinnerGen; stale ticks are silently dropped.
+type threadsSpinnerMsg struct{ gen int }
+
+// threadsSpinnerPeriod sets the threads-list spinner cadence. A list spinner
+// doesn't need the chat spinner's 30fps; 12fps reads as smooth and is cheap.
+const threadsSpinnerPeriod = time.Second / 12
 
 // ThinkingAnim renders a spinner row: each character cycles through braille
 // spinner frames with a phase offset so a wave ripples across the bar.
@@ -92,7 +103,7 @@ func (a *ThinkingAnim) Resume() tea.Cmd {
 
 // Advance moves to the next frame if msg belongs to this instance and the
 // current generation, and returns a tick command. Ticks from a different
-// ThinkingAnim (cross-session collision) or a stale generation are dropped.
+// ThinkingAnim (cross-thread collision) or a stale generation are dropped.
 func (a *ThinkingAnim) Advance(msg animStepMsg) tea.Cmd {
 	if msg.anim != a || !a.active || msg.gen != a.gen {
 		return nil
@@ -110,9 +121,10 @@ func (a *ThinkingAnim) View() string {
 	b.WriteString("  ") // indent to align with chat content
 
 	nFrames := len(animFrames)
+	step := frozenStep(a.step)
 	for i := range animNumChars {
 		// Each character is one step behind its left neighbour, creating a wave.
-		frame := (a.step - i + nFrames*animNumChars) % nFrames
+		frame := (step - i + nFrames*animNumChars) % nFrames
 		g := animFrames[frame]
 		b.WriteString(lipgloss.NewStyle().Foreground(a.ramp[i]).Render(string(g)))
 	}

@@ -25,16 +25,36 @@ var allowedAuthHosts = map[string]bool{
 var (
 	validWireFormats  = map[WireFormat]bool{WireMessages: true, WireResponses: true, WireChatCompletions: true}
 	validAuthSchemes  = map[string]bool{AuthSchemeBearer: true, AuthSchemeXAPIKey: true}
-	validCredKinds    = map[string]bool{CredAPIKey: true, CredOAuthMintKey: true, CredOAuthToken: true}
+	validCredKinds    = map[string]bool{CredAPIKey: true, CredOAuthMintKey: true, CredOAuthToken: true, CredNone: true}
 	validFlows        = map[string]bool{FlowOAuthPKCEToken: true, FlowOAuthCodex: true, FlowOAuthPKCEMint: true}
 	validEffortStyles = map[string]bool{EffortStyleNone: true, EffortStyleReasoningEffort: true, EffortStyleReasoningSplit: true}
 	validEfforts      = map[string]bool{EffortAdaptive: true, EffortOpenAIReasoning: true, "": true}
 	validProducers    = map[string]bool{"": true, ProducerAnthropicOAuth: true, ProducerCodexOAuth: true}
 )
 
+// httpPolicy controls how strictly checkURL treats a plain-HTTP URL.
+type httpPolicy int
+
+const (
+	// httpRequireHTTPS rejects any non-HTTPS URL. The default for remote
+	// providers, auth-login endpoints, and credential base URLs.
+	httpRequireHTTPS httpPolicy = iota
+	// httpAllowLoopback permits plain HTTP only when the host is loopback
+	// (localhost / 127.0.0.1 / ::1). Used for OAuth redirect URIs.
+	httpAllowLoopback
+	// httpAllowAny permits plain HTTP on any host. Used for local providers
+	// (Ollama, llama.cpp) whose endpoint the user controls — including a
+	// self-hosted box on the LAN reached over HTTP.
+	httpAllowAny
+)
+
 // validate checks schema version, closed enums, required fields, prefix
-// uniqueness, and URL safety (HTTPS, auth-host allowlist, deny-list).
-func validate(f File) error {
+// uniqueness, and URL safety (HTTPS, auth-host allowlist, deny-list). interp
+// resolves ${env:...} references in URLs before they are checked: callers pass
+// interpolateDefaults to validate the shipped file structurally (env-independent
+// — the loadEmbedded/panic path) or interpolate to validate the env-resolved
+// effective URLs (the Configure path, which surfaces errors gracefully).
+func validate(f File, interp func(string) string) error {
 	if f.SchemaVersion == 0 {
 		return fmt.Errorf("missing schema_version")
 	}
@@ -48,7 +68,7 @@ func validate(f File) error {
 	seenID := make(map[string]bool, len(f.Providers))
 	seenPrefix := make(map[string]string, len(f.Providers)) // prefix -> id
 	for _, p := range f.Providers {
-		if err := validateProvider(p); err != nil {
+		if err := validateProvider(p, interp); err != nil {
 			return err
 		}
 		if seenID[p.ID] {
@@ -84,7 +104,7 @@ func validate(f File) error {
 	return nil
 }
 
-func validateProvider(p ProviderSpec) error {
+func validateProvider(p ProviderSpec, interp func(string) string) error {
 	if p.ID == "" {
 		return fmt.Errorf("provider with empty id")
 	}
@@ -109,12 +129,20 @@ func validateProvider(p ProviderSpec) error {
 	if p.Inference.BaseURL == "" {
 		return fmt.Errorf("provider %q: empty inference.base_url", p.ID)
 	}
-	if err := checkURL(interpolate(p.Inference.BaseURL), false); err != nil {
+	// Local providers (Ollama, llama.cpp) point at an endpoint the user
+	// controls and may use plain HTTP on any host — loopback or a self-hosted
+	// box on the LAN. Everything else requires HTTPS.
+	pol := httpRequireHTTPS
+	if p.Local {
+		pol = httpAllowAny
+	}
+	if err := checkURL(interp(p.Inference.BaseURL), pol); err != nil {
 		return fmt.Errorf("provider %q base_url: %w", p.ID, err)
 	}
 	if len(p.Credential) == 0 {
 		return fmt.Errorf("provider %q: no credential_methods", p.ID)
 	}
+	seenLabel := make(map[string]bool, len(p.Credential))
 	for i, m := range p.Credential {
 		if !validCredKinds[m.Kind] {
 			return fmt.Errorf("provider %q credential[%d]: unknown kind %q", p.ID, i, m.Kind)
@@ -125,6 +153,12 @@ func validateProvider(p ProviderSpec) error {
 		if m.HeaderStyle != "" && m.HeaderStyle != AuthSchemeBearer {
 			return fmt.Errorf("provider %q credential[%d]: unknown header_style %q", p.ID, i, m.HeaderStyle)
 		}
+		if m.Label != "" {
+			if seenLabel[m.Label] {
+				return fmt.Errorf("provider %q credential[%d]: duplicate label %q", p.ID, i, m.Label)
+			}
+			seenLabel[m.Label] = true
+		}
 		switch m.Kind {
 		case CredAPIKey:
 			if m.EnvVar == "" && m.Keyring == "" {
@@ -134,9 +168,16 @@ func validateProvider(p ProviderSpec) error {
 			if m.LoginID == "" {
 				return fmt.Errorf("provider %q credential[%d]: %s needs login_id", p.ID, i, m.Kind)
 			}
+		case CredNone:
+			if m.EnvVar != "" || m.Keyring != "" || m.LoginID != "" {
+				return fmt.Errorf("provider %q credential[%d]: none must not set env_var, keyring or login_id", p.ID, i)
+			}
+		}
+		if m.RequiresBaseURL && m.Keyring == "" {
+			return fmt.Errorf("provider %q credential[%d]: requires_base_url needs keyring to store the endpoint", p.ID, i)
 		}
 		if m.BaseURL != "" {
-			if err := checkURL(interpolate(m.BaseURL), false); err != nil {
+			if err := checkURL(interp(m.BaseURL), httpRequireHTTPS); err != nil {
 				return fmt.Errorf("provider %q credential[%d] base_url: %w", p.ID, i, err)
 			}
 		}
@@ -159,7 +200,7 @@ func validateAuthLogin(l AuthLogin) error {
 		if u == "" {
 			continue
 		}
-		if err := checkURL(u, false); err != nil {
+		if err := checkURL(u, httpRequireHTTPS); err != nil {
 			return fmt.Errorf("auth login %q: %w", l.ID, err)
 		}
 		if err := checkAuthHost(u); err != nil {
@@ -171,7 +212,7 @@ func validateAuthLogin(l AuthLogin) error {
 		if u == "" {
 			continue
 		}
-		if err := checkURL(u, true); err != nil {
+		if err := checkURL(u, httpAllowLoopback); err != nil {
 			return fmt.Errorf("auth login %q redirect_uri: %w", l.ID, err)
 		}
 	}
@@ -185,10 +226,12 @@ func deviceRedirect(l AuthLogin) string {
 	return l.Device.RedirectURI
 }
 
-// checkURL enforces HTTPS (unless allowLoopbackHTTP and the host is localhost)
-// and the deny-list. It does not enforce the auth-host allowlist — callers add
+// checkURL enforces the deny-list and an HTTP policy: httpRequireHTTPS rejects
+// any non-HTTPS URL; httpAllowLoopback also permits plain HTTP on a loopback
+// host (OAuth redirects); httpAllowAny permits plain HTTP on any host (local
+// providers). It does not enforce the auth-host allowlist — callers add
 // checkAuthHost for credential-bearing auth endpoints.
-func checkURL(raw string, allowLoopbackHTTP bool) error {
+func checkURL(raw string, pol httpPolicy) error {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return fmt.Errorf("invalid URL %q: %w", raw, err)
@@ -198,7 +241,14 @@ func checkURL(raw string, allowLoopbackHTTP bool) error {
 	case "https":
 		// ok
 	case "http":
-		if !(allowLoopbackHTTP && isLoopback(host)) {
+		switch pol {
+		case httpAllowAny:
+			// ok
+		case httpAllowLoopback:
+			if !isLoopback(host) {
+				return fmt.Errorf("non-HTTPS URL %q", raw)
+			}
+		default:
 			return fmt.Errorf("non-HTTPS URL %q", raw)
 		}
 	default:

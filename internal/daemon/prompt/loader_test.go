@@ -138,7 +138,7 @@ func TestLoader_Cache(t *testing.T) {
 	}
 
 	loader := &Loader{cache: make(map[string]string)}
-	
+
 	// First load - should cache
 	result1 := loader.Load(templatePath, nil, "", nil)
 	if result1 != content {
@@ -371,13 +371,13 @@ func TestRealGeneralAgent_FrontmatterStripped(t *testing.T) {
 	// This test verifies that the actual .vix/agents/general.md file
 	// has its frontmatter properly stripped
 	loader := GetLoader()
-	
+
 	// Construct path relative to the test file
 	generalPath := filepath.Join("..", "..", "config", "defaults", "agents", "general.md")
 	content := loader.Load(generalPath, map[string]string{
 		"working_directory": "/test/dir",
 	}, filepath.Join("..", "..", "config", "defaults"), nil)
-	
+
 	// The frontmatter should be stripped, so content should not start with "---"
 	trimmed := strings.TrimSpace(content)
 	if len(trimmed) == 0 {
@@ -399,7 +399,7 @@ func TestRealGeneralAgent_FrontmatterStripped(t *testing.T) {
 		}
 		t.Errorf("Expected content to start with 'You are **vix**', but got:\n%s", preview)
 	}
-	
+
 	// Verify that the frontmatter metadata is NOT in the content
 	if strings.Contains(content, "name: general") {
 		t.Errorf("Frontmatter metadata 'name: general' found in content - frontmatter was not stripped")

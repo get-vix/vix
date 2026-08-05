@@ -111,7 +111,7 @@ func renderHistoryPanel(entries []string, times []time.Time, panel *HistoryPanel
 	//         "   02 Jan 15:04  entry text"
 	const timeFormat = "02 Jan 15:04"
 	const timePrefixLen = 3 + len(timeFormat) + 2 // arrow/space(3) + time + gap(2)
-	maxTextWidth := width - timePrefixLen - 4 // account for border + padding
+	maxTextWidth := width - timePrefixLen - 4     // account for border + padding
 	if maxTextWidth < 1 {
 		maxTextWidth = 1
 	}

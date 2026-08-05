@@ -259,3 +259,40 @@ func TestFormatSkillsList(t *testing.T) {
 		t.Error("should list skills")
 	}
 }
+
+// The shipped vix-help skill must parse through the real loader, advertise a
+// description, and bundle its offline manual fallback.
+func TestVixHelpBundledSkillLoads(t *testing.T) {
+	reg := LoadSkills("../config/defaults/skills")
+
+	s := reg.Get("vix-help")
+	if s == nil {
+		t.Fatal("vix-help skill should load from internal/config/defaults/skills")
+	}
+	if s.Description == "" {
+		t.Error("vix-help skill should have a description (used in the system prompt)")
+	}
+	for _, kw := range []string{"vix", "config"} {
+		if !strings.Contains(strings.ToLower(s.Description), kw) {
+			t.Errorf("vix-help description should mention %q; got: %s", kw, s.Description)
+		}
+	}
+
+	files := s.BundledFiles()
+	found := false
+	for _, f := range files {
+		if filepath.ToSlash(f) == "references/vix-manual.md" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("vix-help should bundle references/vix-manual.md; got %v", files)
+	}
+
+	// The rendered tool payload should reference the bundled file so the model
+	// can fall back offline.
+	body := s.LoadForTool("")
+	if !strings.Contains(body, "vix-manual.md") {
+		t.Error("vix-help LoadForTool output should reference the bundled manual")
+	}
+}

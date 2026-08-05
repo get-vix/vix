@@ -208,9 +208,12 @@ func TestResolvePathInCwd_DotDotTraversal_Rejected(t *testing.T) {
 
 func TestResolvePathInCwd_SymlinkEscape_Rejected(t *testing.T) {
 	cwd := t.TempDir()
-	// Create a symlink inside cwd that points outside
-	target := t.TempDir() // a different temp dir
-	os.WriteFile(filepath.Join(target, "secret.txt"), []byte("secret"), 0o644)
+	// Point the symlink at a synthetic absolute path that cannot alias any
+	// real system directory. A real t.TempDir() target won't work here: on
+	// macOS it lives under /var/folders/... and on Linux under /tmp/..., both
+	// of which are policy-allowed system paths, so resolving into them is not
+	// an escape. Using a fake root makes the escape unambiguous on every OS.
+	target := "/vix_test_fake_target"
 
 	link := filepath.Join(cwd, "escape")
 	if err := os.Symlink(target, link); err != nil {
@@ -279,7 +282,7 @@ func TestSandboxedBashCmd_SetsWorkingDir(t *testing.T) {
 	cwd := t.TempDir()
 	ctx := context.Background()
 
-	cmd := sandboxedBashCmd(ctx,"echo hello", cwd, nil)
+	cmd := sandboxedBashCmd(ctx, "echo hello", cwd, nil)
 	if cmd.Dir != cwd {
 		t.Errorf("cmd.Dir = %q, want %q", cmd.Dir, cwd)
 	}
@@ -290,7 +293,7 @@ func TestSandboxedBashCmd_ExecutesCommand(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cmd := sandboxedBashCmd(ctx,"echo sandboxed", cwd, nil)
+	cmd := sandboxedBashCmd(ctx, "echo sandboxed", cwd, nil)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("command failed: %v\noutput: %s", err, out)
@@ -306,7 +309,7 @@ func TestSandboxedBashCmd_CanReadWriteInCwd(t *testing.T) {
 	defer cancel()
 
 	// Write a file inside cwd
-	cmd := sandboxedBashCmd(ctx,"echo test > testfile.txt && cat testfile.txt", cwd, nil)
+	cmd := sandboxedBashCmd(ctx, "echo test > testfile.txt && cat testfile.txt", cwd, nil)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("command failed: %v\noutput: %s", err, out)
@@ -362,6 +365,76 @@ func TestSeatbeltProfile_ContainsCwd(t *testing.T) {
 	}
 }
 
+// TestSeatbeltProfile_AllowsPTY guards the full set of directives a
+// controlling terminal needs on macOS. process-fork + pseudo-tty are
+// necessary but NOT sufficient: grantpt(3) issues an ioctl(TIOCPTYGRANT)
+// on /dev/ptmx, and that is a distinct Seatbelt file-ioctl operation which
+// file-write* does not imply. Without the file-ioctl directives, tmux /
+// script / expect fail with a misleading "fork failed: Operation not
+// permitted" even though fork itself works.
+func TestSeatbeltProfile_AllowsPTY(t *testing.T) {
+	profile := seatbeltProfile("/Users/test/myproject", nil)
+
+	for _, want := range []string{
+		"(allow process-fork)",
+		"(allow pseudo-tty)",
+		`(allow file-ioctl (literal "/dev/ptmx"))`,
+		`(allow file-ioctl (regex #"^/dev/ttys[0-9]*"))`,
+	} {
+		if !strings.Contains(profile, want) {
+			t.Errorf("profile missing pty directive %q\nprofile:\n%s", want, profile)
+		}
+	}
+}
+
+// TestSeatbeltProfile_AllowsIOKitOpen guards the iokit-open allowance that
+// headless browsers (Chromium/WebKit, and thus Playwright e2e) require. They
+// open IOKit graphics user clients (e.g. IOSurfaceRootUserClient) during early
+// startup even in --headless mode; under (deny default) that IOServiceOpen
+// returns kIOReturnNotPermitted and the browser dereferences the NULL client,
+// crashing with SIGSEGV before launch. The token must be "iokit-open" (the
+// SBPL operation), not the runtime API's "iokit-open-user-client".
+func TestSeatbeltProfile_AllowsIOKitOpen(t *testing.T) {
+	profile := seatbeltProfile("/Users/test/myproject", nil)
+
+	if !strings.Contains(profile, "(allow iokit-open)") {
+		t.Errorf("profile missing iokit-open allowance (headless browsers crash without it)\nprofile:\n%s", profile)
+	}
+}
+
+// TestSandboxedBashCmd_CanAllocatePTY actually allocates a pseudo-terminal
+// inside the real Seatbelt sandbox and asserts the grant succeeds. This is
+// the runtime counterpart to TestSeatbeltProfile_AllowsPTY: the Go test
+// runner is not itself sandboxed, so it can apply the profile (unlike a
+// process already running under a deny-default profile, which cannot nest
+// sandbox_apply). Uses python3's os.openpty(), which performs the full
+// posix_openpt -> grantpt -> unlockpt handshake that tmux relies on.
+func TestSandboxedBashCmd_CanAllocatePTY(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("Seatbelt pty test only runs on macOS")
+	}
+	if detectSandbox() != sandboxSeatbelt {
+		t.Skip("sandbox-exec not available")
+	}
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not available")
+	}
+
+	cwd := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	script := `python3 -c 'import os; m,s=os.openpty(); os.close(m); os.close(s); print("PTY_OK")'`
+	cmd := sandboxedBashCmd(ctx, script, cwd, nil)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("pty allocation failed under sandbox: %v\noutput: %s", err, out)
+	}
+	if !strings.Contains(string(out), "PTY_OK") {
+		t.Errorf("expected PTY_OK, got: %s", out)
+	}
+}
+
 func TestSandboxName_ReturnsString(t *testing.T) {
 	name := SandboxName()
 	if name == "" {
@@ -408,5 +481,47 @@ func TestSandboxedBashCmd_WaitDelay_BackgroundChild(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("cmd.Wait() blocked for >5s — WaitDelay is not working")
+	}
+}
+
+// TestSanitizedBashEnv_StripsGODEBUG verifies that the daemon-only GODEBUG
+// debug knob is removed from the env handed to bash steps, while unrelated
+// variables pass through untouched.
+func TestSanitizedBashEnv_StripsGODEBUG(t *testing.T) {
+	t.Setenv("GODEBUG", "schedtrace=5000")
+	t.Setenv("VIX_TEST_SENTINEL", "keepme")
+
+	env := sanitizedBashEnv()
+
+	var sawSentinel bool
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "GODEBUG=") {
+			t.Errorf("GODEBUG leaked into sanitized env: %q", kv)
+		}
+		if kv == "VIX_TEST_SENTINEL=keepme" {
+			sawSentinel = true
+		}
+	}
+	if !sawSentinel {
+		t.Error("sanitizedBashEnv dropped an unrelated variable (VIX_TEST_SENTINEL)")
+	}
+}
+
+// TestRunBashWithContext_DoesNotLeakGODEBUG proves the end-to-end effect: a
+// bash step spawned by the workflow/job runner does not inherit GODEBUG, so a
+// Go child binary it invokes won't emit "SCHED ..." trace lines that would
+// contaminate the captured output.
+func TestRunBashWithContext_DoesNotLeakGODEBUG(t *testing.T) {
+	t.Setenv("GODEBUG", "schedtrace=5000")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	out, err := runBashWithContext(ctx, `echo "GODEBUG=[${GODEBUG:-unset}]"`, t.TempDir(), "", nil)
+	if err != nil {
+		t.Fatalf("runBashWithContext failed: %v", err)
+	}
+	if !strings.Contains(out, "GODEBUG=[unset]") {
+		t.Errorf("expected GODEBUG to be unset in the bash step, got: %q", out)
 	}
 }

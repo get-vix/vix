@@ -368,15 +368,14 @@ func TestResolveParams(t *testing.T) {
 	}
 }
 
-// ── LoadWorkflows ──
+// ── LoadWorkflowsFile ──
 
 func TestLoadWorkflows(t *testing.T) {
 	t.Run("valid config", func(t *testing.T) {
 		dir := t.TempDir()
-		path := filepath.Join(dir, "settings.json")
+		path := filepath.Join(dir, "workflow.json")
 
-		cfg := configFile{
-			Version: CurrentConfigVersion,
+		cfg := workflowsFile{
 			Workflows: []WorkflowDef{
 				{
 					Name:       "My Plan",
@@ -390,7 +389,7 @@ func TestLoadWorkflows(t *testing.T) {
 		data, _ := json.Marshal(cfg)
 		os.WriteFile(path, data, 0644)
 
-		result := LoadWorkflows(path)
+		result := LoadWorkflowsFile(path)
 		if len(result) != 1 {
 			t.Fatalf("expected 1 workflow, got %d", len(result))
 		}
@@ -400,18 +399,24 @@ func TestLoadWorkflows(t *testing.T) {
 	})
 
 	t.Run("missing file returns empty", func(t *testing.T) {
-		result := LoadWorkflows("/nonexistent/path/settings.json")
+		result := LoadWorkflowsFile("/nonexistent/path/workflow.json")
 		if len(result) != 0 {
 			t.Errorf("expected empty result for missing file, got %d", len(result))
 		}
 	})
 
+	t.Run("empty path returns empty", func(t *testing.T) {
+		if result := LoadWorkflowsFile(""); len(result) != 0 {
+			t.Errorf("expected empty result for empty path, got %d", len(result))
+		}
+	})
+
 	t.Run("invalid JSON returns empty", func(t *testing.T) {
 		dir := t.TempDir()
-		path := filepath.Join(dir, "settings.json")
+		path := filepath.Join(dir, "workflow.json")
 		os.WriteFile(path, []byte("not json"), 0644)
 
-		result := LoadWorkflows(path)
+		result := LoadWorkflowsFile(path)
 		if len(result) != 0 {
 			t.Errorf("expected empty result for invalid JSON, got %d", len(result))
 		}
@@ -419,10 +424,9 @@ func TestLoadWorkflows(t *testing.T) {
 
 	t.Run("invalid workflow skipped", func(t *testing.T) {
 		dir := t.TempDir()
-		path := filepath.Join(dir, "settings.json")
+		path := filepath.Join(dir, "workflow.json")
 
-		cfg := configFile{
-			Version: CurrentConfigVersion,
+		cfg := workflowsFile{
 			Workflows: []WorkflowDef{
 				{
 					// Missing name → invalid
@@ -436,7 +440,7 @@ func TestLoadWorkflows(t *testing.T) {
 		data, _ := json.Marshal(cfg)
 		os.WriteFile(path, data, 0644)
 
-		result := LoadWorkflows(path)
+		result := LoadWorkflowsFile(path)
 		if len(result) != 0 {
 			t.Errorf("expected 0 workflows (invalid skipped), got %d", len(result))
 		}
@@ -444,10 +448,9 @@ func TestLoadWorkflows(t *testing.T) {
 
 	t.Run("preserves config order", func(t *testing.T) {
 		dir := t.TempDir()
-		path := filepath.Join(dir, "settings.json")
+		path := filepath.Join(dir, "workflow.json")
 
-		cfg := configFile{
-			Version: CurrentConfigVersion,
+		cfg := workflowsFile{
 			Workflows: []WorkflowDef{
 				{
 					Name:       "Workflow B",
@@ -468,7 +471,7 @@ func TestLoadWorkflows(t *testing.T) {
 		data, _ := json.Marshal(cfg)
 		os.WriteFile(path, data, 0644)
 
-		result := LoadWorkflows(path)
+		result := LoadWorkflowsFile(path)
 		if len(result) != 2 {
 			t.Fatalf("expected 2 workflows, got %d", len(result))
 		}
@@ -479,27 +482,48 @@ func TestLoadWorkflows(t *testing.T) {
 			t.Errorf("expected second workflow 'Workflow A', got %q", result[1].Name)
 		}
 	})
+
+	t.Run("duplicate names disambiguated", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "workflow.json")
+
+		cfg := workflowsFile{
+			Workflows: []WorkflowDef{
+				{
+					Name:       "Plan",
+					EntryPoint: StepRef{ID: "s1"},
+					Steps:      map[string]WorkflowStepDef{"s1": {Type: "agent", Agent: "a", Prompt: "x"}},
+				},
+				{
+					Name:       "Plan",
+					EntryPoint: StepRef{ID: "s1"},
+					Steps:      map[string]WorkflowStepDef{"s1": {Type: "agent", Agent: "a", Prompt: "x"}},
+				},
+			},
+		}
+		data, _ := json.Marshal(cfg)
+		os.WriteFile(path, data, 0644)
+
+		result := LoadWorkflowsFile(path)
+		if len(result) != 2 {
+			t.Fatalf("expected 2 workflows, got %d", len(result))
+		}
+		if result[0].Name == result[1].Name {
+			t.Errorf("expected disambiguated names, both are %q", result[0].Name)
+		}
+	})
 }
 
 // ── LoadProjectConfig ──
 
 func TestLoadProjectConfig(t *testing.T) {
-	t.Run("loads agent and workflows", func(t *testing.T) {
+	t.Run("loads agent", func(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "settings.json")
 
 		cfg := configFile{
 			Version: CurrentConfigVersion,
 			Agent:   "custom",
-			Workflows: []WorkflowDef{
-				{
-					Name:       "My Workflow",
-					EntryPoint: StepRef{ID: "s1"},
-					Steps: map[string]WorkflowStepDef{
-						"s1": {Type: "agent", Agent: "planner", Prompt: "plan it"},
-					},
-				},
-			},
 		}
 		data, _ := json.Marshal(cfg)
 		os.WriteFile(path, data, 0644)
@@ -508,9 +532,6 @@ func TestLoadProjectConfig(t *testing.T) {
 		if result.Agent != "custom" {
 			t.Errorf("expected agent 'custom', got %q", result.Agent)
 		}
-		if len(result.Workflows) != 1 {
-			t.Fatalf("expected 1 workflow, got %d", len(result.Workflows))
-		}
 	})
 
 	t.Run("defaults to general agent", func(t *testing.T) {
@@ -518,8 +539,7 @@ func TestLoadProjectConfig(t *testing.T) {
 		path := filepath.Join(dir, "settings.json")
 
 		cfg := configFile{
-			Version:   CurrentConfigVersion,
-			Workflows: []WorkflowDef{},
+			Version: CurrentConfigVersion,
 		}
 		data, _ := json.Marshal(cfg)
 		os.WriteFile(path, data, 0644)
@@ -535,9 +555,6 @@ func TestLoadProjectConfig(t *testing.T) {
 		if result.Agent != "general" {
 			t.Errorf("expected default agent 'general', got %q", result.Agent)
 		}
-		if len(result.Workflows) != 0 {
-			t.Errorf("expected empty workflows, got %d", len(result.Workflows))
-		}
 	})
 
 	t.Run("version mismatch skips config", func(t *testing.T) {
@@ -547,15 +564,6 @@ func TestLoadProjectConfig(t *testing.T) {
 		cfg := configFile{
 			Version: 999,
 			Agent:   "custom",
-			Workflows: []WorkflowDef{
-				{
-					Name:       "Skipped",
-					EntryPoint: StepRef{ID: "s1"},
-					Steps: map[string]WorkflowStepDef{
-						"s1": {Type: "agent", Agent: "planner", Prompt: "plan it"},
-					},
-				},
-			},
 		}
 		data, _ := json.Marshal(cfg)
 		os.WriteFile(path, data, 0644)
@@ -563,9 +571,6 @@ func TestLoadProjectConfig(t *testing.T) {
 		result := LoadProjectConfig(path)
 		if result.Agent != "general" {
 			t.Errorf("expected default agent 'general' (config skipped), got %q", result.Agent)
-		}
-		if len(result.Workflows) != 0 {
-			t.Errorf("expected 0 workflows (config skipped), got %d", len(result.Workflows))
 		}
 	})
 
@@ -1179,6 +1184,86 @@ func TestBuildStepVars(t *testing.T) {
 			t.Error("expected no step.plan.display when Parsed is nil")
 		}
 	})
+
+	t.Run("nested object fields flatten and project as JSON", func(t *testing.T) {
+		results := map[string]*StepResult{
+			"item": {
+				Parsed: map[string]any{
+					"target": map[string]any{"path": "src/a.go", "risk": "high"},
+				},
+			},
+		}
+		vars := buildStepVars(results)
+		if vars["step.item.target.path"] != "src/a.go" {
+			t.Errorf("expected nested path 'src/a.go', got %q", vars["step.item.target.path"])
+		}
+		if vars["step.item.target.risk"] != "high" {
+			t.Errorf("expected nested risk 'high', got %q", vars["step.item.target.risk"])
+		}
+		// The object field itself projects as JSON (back-compat).
+		if !strings.Contains(vars["step.item.target"], `"path"`) {
+			t.Errorf("expected object field to project as JSON, got %q", vars["step.item.target"])
+		}
+	})
+}
+
+// ── projectToString ──
+
+func TestProjectToString(t *testing.T) {
+	if got := projectToString("plain"); got != "plain" {
+		t.Errorf("string should pass through, got %q", got)
+	}
+	if got := projectToString(nil); got != "" {
+		t.Errorf("nil should be empty, got %q", got)
+	}
+	if got := projectToString([]any{"a", "b"}); !strings.Contains(got, `"a"`) || !strings.Contains(got, `"b"`) {
+		t.Errorf("list should JSON-encode, got %q", got)
+	}
+	if got := projectToString(map[string]any{"k": "v"}); !strings.Contains(got, `"k"`) {
+		t.Errorf("object should JSON-encode, got %q", got)
+	}
+}
+
+// ── buildTypedStepVars ──
+
+func TestBuildTypedStepVars(t *testing.T) {
+	t.Run("Value overrides raw output when present", func(t *testing.T) {
+		list := []any{map[string]any{"path": "a"}, map[string]any{"path": "b"}}
+		results := map[string]*StepResult{
+			"discover": {Output: `["a","b"]`, Value: list},
+		}
+		vars := buildTypedStepVars(results)
+		got, ok := vars["step.discover"].([]any)
+		if !ok {
+			t.Fatalf("expected typed []any for step.discover, got %T", vars["step.discover"])
+		}
+		if len(got) != 2 {
+			t.Errorf("expected 2 elements, got %d", len(got))
+		}
+	})
+
+	t.Run("falls back to raw output string when no Value", func(t *testing.T) {
+		results := map[string]*StepResult{
+			"explore": {Output: "some text"},
+		}
+		vars := buildTypedStepVars(results)
+		if vars["step.explore"] != "some text" {
+			t.Errorf("expected raw output string, got %v", vars["step.explore"])
+		}
+	})
+
+	t.Run("parsed fields exposed typed", func(t *testing.T) {
+		results := map[string]*StepResult{
+			"item": {Parsed: map[string]any{"count": float64(3), "name": "x"}},
+		}
+		vars := buildTypedStepVars(results)
+		if vars["step.item.count"] != float64(3) {
+			t.Errorf("expected typed number 3, got %v (%T)", vars["step.item.count"], vars["step.item.count"])
+		}
+		if vars["step.item.name"] != "x" {
+			t.Errorf("expected 'x', got %v", vars["step.item.name"])
+		}
+	})
 }
 
 // ── resolveBashStepTimeout ──
@@ -1421,7 +1506,7 @@ func TestRunBashWithContextTimeout(t *testing.T) {
 	}
 	// runBashWithContext returns ctx.Err() on cancellation; the parent is
 	// still alive so the workflow caller can distinguish step-timeout from
-	// session-cancel via `parent.Err() == nil`.
+	// thread-cancel via `parent.Err() == nil`.
 	if err != context.DeadlineExceeded {
 		t.Errorf("expected err DeadlineExceeded from runBashWithContext, got %v", err)
 	}

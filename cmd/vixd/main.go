@@ -13,11 +13,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/get-vix/vix/internal/auth"
 	"github.com/get-vix/vix/internal/config"
 	"github.com/get-vix/vix/internal/daemon"
 	"github.com/get-vix/vix/internal/daemon/brain"
 	"github.com/get-vix/vix/internal/providers"
 	"github.com/get-vix/vix/internal/telemetry"
+	"github.com/get-vix/vix/internal/update"
 	"github.com/google/uuid"
 )
 
@@ -103,12 +105,12 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() { sig := <-sigCh; log.Printf("Received shutdown signal: %s", sig); cancel() }()
-	// Model is resolved per-session from the active chat agent's `model:`
-	// frontmatter (see session.go). The daemon keeps a fallback string so
-	// the plugin loader and pre-session bootstrap have a stable identifier
-	// to log against; it does NOT determine the actual session model.
+	// Model is resolved per-thread from the active chat agent's `model:`
+	// frontmatter (see thread.go). The daemon keeps a fallback string so
+	// the plugin loader and pre-thread bootstrap have a stable identifier
+	// to log against; it does NOT determine the actual thread model.
 	const model = "anthropic/claude-sonnet-4-5-20250929"
-	daemonConfig, err := config.LoadDaemonConfig()
+	daemonConfig, err := config.LoadDaemonConfig(Version)
 	if err != nil {
 		log.Printf("WARNING: Failed to load daemon config: %v", err)
 		daemonConfig = &config.DaemonConfig{}
@@ -135,6 +137,11 @@ func main() {
 	}
 	telemetry.Init(telemetry.Config{Version: Version, Mode: "daemon", Enabled: config.TelemetryEnabled()})
 	defer telemetry.Shutdown()
+	// OAuth logins persist their token to the OS keychain, or to the plaintext,
+	// home-global auth.json (shared with API-key credentials) when the OS
+	// keychain is unusable (headless Linux/WSL/containers). The UI and logs
+	// surface that tokens then live unencrypted on disk.
+	auth.SetAuthFilePath(config.NewVixPaths("", config.HomeVixDir(), "").AuthFile())
 	// Top-level crash handler: capture the panic as a PostHog exception and
 	// flush synchronously (Shutdown is bounded by ShutdownTimeout) before the
 	// process dies, then re-panic to preserve Go's crash output and exit code.
@@ -148,7 +155,7 @@ func main() {
 		}
 	}()
 
-	sessionID := uuid.New().String()
+	threadID := uuid.New().String()
 
 	cwd, _ := os.Getwd()
 	pluginPaths := config.NewVixPaths("", config.HomeVixDir(), cwd)
@@ -158,15 +165,36 @@ func main() {
 	if err := providers.Configure(pluginPaths.Providers()); err != nil {
 		log.Printf("[providers] using embedded defaults: %v", err)
 	}
-	pluginCfg := daemon.LoadPlugins(pluginPaths.Plugins(), Version, model)
+	pluginSrc := daemon.NewPluginSource(pluginPaths.Plugins(), Version)
 
-	server := daemon.NewServer(*socketPathFlag, cred, sessionID, model, daemonConfig, pluginCfg)
+	server := daemon.NewServer(*socketPathFlag, cred, threadID, model, daemonConfig, pluginSrc)
+	server.SetVersion(Version)
+	if config.JobsEnabled() {
+		server.EnableJobScheduler()
+	} else {
+		log.Printf("jobs: scheduler disabled (features.jobs=false or VIX_DISABLE_JOBS)")
+	}
+	if config.HooksEnabled() {
+		server.EnableHooks()
+	} else {
+		log.Printf("hooks: engine disabled (features.hooks=false or VIX_DISABLE_HOOKS)")
+	}
+	// Background once-per-day update check. Best-effort: stores the result on
+	// the server so threads can surface it; never blocks startup.
+	go func() {
+		st := update.RunDailyCheck(Version, pluginPaths.StateFile(), update.LatestRelease)
+		server.SetUpdateStatus(st.Current, st.Latest, st.URL, st.Method)
+		if st.Latest != "" {
+			log.Printf("update available: %s (current %s)", st.Latest, st.Current)
+		}
+	}()
 	daemon.RegisterBuiltinHandlers(server)
 	brain.RegisterBrainHandlers(func(cmd string, handler func(map[string]any) (map[string]any, error)) {
 		server.RegisterHandler(cmd, handler)
 	}, cred, ctx)
 	daemon.RegisterToolHandlers(server)
 	if *webPort > 0 && !*noMissionControl {
+		server.SetWebPort(*webPort)
 		go daemon.StartWebServer(ctx, server, *webPort)
 	}
 	if *pprofPort > 0 {

@@ -300,12 +300,16 @@ func formatDocumentSymbols(raw json.RawMessage) string {
 
 	// Try hierarchical DocumentSymbol[]
 	type docSym struct {
-		Name     string   `json:"name"`
-		Detail   string   `json:"detail"`
-		Kind     int      `json:"kind"`
-		Range    struct {
-			Start struct{ Line int `json:"line"` } `json:"start"`
-			End   struct{ Line int `json:"line"` } `json:"end"`
+		Name   string `json:"name"`
+		Detail string `json:"detail"`
+		Kind   int    `json:"kind"`
+		Range  struct {
+			Start struct {
+				Line int `json:"line"`
+			} `json:"start"`
+			End struct {
+				Line int `json:"line"`
+			} `json:"end"`
 		} `json:"range"`
 		Children []docSym `json:"children"`
 	}
@@ -340,7 +344,9 @@ func formatDocumentSymbols(raw json.RawMessage) string {
 		Kind     int    `json:"kind"`
 		Location struct {
 			Range struct {
-				Start struct{ Line int `json:"line"` } `json:"start"`
+				Start struct {
+					Line int `json:"line"`
+				} `json:"start"`
 			} `json:"range"`
 		} `json:"location"`
 		ContainerName string `json:"containerName"`
@@ -375,7 +381,9 @@ func formatWorkspaceSymbols(raw json.RawMessage, rootDir string) string {
 		Location struct {
 			URI   string `json:"uri"`
 			Range struct {
-				Start struct{ Line int `json:"line"` } `json:"start"`
+				Start struct {
+					Line int `json:"line"`
+				} `json:"start"`
 			} `json:"range"`
 		} `json:"location"`
 		ContainerName string `json:"containerName"`

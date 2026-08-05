@@ -3,11 +3,9 @@ package ui
 import (
 	"strings"
 
-	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/get-vix/vix/internal/config"
 	"github.com/get-vix/vix/internal/protocol"
 )
 
@@ -15,9 +13,7 @@ import (
 type rightPanelMode int
 
 const (
-	rpModeKeys     rightPanelMode = iota // stored API key manager
-	rpModeKeyInput                       // inline key entry form
-	rpModeWorkflow                       // live workflow step progress
+	rpModeWorkflow rightPanelMode = iota // live workflow step progress
 	rpModeTodos                          // pending todo list
 )
 
@@ -25,27 +21,17 @@ const (
 type RightPanelAction int
 
 const (
-	rpActionNone       RightPanelAction = iota
-	rpActionClose                       // close the panel
-	rpActionKeyDeleted                  // payload = provider name
-	rpActionKeyStored                   // payload = "provider:key"
-	rpActionNeedKey                     // payload = "provider:pendingModel"
+	rpActionNone  RightPanelAction = iota
+	rpActionClose                  // close the panel
 )
 
 // RightPanel is a full-height sidebar on the right side of the screen that
-// contains either an API key manager or a key-input form.
+// shows live workflow-step progress or the pending todo list. API keys are
+// managed in the Models tab (F3), not here.
 type RightPanel struct {
 	visible bool
 	mode    rightPanelMode
 	height  int
-
-	// Key manager state
-	keySel int
-	keys   []config.ProviderKey
-
-	// Key input state
-	keyInputProvider string
-	keyInput         textinput.Model
 }
 
 // panelWidth is the fixed display width of the right panel.
@@ -59,15 +45,6 @@ func (rp *RightPanel) IsVisible() bool { return rp.visible }
 
 // Close hides the panel.
 func (rp *RightPanel) Close() { rp.visible = false }
-
-// OpenKeyManager opens the API key manager.
-func (rp *RightPanel) OpenKeyManager(height int) {
-	rp.visible = true
-	rp.mode = rpModeKeys
-	rp.keySel = 0
-	rp.height = height
-	rp.keys = config.ListStoredProviderKeys()
-}
 
 // OpenWorkflow opens the panel in workflow-progress mode.
 func (rp *RightPanel) OpenWorkflow(height int) {
@@ -83,71 +60,13 @@ func (rp *RightPanel) OpenTodos(height int) {
 	rp.height = height
 }
 
-// OpenKeyInput opens the inline key-entry form for the given provider.
-func (rp *RightPanel) OpenKeyInput(provider string, height int) {
-	rp.visible = true
-	rp.mode = rpModeKeyInput
-	rp.height = height
-	rp.keyInputProvider = provider
-
-	ti := textinput.New()
-	ti.Placeholder = "Paste your " + provider + " API key..."
-	ti.EchoMode = textinput.EchoPassword
-	ti.Focus()
-	rp.keyInput = ti
-}
-
-// HandleKey processes a key press and returns the resulting action and its payload.
-func (rp *RightPanel) HandleKey(msg tea.KeyPressMsg) (RightPanelAction, string) {
-	key := msg.String()
-
-	// Workflow and todos modes are read-only; ignore all keys.
-	if rp.mode == rpModeWorkflow || rp.mode == rpModeTodos {
-		return rpActionNone, ""
+// HandleKey processes a key press and returns the resulting action. The panel is
+// read-only (workflow progress / todos); only ESC is actionable, which closes it.
+func (rp *RightPanel) HandleKey(msg tea.KeyPressMsg) RightPanelAction {
+	if msg.String() == "esc" {
+		return rpActionClose
 	}
-
-	// ESC always closes
-	if key == "esc" {
-		return rpActionClose, ""
-	}
-
-	switch rp.mode {
-	case rpModeKeys:
-		switch key {
-		case "up", "k":
-			if rp.keySel > 0 {
-				rp.keySel--
-			}
-		case "down", "j":
-			if rp.keySel < len(rp.keys)-1 {
-				rp.keySel++
-			}
-		case "enter":
-			if rp.keySel < len(rp.keys) {
-				provider := rp.keys[rp.keySel].Provider
-				return rpActionNeedKey, provider + ":"
-			}
-		case "delete", "backspace":
-			if rp.keySel < len(rp.keys) {
-				return rpActionKeyDeleted, rp.keys[rp.keySel].Provider
-			}
-		}
-
-	case rpModeKeyInput:
-		if key == "enter" {
-			val := strings.TrimSpace(rp.keyInput.Value())
-			if val != "" {
-				return rpActionKeyStored, rp.keyInputProvider + ":" + val
-			}
-			return rpActionNone, ""
-		}
-		// Forward key to textinput
-		var cmd tea.Cmd
-		rp.keyInput, cmd = rp.keyInput.Update(msg)
-		_ = cmd
-	}
-
-	return rpActionNone, ""
+	return rpActionNone
 }
 
 // View renders the right panel as a bordered, full-height string.
@@ -160,38 +79,6 @@ func (rp *RightPanel) View(height int, s Styles, focused bool, wfp *WorkflowGrap
 	var lines []string
 
 	switch rp.mode {
-	case rpModeKeys:
-		title := lipgloss.NewStyle().Bold(true).Foreground(colorPrimary).Width(innerWidth).Render("API Keys")
-		sep := lipgloss.NewStyle().Foreground(colorDim).Width(innerWidth).Render(strings.Repeat("─", innerWidth))
-		lines = append(lines, title, sep)
-		for i, pk := range rp.keys {
-			var statusStr string
-			if pk.Prefix != "" {
-				statusStr = pk.Prefix + "..."
-			} else {
-				statusStr = "(not stored)"
-			}
-			label := pk.Provider + ": " + statusStr
-			if i == rp.keySel {
-				line := lipgloss.NewStyle().Bold(true).Foreground(colorPrimary).Width(innerWidth).Render("▸ " + label)
-				lines = append(lines, line)
-			} else {
-				line := lipgloss.NewStyle().Foreground(colorDim).Width(innerWidth).Render("  " + label)
-				lines = append(lines, line)
-			}
-		}
-		hint := lipgloss.NewStyle().Foreground(colorDim).Italic(true).Width(innerWidth).Render("↑/↓ navigate  Enter add/update  Del delete  Esc close")
-		lines = append(lines, "", hint)
-
-	case rpModeKeyInput:
-		title := lipgloss.NewStyle().Bold(true).Foreground(colorPrimary).Width(innerWidth).Render("Enter API Key")
-		sub := lipgloss.NewStyle().Foreground(colorDim).Width(innerWidth).Render("Provider: " + rp.keyInputProvider)
-		sep := lipgloss.NewStyle().Foreground(colorDim).Width(innerWidth).Render(strings.Repeat("─", innerWidth))
-		rp.keyInput.SetWidth(innerWidth)
-		inputView := rp.keyInput.View()
-		hint := lipgloss.NewStyle().Foreground(colorDim).Italic(true).Width(innerWidth).Render("Enter confirm  Esc cancel")
-		lines = append(lines, title, sub, sep, inputView, "", hint)
-
 	case rpModeWorkflow:
 		if wfp != nil {
 			title := lipgloss.NewStyle().Bold(true).Foreground(colorSecondary).Width(innerWidth).Render("Workflow: " + wfp.workflowName)

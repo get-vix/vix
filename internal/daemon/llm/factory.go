@@ -81,11 +81,18 @@ func Spec(c Client) string {
 	return string(c.Provider()) + "/" + c.Model()
 }
 
+// PluginSource produces the PluginConfig to apply to a client being built for
+// the given provider id, bare model name, and resolved credential. It runs at
+// client-construction time so plugins can react to the actual target provider
+// and credential kind (e.g. only spoof headers for anthropic + OAuth). A nil
+// PluginSource means no plugins.
+type PluginSource func(provider, model string, cred config.Credential) PluginConfig
+
 // NewFromModel parses a vix-style model spec, resolves the right credential via
 // config.ResolveProviderCredentialFresh, and constructs the matching adapter by
 // dispatching on the provider's wire_format. All endpoint/header/query data
 // comes from the providers registry (providers.json).
-func NewFromModel(spec string, plugin PluginConfig, effort string, maxTokens int64) (Client, error) {
+func NewFromModel(spec string, plugins PluginSource, effort string, maxTokens int64) (Client, error) {
 	p, model, err := providers.Default().ParseModel(spec)
 	if err != nil {
 		return nil, err
@@ -102,14 +109,20 @@ func NewFromModel(spec string, plugin PluginConfig, effort string, maxTokens int
 		return nil, fmt.Errorf("no credential for %s: %w", p.ID, ErrNoCredential)
 	}
 
+	var pluginCfg PluginConfig
+	if plugins != nil {
+		pluginCfg = plugins(p.ID, model, cred)
+	}
+
 	inf := p.Inference.Resolve()
 	cfg := Config{
 		Credential: cred,
 		Model:      model,
 		Effort:     effort,
 		MaxTokens:  maxTokens,
-		PluginCfg:  plugin,
+		PluginCfg:  pluginCfg,
 	}
+
 	// An auth method may carry an endpoint override (e.g. the Codex backend).
 	if cred.BaseURL != "" {
 		cfg.BaseURL = cred.BaseURL
@@ -126,11 +139,19 @@ func NewFromModel(spec string, plugin PluginConfig, effort string, maxTokens int
 	return nil, fmt.Errorf("unsupported wire_format %q for provider %s", p.WireFormat, p.ID)
 }
 
-// buildMessages constructs the Anthropic Messages adapter. The Anthropic SDK
-// owns its base URL + path (/v1/messages); injecting the spec base_url would
-// double the path, so we let the SDK default stand and honor only an explicit
-// cfg.BaseURL override (credential endpoint or test server).
-func buildMessages(_ providers.ProviderSpec, _ providers.InferenceSpec, cfg Config) (Client, error) {
+// buildMessages constructs the Anthropic Messages adapter (the default) or the
+// AWS Bedrock adapter when the provider is bedrock. The Anthropic SDK owns its
+// base URL + path (/v1/messages); injecting the spec base_url would double the
+// path, so we let the SDK default stand and honor only an explicit cfg.BaseURL
+// override (credential endpoint or test server). Bedrock builds its endpoint
+// URL dynamically from region + model at runtime.
+func buildMessages(p providers.ProviderSpec, inf providers.InferenceSpec, cfg Config) (Client, error) {
+	if p.ID == "bedrock" {
+		if cfg.BaseURL == "" {
+			cfg.BaseURL = inf.BaseURL
+		}
+		return NewBedrock(cfg)
+	}
 	return NewAnthropic(cfg)
 }
 

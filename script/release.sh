@@ -87,6 +87,23 @@ if [[ -z "${DISCORD_WEBHOOK_URL:-}" ]]; then
   exit 1
 fi
 
+# --- Optionally refresh the provider/model catalogue ---
+echo "==> Refresh the provider model list (script/fetch_models.py)?"
+read -r -p "    Fetch latest models and update providers.json? [y/N] " FETCH_MODELS_OK
+if [[ "$FETCH_MODELS_OK" =~ ^[Yy]$ ]]; then
+  echo "==> Running script/fetch_models.py..."
+  python3 "$SCRIPT_DIR/fetch_models.py"
+  PROVIDERS_JSON="internal/providers/providers.json"
+  if [[ -n "$(git -C "$ROOT_DIR" status --porcelain "$PROVIDERS_JSON")" ]]; then
+    echo "==> providers.json changed; committing update..."
+    git -C "$ROOT_DIR" add "$PROVIDERS_JSON"
+    git -C "$ROOT_DIR" commit -m "chore: update provider model list for $VERSION"
+  else
+    echo "==> providers.json unchanged."
+  fi
+  echo ""
+fi
+
 # --- Step 0: Ensure git working tree is clean ---
 echo "==> Checking git status..."
 if [[ -n "$(git status --porcelain)" ]]; then

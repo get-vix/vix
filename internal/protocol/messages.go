@@ -39,7 +39,7 @@ func (s InitState) String() string {
 	}
 }
 
-// --- UI message types (sent from session/agent to UI via tea.Program.Send or events) ---
+// --- UI message types (sent from thread/agent to UI via tea.Program.Send or events) ---
 
 // StreamChunkMsg carries a text delta from the streaming API.
 type StreamChunkMsg struct{ Text string }
@@ -121,9 +121,9 @@ type SubagentDoneMsg struct {
 	TaskID string
 }
 
-// DaemonEventMsg wraps a session event received from the daemon.
+// DaemonEventMsg wraps a thread event received from the daemon.
 type DaemonEventMsg struct {
-	Event SessionEvent
+	Event ThreadEvent
 }
 
 // DaemonDisconnectedMsg signals the daemon connection was lost.

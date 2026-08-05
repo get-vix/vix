@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -791,9 +792,9 @@ func TestLoadProjectConfig_DenyList_NewSchema(t *testing.T) {
 		t.Fatalf("expected 3 unique url entries, got %d: %v", len(cfg.DenyURLs), cfg.DenyURLs)
 	}
 	wantURLs := map[string]bool{
-		"bad.example.com":                    true,
-		"https://api.example.com/admin":      true,
-		"another-bad.example.org":            true,
+		"bad.example.com":               true,
+		"https://api.example.com/admin": true,
+		"another-bad.example.org":       true,
 	}
 	for _, u := range cfg.DenyURLs {
 		if !wantURLs[u] {
@@ -864,4 +865,134 @@ func itoa(i int) string {
 		b[pos] = '-'
 	}
 	return string(b[pos:])
+}
+
+// --- G. relative deny paths + tilde expansion (issue #52) ---------------
+
+func TestExpandTildePath(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skip("no home dir available")
+	}
+	cases := []struct {
+		in, want string
+	}{
+		{"~", home},
+		{"~/.ssh", filepath.Join(home, ".ssh")},
+		{"~/a/b", filepath.Join(home, "a", "b")},
+		{"~user/x", "~user/x"}, // only bare ~ / ~/ are expanded
+		{"/abs/path", "/abs/path"},
+		{".envrc.private", ".envrc.private"},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := expandTildePath(c.in); got != c.want {
+			t.Errorf("expandTildePath(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// A relative entry declared in a ./.vix/settings.json is resolved BOTH against
+// the config dir (existing behaviour) and recorded raw so the thread can also
+// resolve it against cwd. This is the crux of issue #52.
+func TestLoadProjectConfig_DenyList_RelativeDualResolution(t *testing.T) {
+	root := testRoot(t)
+	vixDir := filepath.Join(root, ".vix")
+	os.MkdirAll(vixDir, 0o755)
+	cfgPath := filepath.Join(vixDir, "settings.json")
+	content := `{"version": ` + currentVersionStr() + `, "deny_list": {"paths": [".envrc.private"]}}`
+	os.WriteFile(cfgPath, []byte(content), 0o644)
+
+	cfg := LoadProjectConfig(cfgPath)
+
+	// Config-dir-relative form is still present (backward compatible).
+	wantConfigDir := filepath.Join(vixDir, ".envrc.private")
+	if len(cfg.DenyPaths) != 1 || cfg.DenyPaths[0] != wantConfigDir {
+		t.Fatalf("DenyPaths = %v, want [%q]", cfg.DenyPaths, wantConfigDir)
+	}
+	// Raw relative form is preserved for cwd resolution.
+	if len(cfg.DenyPathsRel) != 1 || cfg.DenyPathsRel[0] != ".envrc.private" {
+		t.Fatalf("DenyPathsRel = %v, want [\".envrc.private\"]", cfg.DenyPathsRel)
+	}
+}
+
+// A ~ entry is expanded to an absolute path under $HOME — not the phantom
+// <configdir>/~/.ssh that plain filepath.Join produced before, which never
+// matched the real ~/.ssh (the deny list silently protected nothing).
+func TestLoadProjectConfig_DenyList_TildeExpanded(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skip("no home dir available")
+	}
+	root := testRoot(t)
+	vixDir := filepath.Join(root, ".vix")
+	os.MkdirAll(vixDir, 0o755)
+	cfgPath := filepath.Join(vixDir, "settings.json")
+	content := `{"version": ` + currentVersionStr() + `, "deny_list": {"paths": ["~/.ssh"]}}`
+	os.WriteFile(cfgPath, []byte(content), 0o644)
+
+	cfg := LoadProjectConfig(cfgPath)
+
+	want := filepath.Join(home, ".ssh")
+	if len(cfg.DenyPaths) != 1 || cfg.DenyPaths[0] != want {
+		t.Fatalf("DenyPaths = %v, want [%q]", cfg.DenyPaths, want)
+	}
+	for _, p := range cfg.DenyPaths {
+		if strings.Contains(p, "~") {
+			t.Errorf("tilde not expanded: %q", p)
+		}
+	}
+	// Absolute after expansion — not recorded as a raw relative entry.
+	if len(cfg.DenyPathsRel) != 0 {
+		t.Errorf("DenyPathsRel should be empty for ~ entry, got %v", cfg.DenyPathsRel)
+	}
+}
+
+func TestCombineDenyPaths(t *testing.T) {
+	cwd := "/proj"
+	got := combineDenyPaths(cwd,
+		[]string{"/proj/.vix/.envrc.private"}, // config-dir form
+		[]string{".envrc.private", "sub/x"},   // raw relative
+	)
+	want := map[string]bool{
+		"/proj/.vix/.envrc.private": true,
+		"/proj/.envrc.private":      true,
+		"/proj/sub/x":               true,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("combineDenyPaths = %v, want keys %v", got, want)
+	}
+	for _, p := range got {
+		if !want[p] {
+			t.Errorf("unexpected entry %q", p)
+		}
+	}
+}
+
+// End-to-end at the thread layer: the exact scenario from issue #52. A
+// relative deny entry in ./.vix/settings.json must block the secret file at
+// the project root, and its contents must never leak.
+func TestIntegration_DenyList_RelativeEntryBlocksProjectRoot(t *testing.T) {
+	root := testRoot(t)
+	vixDir := filepath.Join(root, ".vix")
+	os.MkdirAll(vixDir, 0o755)
+	cfgPath := filepath.Join(vixDir, "settings.json")
+	os.WriteFile(cfgPath, []byte(`{"version": `+currentVersionStr()+`, "deny_list": {"paths": [".envrc.private"]}}`), 0o644)
+
+	secret := filepath.Join(root, ".envrc.private")
+	os.WriteFile(secret, []byte("API_KEY=SUPER_SECRET"), 0o600)
+
+	cfg := LoadProjectConfig(cfgPath)
+	deny := combineDenyPaths(root, cfg.DenyPaths, cfg.DenyPathsRel)
+	s := newIntegrationThread(t, root, deny)
+
+	for _, p := range []string{secret, ".envrc.private", "./.envrc.private"} {
+		res := s.executeToolDirect(context.Background(), "read_file", map[string]any{"path": p})
+		if res == nil || !res.IsError {
+			t.Fatalf("path %q: expected deny error, got %+v", p, res)
+		}
+		if strings.Contains(res.Output, "SUPER_SECRET") {
+			t.Errorf("path %q: secret leaked in output", p)
+		}
+	}
 }

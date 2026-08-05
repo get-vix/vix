@@ -316,13 +316,13 @@ func (c *Client) CallWithCode(ctx context.Context, method string, params any) (j
 
 // CallHierarchyItem represents an LSP CallHierarchyItem.
 type CallHierarchyItem struct {
-	Name           string  `json:"name"`
-	Kind           int     `json:"kind"`
-	Detail         string  `json:"detail"`
-	URI            string  `json:"uri"`
+	Name           string   `json:"name"`
+	Kind           int      `json:"kind"`
+	Detail         string   `json:"detail"`
+	URI            string   `json:"uri"`
 	Range          LspRange `json:"range"`
 	SelectionRange LspRange `json:"selectionRange"`
-	Data           any     `json:"data,omitempty"`
+	Data           any      `json:"data,omitempty"`
 }
 
 // CallHierarchyOutgoingCall represents an outgoing call from a CallHierarchyItem.

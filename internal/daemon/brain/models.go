@@ -71,6 +71,6 @@ type BrainIndex struct {
 	Files    []FileInfo   `json:"files"`
 	Symbols  []SymbolInfo `json:"symbols"`
 	Imports  []ImportInfo `json:"imports"`
-	Calls    []CallInfo `json:"calls"`
-	HubFiles []HubFile  `json:"hub_files"`
+	Calls    []CallInfo   `json:"calls"`
+	HubFiles []HubFile    `json:"hub_files"`
 }

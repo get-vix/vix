@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -231,5 +232,160 @@ func TestMediaTypeFromExt(t *testing.T) {
 		if got != want {
 			t.Errorf("imageExtensions[%s] = %s, want %s", ext, got, want)
 		}
+	}
+}
+
+func createTestFile(t *testing.T, dir, name, content string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestDetectFileCandidates_TextAndPDF(t *testing.T) {
+	dir := t.TempDir()
+	txt := createTestFile(t, dir, "notes.txt", "hello")
+	pdf := createTestFile(t, dir, "report.pdf", "%PDF-1.7 stub")
+
+	cands := detectFileCandidates("see " + txt + " and " + pdf)
+	if len(cands) != 2 {
+		t.Fatalf("expected 2 candidates, got %d: %+v", len(cands), cands)
+	}
+	byPath := map[string]fileCandidate{}
+	for _, c := range cands {
+		byPath[c.Path] = c
+	}
+	if byPath[txt].Kind != "file" {
+		t.Errorf("txt kind = %q, want file", byPath[txt].Kind)
+	}
+	if byPath[pdf].Kind != "pdf" {
+		t.Errorf("pdf kind = %q, want pdf", byPath[pdf].Kind)
+	}
+	if byPath[txt].Raw != txt {
+		t.Errorf("Raw = %q, want %q", byPath[txt].Raw, txt)
+	}
+}
+
+func TestDetectFileCandidates_IgnoresImagesAndMissing(t *testing.T) {
+	dir := t.TempDir()
+	img := createTestImage(t, dir, "pic.png")
+	missing := filepath.Join(dir, "gone.txt")
+
+	cands := detectFileCandidates(img + " " + missing)
+	if len(cands) != 0 {
+		t.Errorf("expected no file candidates (image + missing), got %+v", cands)
+	}
+}
+
+func TestExtractFileAttachments_Placeholders(t *testing.T) {
+	dir := t.TempDir()
+	txt := createTestFile(t, dir, "a.md", "# doc")
+	pdf := createTestFile(t, dir, "b.pdf", "%PDF-1.7 stub")
+
+	clean, atts := extractFileAttachments("read " + txt + " then " + pdf)
+	if clean != "read [File #1] then [PDF #1]" {
+		t.Errorf("clean = %q", clean)
+	}
+	if len(atts) != 2 {
+		t.Fatalf("expected 2 attachments, got %d", len(atts))
+	}
+	for _, a := range atts {
+		if a.Type != "file" {
+			t.Errorf("attachment type = %q, want file", a.Type)
+		}
+		if a.Data != "" {
+			t.Errorf("file attachment should be path-only, got Data of len %d", len(a.Data))
+		}
+	}
+}
+
+func TestExtractFileAttachments_None(t *testing.T) {
+	clean, atts := extractFileAttachments("just some prose")
+	if clean != "just some prose" || len(atts) != 0 {
+		t.Errorf("clean=%q atts=%d", clean, len(atts))
+	}
+}
+
+func TestUnescapeDropPath(t *testing.T) {
+	cases := map[string]string{
+		`/a/b`:                 `/a/b`,
+		`/a\ b/c`:              `/a b/c`,
+		`/com\~apple\~x/f.pdf`: `/com~apple~x/f.pdf`,
+		`/a\(b\)\&c`:           `/a(b)&c`,
+	}
+	for in, want := range cases {
+		if got := unescapeDropPath(in); got != want {
+			t.Errorf("unescapeDropPath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// escapeDrop mimics how a terminal escapes shell-special characters when a file
+// is dragged into the input (spaces and `~`, as in iCloud `com~apple~` paths).
+func escapeDrop(path string) string {
+	r := strings.NewReplacer(" ", `\ `, "~", `\~`)
+	return r.Replace(path)
+}
+
+func TestDetectFileCandidates_EscapedTildeAndSpace(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "com~apple~CloudDocs", "Mobile Documents")
+	if err := os.MkdirAll(sub, 0755); err != nil {
+		t.Fatal(err)
+	}
+	pdf := createTestFile(t, sub, "10-Blunders.PDF", "%PDF-1.7 stub")
+
+	dropped := escapeDrop(pdf)
+	cands := detectFileCandidates("look at " + dropped)
+	if len(cands) != 1 {
+		t.Fatalf("expected 1 candidate, got %d: %+v", len(cands), cands)
+	}
+	if cands[0].Path != pdf {
+		t.Errorf("candidate path = %q, want unescaped %q", cands[0].Path, pdf)
+	}
+	if cands[0].Kind != "pdf" {
+		t.Errorf("kind = %q, want pdf", cands[0].Kind)
+	}
+	if cands[0].Raw != dropped {
+		t.Errorf("Raw = %q, want %q", cands[0].Raw, dropped)
+	}
+}
+
+func TestExtractFileAttachments_EscapedTilde(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "com~apple~CloudDocs")
+	if err := os.MkdirAll(sub, 0755); err != nil {
+		t.Fatal(err)
+	}
+	pdf := createTestFile(t, sub, "doc.pdf", "%PDF-1.7 stub")
+
+	clean, atts := extractFileAttachments("read " + escapeDrop(pdf))
+	if clean != "read [PDF #1]" {
+		t.Errorf("clean = %q", clean)
+	}
+	if len(atts) != 1 || atts[0].Path != pdf {
+		t.Fatalf("expected attachment with unescaped path %q, got %+v", pdf, atts)
+	}
+}
+
+func TestExtractImageAttachments_EscapedTilde(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "com~apple~CloudDocs")
+	if err := os.MkdirAll(sub, 0755); err != nil {
+		t.Fatal(err)
+	}
+	img := createTestImage(t, sub, "pic.png")
+
+	clean, atts, errs := extractImageAttachments("here " + escapeDrop(img))
+	if len(errs) != 0 {
+		t.Fatalf("unexpected errs: %v", errs)
+	}
+	if clean != "here [Image #1]" {
+		t.Errorf("clean = %q", clean)
+	}
+	if len(atts) != 1 || atts[0].Path != img {
+		t.Fatalf("expected image attachment with unescaped path %q, got %+v", img, atts)
 	}
 }

@@ -11,11 +11,18 @@ require (
 	github.com/atotto/clipboard v0.1.4
 	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/charmbracelet/ultraviolet v0.0.0-20260205113103-524a6607adb8
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/google/uuid v1.6.0
 	github.com/gridlhq-dev/tree-sitter-swift v0.1.0
 	github.com/lucasb-eyer/go-colorful v1.3.0
 	github.com/mattn/go-isatty v0.0.20
+	github.com/openai/openai-go v1.12.0
+	github.com/pgavlin/mermaid-ascii v0.0.0-20260322123205-ab8074a98bef
 	github.com/posthog/posthog-go v1.11.2
+	github.com/rivo/uniseg v0.4.7
+	github.com/robfig/cron/v3 v3.0.1
+	github.com/sirupsen/logrus v1.9.0
+	github.com/tidwall/sjson v1.2.5
 	github.com/tree-sitter-grammars/tree-sitter-kotlin v1.1.0
 	github.com/tree-sitter/go-tree-sitter v0.25.0
 	github.com/tree-sitter/tree-sitter-bash v0.25.1
@@ -35,6 +42,8 @@ require (
 	github.com/tree-sitter/tree-sitter-typescript v0.23.2
 	github.com/zalando/go-keyring v0.2.6
 	golang.org/x/net v0.41.0
+	golang.org/x/oauth2 v0.36.0
+	golang.org/x/sys v0.42.0
 	modernc.org/sqlite v1.46.1
 )
 
@@ -53,8 +62,10 @@ require (
 	github.com/danieljoos/wincred v1.2.2 // indirect
 	github.com/dlclark/regexp2 v1.11.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/elliotchance/orderedmap/v2 v2.2.0 // indirect
 	github.com/goccy/go-json v0.10.5 // indirect
 	github.com/godbus/dbus/v5 v5.1.0 // indirect
+	github.com/gookit/color v1.5.4 // indirect
 	github.com/gorilla/css v1.0.1 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/mattn/go-pointer v0.0.1 // indirect
@@ -62,21 +73,23 @@ require (
 	github.com/microcosm-cc/bluemonday v1.0.27 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
-	github.com/openai/openai-go v1.12.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/tidwall/gjson v1.18.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
-	github.com/tidwall/sjson v1.2.5 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	github.com/yuin/goldmark v1.7.8 // indirect
 	github.com/yuin/goldmark-emoji v1.0.5 // indirect
 	golang.org/x/exp v0.0.0-20251023183803-a4bb9ffd2546 // indirect
 	golang.org/x/sync v0.19.0 // indirect
-	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/text v0.27.0 // indirect
 	modernc.org/libc v1.67.6 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
+
+// Diamond-rendering fix, upstreamed as pgavlin/mermaid-ascii#1. Drop this once
+// merged and bump the require above. Re-vendor after fork tweaks with:
+//   GOSUMDB=off GOFLAGS=-mod=mod go mod download github.com/pgavlin/mermaid-ascii && go mod vendor
+// (GOSUMDB=off is only needed until sum.golang.org indexes the fork commit.)
+replace github.com/pgavlin/mermaid-ascii => github.com/kirby88/mermaid-ascii v0.0.0-20260727160108-bb79308cf13d

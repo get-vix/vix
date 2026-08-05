@@ -69,7 +69,7 @@ func Configure(paths []string) error {
 		}
 		merged = mergeFiles(merged, overlay)
 	}
-	if err := validate(merged); err != nil {
+	if err := validate(merged, interpolate); err != nil {
 		return fmt.Errorf("providers: %w", err)
 	}
 	reg := newRegistry(merged)
@@ -82,13 +82,17 @@ func Configure(paths []string) error {
 	return nil
 }
 
-// loadEmbedded parses and validates the embedded providers.json.
+// loadEmbedded parses and validates the embedded providers.json. Validation
+// uses interpolateDefaults so the shipped file is checked structurally, against
+// its built-in defaults rather than the process environment — a runtime env
+// override (e.g. LLAMACPP_BASE_URL) can never make this panic-on-error path
+// fail. Env-resolved URLs are validated gracefully by Configure instead.
 func loadEmbedded() (*Registry, error) {
 	f, err := parseFile(embeddedJSON)
 	if err != nil {
 		return nil, err
 	}
-	if err := validate(f); err != nil {
+	if err := validate(f, interpolateDefaults); err != nil {
 		return nil, err
 	}
 	return newRegistry(f), nil
@@ -162,6 +166,9 @@ func mergeProvider(a, b ProviderSpec) ProviderSpec {
 	}
 	if b.EffortPolicy != "" {
 		out.EffortPolicy = b.EffortPolicy
+	}
+	if b.Local {
+		out.Local = true
 	}
 	out.Inference = mergeInference(a.Inference, b.Inference)
 	if b.Credential != nil {

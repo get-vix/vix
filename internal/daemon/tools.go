@@ -240,8 +240,8 @@ func isUnderAnyReal(resolvedReal, cwd string, allowedDirs []string) bool {
 }
 
 var (
-	cdPattern   = regexp.MustCompile(`\bcd\s+["']?([^\s"';&|]+)`)
-	absPathPat  = regexp.MustCompile(`(?:^|\s|=|:)(/[^\s"';&|<>]+)`)
+	cdPattern    = regexp.MustCompile(`\bcd\s+["']?([^\s"';&|]+)`)
+	absPathPat   = regexp.MustCompile(`(?:^|\s|=|:)(/[^\s"';&|<>]+)`)
 	tildePathPat = regexp.MustCompile(`(?:^|\s|=)~/([^\s"';&|<>]+)`)
 )
 
@@ -361,6 +361,16 @@ func readFileImpl(cwd string, allowedDirs []string, path string, offset, limit *
 		return "", err
 	}
 
+	// PDFs are binary: convert to Markdown instead of emitting raw bytes with
+	// line numbers. offset/limit still slice the resulting Markdown by line.
+	if looksLikePDF(raw) {
+		md, perr := pdfToMarkdown(path, raw)
+		if perr != nil {
+			return "", perr
+		}
+		return sliceLines(md, offset, limit), nil
+	}
+
 	text := string(raw)
 	lines := strings.Split(text, "\n")
 
@@ -385,6 +395,31 @@ func readFileImpl(cwd string, allowedDirs []string, path string, offset, limit *
 	}
 
 	return strings.Join(numbered, "\n"), nil
+}
+
+// sliceLines applies 1-based offset and limit to a block of text, returning the
+// selected lines joined without line-number prefixes. Used for converted PDF
+// Markdown, which is not editable source and so is shown unnumbered.
+func sliceLines(text string, offset, limit *int) string {
+	if offset == nil && limit == nil {
+		return text
+	}
+	lines := strings.Split(text, "\n")
+	start := 0
+	if offset != nil && *offset >= 1 {
+		start = *offset - 1
+	}
+	end := len(lines)
+	if limit != nil {
+		end = start + *limit
+	}
+	if start > len(lines) {
+		start = len(lines)
+	}
+	if end > len(lines) {
+		end = len(lines)
+	}
+	return strings.Join(lines[start:end], "\n")
 }
 
 // capFileReadOutput truncates a read_file / read_minified_file response that
@@ -672,6 +707,7 @@ func bashImpl(ctx context.Context, server *Server, command, cwd string, extraDir
 func runBashWithContext(ctx context.Context, command, cwd, input string, onLine func(string)) (string, error) {
 	cmd := exec.Command("bash", "-c", command)
 	cmd.Dir = cwd
+	cmd.Env = sanitizedBashEnv()
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if input != "" {
 		cmd.Stdin = strings.NewReader(input)
@@ -731,7 +767,7 @@ func runBashWithContext(ctx context.Context, command, cwd, input string, onLine 
 
 // BashJob is a single detached bash command spawned via bash tool
 // `background: true`. The daemon keeps ownership of log/rc file handles and a
-// cancel hook so the whole process group can be SIGKILLed at session shutdown
+// cancel hook so the whole process group can be SIGKILLed at thread shutdown
 // (or when the job's own deadline fires). The LLM polls via ordinary `bash`
 // calls against LogPath / RCPath — no new tool surface needed.
 type BashJob struct {
@@ -745,8 +781,8 @@ type BashJob struct {
 	Done    chan struct{}      // closed after the reaper goroutine writes the rc file
 }
 
-// BashJobRegistry owns the bash-tool background jobs for one session. It does
-// not cross sessions — a session shutdown reaps its own jobs via KillAll().
+// BashJobRegistry owns the bash-tool background jobs for one thread. It does
+// not cross threads — a thread shutdown reaps its own jobs via KillAll().
 // sync.Map because writes (Store on spawn, Delete on reap) are both O(jobs
 // ever spawned) and reads are rare (only iteration in KillAll).
 type BashJobRegistry struct {
@@ -764,7 +800,7 @@ func (r *BashJobRegistry) Load(id string) (*BashJob, bool) {
 func (r *BashJobRegistry) Delete(id string) { r.m.Delete(id) }
 
 // KillAll cancels every job in the registry and waits up to 2s per job for
-// its reaper goroutine to finish. Called from server.go when a session ends.
+// its reaper goroutine to finish. Called from server.go when a thread ends.
 func (r *BashJobRegistry) KillAll() {
 	jobs := []*BashJob{}
 	r.m.Range(func(_, v any) bool {
@@ -783,7 +819,7 @@ func (r *BashJobRegistry) KillAll() {
 		case <-j.Done:
 		case <-time.After(2 * time.Second):
 			// Reaper goroutine didn't finish in time; registry will be GC'd
-			// with the session anyway. Move on.
+			// with the thread anyway. Move on.
 		}
 	}
 }
@@ -808,7 +844,7 @@ func newBashJobID() (string, error) {
 // crashes without running KillAll.
 func bashBackgroundImpl(registry *BashJobRegistry, command, cwd string, extraDirs []string, timeoutSec int) (string, error) {
 	if registry == nil {
-		return "", fmt.Errorf("no bash job registry available on this session")
+		return "", fmt.Errorf("no bash job registry available on this thread")
 	}
 	jobID, err := newBashJobID()
 	if err != nil {
@@ -874,8 +910,8 @@ func bashBackgroundImpl(registry *BashJobRegistry, command, cwd string, extraDir
 	registry.Store(job)
 
 	// Reaper: waits on the child, writes rc, closes Done, drops registry
-	// entry, closes the log file. Must NOT hold any session-scoped state —
-	// the session may end before the goroutine returns, and that's fine:
+	// entry, closes the log file. Must NOT hold any thread-scoped state —
+	// the thread may end before the goroutine returns, and that's fine:
 	// KillAll() cancel'd our ctx, the child dies, we record the signal.
 	go func() {
 		werr := cmd.Wait()
@@ -1054,10 +1090,25 @@ func formatEditDiffFallback(oldStr, newStr string, lineOffset int) string {
 func RegisterToolHandlers(s *Server) {
 	// Load tool backend config from home config. Project-level overrides are
 	// not applied here because tool handlers are registered once per daemon,
-	// not per session. Use ~/.vix/settings.json as the sole source.
+	// not per thread. Use ~/.vix/settings.json as the sole source.
 	toolsCfg := loadToolsConfig([]string{filepath.Join(config.HomeVixDir(), "settings.json")})
 	grepBackend := newGrepRunner(toolsCfg.Grep.Backend)
 	globBackend := newGlobRunner(toolsCfg.Glob.Backend)
+
+	// Record effective + configured backend names so threads can report them to
+	// the Settings tab. When a backend isn't explicitly configured, treat the
+	// resolved (effective) name as the configured one so the UI shows no
+	// spurious fallback annotation.
+	s.grepBackendEffective = grepBackend.Name()
+	s.grepBackendConfigured = toolsCfg.Grep.Backend
+	if s.grepBackendConfigured == "" {
+		s.grepBackendConfigured = s.grepBackendEffective
+	}
+	s.globBackendEffective = globBackend.Name()
+	s.globBackendConfigured = toolsCfg.Glob.Backend
+	if s.globBackendConfigured == "" {
+		s.globBackendConfigured = s.globBackendEffective
+	}
 
 	s.RegisterHandler("tool.read_file", func(data map[string]any) (map[string]any, error) {
 		params, _ := data["params"].(map[string]any)
@@ -1101,7 +1152,7 @@ func RegisterToolHandlers(s *Server) {
 		}
 		cwd, _ := params["cwd"].(string)
 		allowedDirs := extractAllowedDirs(params)
-		extMap, _, vfsConfigs := loadFormatterConfigs(defaultSettingsPaths(s.homeVixDir, cwd))
+		extMap, _, vfsConfigs := loadFormatterConfigs(defaultLanguagesPaths(s.homeVixDir))
 		keepComments := keepCommentsForPath(extMap, vfsConfigs, path)
 		var output string
 		var err error
@@ -1154,7 +1205,7 @@ func RegisterToolHandlers(s *Server) {
 		allowedDirs := extractAllowedDirs(params)
 		var output string
 		var err error
-		extMap, formatters, vfsConfigs := loadFormatterConfigs(defaultSettingsPaths(s.homeVixDir, cwd))
+		extMap, formatters, vfsConfigs := loadFormatterConfigs(defaultLanguagesPaths(s.homeVixDir))
 		if vfsEnabledForPath(extMap, formatters, vfsConfigs, path) {
 			output, err = VfsWrite(cwd, allowedDirs, s.homeVixDir, path, content)
 		} else {
@@ -1212,10 +1263,17 @@ func RegisterToolHandlers(s *Server) {
 		var output string
 		var lineOffset int
 		var err error
-		extMap, formatters, vfsConfigs := loadFormatterConfigs(defaultSettingsPaths(s.homeVixDir, cwd))
+		extMap, _, vfsConfigs := loadFormatterConfigs(defaultLanguagesPaths(s.homeVixDir))
 		keepComments := keepCommentsForPath(extMap, vfsConfigs, path)
-		if vfsEnabledForPath(extMap, formatters, vfsConfigs, path) {
+		// The projected splice needs no formatter, so editing only requires
+		// vfs.enable (symmetric with read_minified_file). Fall back to a literal
+		// edit when VFS is off or the file can't be minified.
+		if vfsReadEnabledForPath(extMap, vfsConfigs, path) {
 			output, lineOffset, err = VfsEdit(cwd, allowedDirs, s.homeVixDir, path, oldString, newString, keepComments)
+			if err == errVFSUnsupported {
+				LogInfo("[vfs] edit_minified_file: %s not minifiable, falling back to edit_file", path)
+				output, lineOffset, err = editFileImpl(cwd, allowedDirs, path, oldString, newString, 0)
+			}
 		} else {
 			LogInfo("[vfs] edit_minified_file: VFS disabled for %s, falling back to edit_file", path)
 			output, lineOffset, err = editFileImpl(cwd, allowedDirs, path, oldString, newString, 0)
@@ -1275,7 +1333,7 @@ func RegisterToolHandlers(s *Server) {
 		// — that ctx will fire at 120/300s and we do not want to kill a
 		// legitimate 10-minute `john` run because of it.
 		if bg, _ := params["background"].(bool); bg {
-			sess, _ := params["_session"].(*Session)
+			sess, _ := params["_thread"].(*Thread)
 			var registry *BashJobRegistry
 			if sess != nil {
 				registry = &sess.bashJobs
@@ -1298,7 +1356,7 @@ func RegisterToolHandlers(s *Server) {
 			return toolOK(out, false), nil
 		}
 		// Note: the `timeout` param is consumed by the dispatcher
-		// (resolveToolTimeout in session.go) — not here.
+		// (resolveToolTimeout in thread.go) — not here.
 		output, err := bashImpl(ctx, s, command, cwd, allowedDirs, headless)
 		if err != nil {
 			if err == context.Canceled {
@@ -1332,7 +1390,7 @@ func RegisterToolHandlers(s *Server) {
 			}
 			return toolOK(fmt.Sprintf("Error: %v", err), true), nil
 		}
-		if sess, ok := params["_session"].(*Session); ok {
+		if sess, ok := params["_thread"].(*Thread); ok {
 			if dl := sess.denyListSnapshot(); len(dl) > 0 {
 				output = filterOutputAgainstDeny(output, cwd, dl)
 			}
@@ -1392,7 +1450,7 @@ func RegisterToolHandlers(s *Server) {
 			}
 			return toolOK(fmt.Sprintf("Error: %v", err), true), nil
 		}
-		if sess, ok := params["_session"].(*Session); ok {
+		if sess, ok := params["_thread"].(*Thread); ok {
 			if dl := sess.denyListSnapshot(); len(dl) > 0 {
 				output = filterOutputAgainstDeny(output, cwd, dl)
 			}

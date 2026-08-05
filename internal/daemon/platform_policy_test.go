@@ -189,7 +189,7 @@ func TestDetectOutsidePaths_TrulyOutsidePathFlagged(t *testing.T) {
 
 func TestIsPathAllowed_HomePath(t *testing.T) {
 	t.Setenv("HOME", "/Users/johndoe")
-	s := &Session{cwd: "/work"}
+	s := &Thread{cwd: "/work"}
 	if !s.isPathAllowed("/Users/johndoe/.gitconfig") {
 		t.Error("path under $HOME must be allowed")
 	}
@@ -199,7 +199,7 @@ func TestIsPathAllowed_HomePath(t *testing.T) {
 }
 
 func TestIsPathAllowed_CwdPath(t *testing.T) {
-	s := &Session{cwd: "/work/proj"}
+	s := &Thread{cwd: "/work/proj"}
 	if !s.isPathAllowed("/work/proj/main.go") {
 		t.Error("path under cwd must be allowed")
 	}
@@ -210,7 +210,7 @@ func TestIsPathAllowed_CwdPath(t *testing.T) {
 
 func TestIsPathAllowed_AllowedDir(t *testing.T) {
 	t.Setenv("HOME", "/Users/johndoe")
-	s := &Session{cwd: "/work"}
+	s := &Thread{cwd: "/work"}
 	s.addAllowedDir("/data/shared")
 	if !s.isPathAllowed("/data/shared/file.txt") {
 		t.Error("path under runtime-approved dir must be allowed")
@@ -219,7 +219,7 @@ func TestIsPathAllowed_AllowedDir(t *testing.T) {
 
 func TestIsPathAllowed_UnrelatedPath(t *testing.T) {
 	t.Setenv("HOME", "/Users/johndoe")
-	s := &Session{cwd: "/work"}
+	s := &Thread{cwd: "/work"}
 	// /srv is not cwd, not $HOME, not a system dir, not allowed.
 	if s.isPathAllowed("/srv/secret/data") {
 		t.Error("unrelated path must not be allowed")
@@ -228,7 +228,7 @@ func TestIsPathAllowed_UnrelatedPath(t *testing.T) {
 
 func TestIsPathAllowed_HomeUnset_NoWildcard(t *testing.T) {
 	t.Setenv("HOME", "")
-	s := &Session{cwd: "/work"}
+	s := &Thread{cwd: "/work"}
 	// With HOME unset, nothing outside cwd/system/allowedDirs should be allowed.
 	if s.isPathAllowed("/Users/johndoe/.gitconfig") {
 		t.Error("HOME unset must not wildcard-allow paths")

@@ -3,12 +3,12 @@ package config
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go/option"
-	"github.com/zalando/go-keyring"
 
 	"github.com/get-vix/vix/internal/auth"
 )
@@ -34,7 +34,10 @@ const (
 	KeySourceOAuthToken KeySource = "oauth-token"
 	KeySourceKeychain   KeySource = "keychain"
 	KeySourceEnvFile    KeySource = "dotenv"
-	KeySourceNone       KeySource = "none"
+	// KeySourceLocal marks a keyless local provider (NoneAuth): the credential
+	// is a fixed placeholder the server ignores.
+	KeySourceLocal KeySource = "local"
+	KeySourceNone  KeySource = "none"
 )
 
 // Credential bundles an API key or OAuth token with everything an adapter
@@ -103,9 +106,9 @@ func resolveKey(envVar, keyringUser string) (string, KeySource) {
 		}
 	}
 
-	// 2. OS Keychain
+	// 2. Stored credential (OS keychain, or auth.json fallback)
 	if keyringUser != "" {
-		if key, err := keyring.Get(keyringService, keyringUser); err == nil && key != "" {
+		if key, err := defaultStore().Get(keyringUser); err == nil && key != "" {
 			return key, KeySourceKeychain
 		}
 	}
@@ -159,6 +162,10 @@ func resolveProviderCredential(ctx context.Context, provider string, refresh boo
 				continue
 			}
 			return buildCredential(value, KeySourceOAuthToken, m)
+		case NoneAuth:
+			// Keyless local provider: any non-empty placeholder works — the
+			// server ignores the Authorization header.
+			return buildCredential("local", KeySourceLocal, m)
 		}
 	}
 	return Credential{Source: KeySourceNone}
@@ -176,41 +183,83 @@ func isOAuthMethod(m AuthMethod) bool {
 }
 
 // orderedAuthMethods returns a provider's auth methods reordered so the user's
-// preferred kind (api_key or oauth) is tried first. When no preference is
-// stored, the provider's declared method order (providers.json) is preserved.
+// preferred method (identified by AuthMethod.ID) is tried first. When no
+// preference is stored, the provider's declared method order (providers.json) is
+// preserved.
 func orderedAuthMethods(provider string) []AuthMethod {
 	return reorderAuthMethods(AuthMethodsFor(provider), ProviderAuthDefault(provider))
 }
 
 // reorderAuthMethods is the pure core of orderedAuthMethods: it promotes the
-// methods matching the preferred kind ahead of the rest while keeping the
-// relative order within each group stable, so resolution still falls through to
-// the other method when the preferred one yields no value.
+// method whose ID matches pref ahead of the rest while keeping the relative
+// order of the others stable, so resolution still falls through to the remaining
+// methods when the preferred one yields no value. A pref of "" — or one matching
+// no method — leaves the order unchanged. Legacy kind-level preferences
+// ("api_key"/"oauth") are honored by promoting the first method of that kind.
 func reorderAuthMethods(methods []AuthMethod, pref string) []AuthMethod {
 	if pref == "" || len(methods) < 2 {
 		return methods
 	}
-	preferOAuth := pref == AuthDefaultOAuth
-	preferred := make([]AuthMethod, 0, len(methods))
-	rest := make([]AuthMethod, 0, len(methods))
-	for _, m := range methods {
-		if isOAuthMethod(m) == preferOAuth {
-			preferred = append(preferred, m)
-		} else {
-			rest = append(rest, m)
+	idx := -1
+	for i, m := range methods {
+		if m.ID() == pref {
+			idx = i
+			break
 		}
 	}
-	return append(preferred, rest...)
+	if idx < 0 {
+		// Legacy binary preference: promote the first method of the kind.
+		preferOAuth := pref == AuthDefaultOAuth
+		for i, m := range methods {
+			if isOAuthMethod(m) == preferOAuth {
+				idx = i
+				break
+			}
+		}
+	}
+	if idx <= 0 {
+		return methods
+	}
+	out := make([]AuthMethod, 0, len(methods))
+	out = append(out, methods[idx])
+	out = append(out, methods[:idx]...)
+	out = append(out, methods[idx+1:]...)
+	return out
 }
 
 // buildCredential assembles a Credential from a resolved value and its auth
-// method (header style, endpoint override, and any derived extra headers).
+// method (header style, endpoint override, and any derived extra headers). For a
+// method whose endpoint is supplied by the user (RequiresBaseURL), the stored
+// or env-provided base URL overrides the method's static BaseURL.
 func buildCredential(value string, src KeySource, m AuthMethod) Credential {
-	cred := Credential{Value: value, Source: src, HeaderStyle: m.HeaderStyle, BaseURL: m.BaseURL}
+	baseURL := m.BaseURL
+	if m.RequiresBaseURL {
+		if u := resolveMethodBaseURL(m); u != "" {
+			baseURL = u
+		}
+	}
+	cred := Credential{Value: value, Source: src, HeaderStyle: m.HeaderStyle, BaseURL: baseURL}
 	if m.Extra != nil {
 		cred.ExtraHeaders = m.Extra(value)
 	}
 	return cred
+}
+
+// resolveMethodBaseURL returns the user-supplied endpoint for a method: the
+// BaseURLEnv environment variable first, then the keychain entry stored next to
+// the key. Returns "" when neither is set.
+func resolveMethodBaseURL(m AuthMethod) string {
+	if m.BaseURLEnv != "" {
+		if v := os.Getenv(m.BaseURLEnv); v != "" {
+			return v
+		}
+	}
+	if m.Keyring != "" {
+		if v, err := defaultStore().Get(methodBaseURLKeyringUser(m.Keyring)); err == nil && v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // resolveOAuthValue returns the stored access token / minted key for an OAuth
@@ -243,17 +292,84 @@ func ResolveProviderKey(provider string) (key string, source KeySource) {
 	return cred.Value, cred.Source
 }
 
-// StoreProviderKey writes the API key for the given provider to the OS keychain.
+// StoreProviderKey writes the API key for the given provider to the credential
+// store (OS keychain, or the auth.json fallback when no keyring is available).
 func StoreProviderKey(provider, key string) error {
-	return keyring.Set(keyringService, providerKeyringUser(provider), key)
+	return defaultStore().Set(providerKeyringUser(provider), key)
 }
 
-// DeleteProviderKey removes the API key for the given provider from the OS keychain.
-// It also clears any stored default-method marker so credential resolution falls
-// back to whatever credential remains.
+// DeleteProviderKey removes the API key for the given provider from the
+// credential store. It also clears any stored default-method marker so
+// credential resolution falls back to whatever credential remains.
 func DeleteProviderKey(provider string) error {
-	err := keyring.Delete(keyringService, providerKeyringUser(provider))
+	err := defaultStore().Delete(providerKeyringUser(provider))
 	_ = ClearProviderAuthDefault(provider)
+	if errors.Is(err, ErrCredNotFound) {
+		return nil
+	}
+	return err
+}
+
+// methodBaseURLKeyringUser returns the keyring "user" field for the endpoint
+// stored alongside a method's key, e.g. "mimo-tokenplan-api-key" →
+// "mimo-tokenplan-api-key-base-url".
+func methodBaseURLKeyringUser(keyringUser string) string {
+	return keyringUser + "-base-url"
+}
+
+// methodByID returns the auth method with the given identity for a provider.
+func methodByID(provider, methodID string) (AuthMethod, bool) {
+	for _, m := range AuthMethodsFor(provider) {
+		if m.ID() == methodID {
+			return m, true
+		}
+	}
+	return AuthMethod{}, false
+}
+
+// StoreProviderMethodKey writes the API key for a specific credential method of
+// a provider, plus the user-supplied base URL when the method requires one.
+func StoreProviderMethodKey(provider, methodID, key, baseURL string) error {
+	m, ok := methodByID(provider, methodID)
+	if !ok {
+		return fmt.Errorf("provider %q: unknown credential method %q", provider, methodID)
+	}
+	if m.Keyring == "" {
+		return fmt.Errorf("provider %q method %q: not keychain-storable", provider, methodID)
+	}
+	if err := defaultStore().Set(m.Keyring, key); err != nil {
+		return err
+	}
+	if m.RequiresBaseURL {
+		if err := defaultStore().Set(methodBaseURLKeyringUser(m.Keyring), baseURL); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// DeleteProviderMethodKey removes the stored key (and endpoint) for a specific
+// method, clearing the provider's default marker when it pointed at this method.
+func DeleteProviderMethodKey(provider, methodID string) error {
+	m, ok := methodByID(provider, methodID)
+	if !ok {
+		return fmt.Errorf("provider %q: unknown credential method %q", provider, methodID)
+	}
+	if m.Keyring == "" {
+		return fmt.Errorf("provider %q method %q: not keychain-storable", provider, methodID)
+	}
+	err := defaultStore().Delete(m.Keyring)
+	if errors.Is(err, ErrCredNotFound) {
+		err = nil
+	}
+	if m.RequiresBaseURL {
+		if derr := defaultStore().Delete(methodBaseURLKeyringUser(m.Keyring)); derr != nil && !errors.Is(derr, ErrCredNotFound) {
+			// Best-effort: a missing endpoint entry is fine.
+		}
+	}
+	if ProviderAuthDefault(provider) == methodID {
+		_ = ClearProviderAuthDefault(provider)
+	}
 	return err
 }
 
@@ -266,7 +382,7 @@ func providerAuthDefaultUser(provider string) string {
 // ProviderAuthDefault returns the stored default-method preference for a
 // provider — AuthDefaultAPIKey, AuthDefaultOAuth, or "" when unset.
 func ProviderAuthDefault(provider string) string {
-	v, err := keyring.Get(keyringService, providerAuthDefaultUser(provider))
+	v, err := defaultStore().Get(providerAuthDefaultUser(provider))
 	if err != nil {
 		return ""
 	}
@@ -275,75 +391,171 @@ func ProviderAuthDefault(provider string) string {
 
 // SetProviderAuthDefault stores the default-method preference for a provider.
 func SetProviderAuthDefault(provider, kind string) error {
-	return keyring.Set(keyringService, providerAuthDefaultUser(provider), kind)
+	return defaultStore().Set(providerAuthDefaultUser(provider), kind)
 }
 
 // ClearProviderAuthDefault removes a provider's default-method marker. A missing
 // marker is not an error.
 func ClearProviderAuthDefault(provider string) error {
-	err := keyring.Delete(keyringService, providerAuthDefaultUser(provider))
-	if errors.Is(err, keyring.ErrNotFound) {
+	err := defaultStore().Delete(providerAuthDefaultUser(provider))
+	if errors.Is(err, ErrCredNotFound) {
 		return nil
 	}
 	return err
 }
 
-// ProviderAuthStatus summarizes a provider's stored credentials and which method
-// is the effective default. It is the single read the UI needs to render the
-// authentication panel without touching the keychain or auth subsystem directly.
-type ProviderAuthStatus struct {
-	APIKeyStored   bool
-	APIKeyPrefix   string // first 10 chars of the stored API key, for display
-	OAuthStored    bool
-	OAuthSupported bool   // provider has an OAuth login method
-	Default        string // AuthDefaultAPIKey | AuthDefaultOAuth (effective)
+// MethodStatus is the stored-credential state of one user-manageable credential
+// method (an API-key method the user enters, or an interactive OAuth login).
+// Bearer-token env fallbacks (e.g. CLAUDE_CODE_OAUTH_TOKEN) are not surfaced as
+// their own method.
+type MethodStatus struct {
+	ID              string `json:"id"`                 // AuthMethod.ID() — stable identity for the default marker
+	Label           string `json:"label"`              // display label ("API Key", "Token Plan", "OAuth")
+	OAuth           bool   `json:"oauth"`              // render as a token method rather than an API key
+	Stored          bool   `json:"stored"`             // a credential is available (keychain key or stored OAuth login)
+	Prefix          string `json:"prefix,omitempty"`   // first 10 chars of a stored API key, for display
+	RequiresBaseURL bool   `json:"requires_base_url"`  // method carries a user-supplied endpoint
+	BaseURL         string `json:"base_url,omitempty"` // the stored/env endpoint, for display
+	IsDefault       bool   `json:"is_default"`         // this method is the effective default
 }
 
-// GetProviderAuthStatus reports the stored-credential state and effective
-// default method for a provider. When no preference is stored, the default is
-// derived: API key if one exists, else OAuth if a token exists, else API key.
-func GetProviderAuthStatus(provider string) ProviderAuthStatus {
-	st := ProviderAuthStatus{}
-	if k, err := keyring.Get(keyringService, providerKeyringUser(provider)); err == nil && k != "" {
-		st.APIKeyStored = true
-		if len(k) > 10 {
-			st.APIKeyPrefix = k[:10]
-		} else {
-			st.APIKeyPrefix = k
+// ProviderAuthStatus summarizes a provider's user-manageable credential methods
+// and which one is the effective default. It is the single read the UI needs to
+// render the authentication panel without touching the keychain or auth
+// subsystem directly.
+type ProviderAuthStatus struct {
+	Methods []MethodStatus `json:"methods"`
+}
+
+// HasCredential reports whether any method has a stored/available credential.
+func (s ProviderAuthStatus) HasCredential() bool {
+	for _, m := range s.Methods {
+		if m.Stored {
+			return true
 		}
 	}
-	if loginID := OAuthLoginID(provider); loginID != "" {
-		st.OAuthSupported = true
-		st.OAuthStored = auth.DefaultStorage().HasLogin(loginID)
+	return false
+}
+
+// Default returns the ID of the effective default method, or "" when none.
+func (s ProviderAuthStatus) Default() string {
+	for _, m := range s.Methods {
+		if m.IsDefault {
+			return m.ID
+		}
 	}
-	switch ProviderAuthDefault(provider) {
-	case AuthDefaultOAuth:
-		st.Default = AuthDefaultOAuth
-	case AuthDefaultAPIKey:
-		st.Default = AuthDefaultAPIKey
-	default:
-		st.Default = effectiveDefault("", st.APIKeyStored, st.OAuthStored)
+	return ""
+}
+
+// isDisplayable reports whether a method is a user-manageable panel row: a plain
+// API-key method (entered by the user) or an interactive OAuth login. Bearer
+// API-key methods are implicit env fallbacks and are not shown.
+func isDisplayable(m AuthMethod) bool {
+	switch m.Kind {
+	case OAuthMintKey, OAuthToken:
+		return true
+	case APIKeyAuth:
+		return m.HeaderStyle == APIKeyHeader
+	}
+	return false
+}
+
+// methodLabel returns the display label for a method, defaulting by kind.
+func methodLabel(m AuthMethod) string {
+	if m.Label != "" {
+		return m.Label
+	}
+	if isOAuthMethod(m) {
+		return "OAuth"
+	}
+	return "API Key"
+}
+
+// methodStored reports whether a credential is available for a method and, for
+// API-key methods, the first 10 chars of the resolved key for display. API-key
+// availability follows the same env → keychain → .env order as resolution (see
+// resolveKey), so a provider configured purely via its env_var counts as
+// available even without a keychain entry.
+func methodStored(m AuthMethod) (stored bool, prefix string) {
+	if isOAuthMethod(m) {
+		if m.LoginID == "" {
+			return false, ""
+		}
+		return auth.DefaultStorage().HasLogin(m.LoginID), ""
+	}
+	if m.EnvVar == "" && m.Keyring == "" {
+		return false, ""
+	}
+	k, _ := resolveKey(m.EnvVar, m.Keyring)
+	if k == "" {
+		return false, ""
+	}
+	if len(k) > 10 {
+		return true, k[:10]
+	}
+	return true, k
+}
+
+// GetProviderAuthStatus reports the per-method stored-credential state and the
+// effective default method for a provider. When no preference is stored, the
+// default is the first method with a stored credential, else the first method.
+func GetProviderAuthStatus(provider string) ProviderAuthStatus {
+	var st ProviderAuthStatus
+	for _, m := range AuthMethodsFor(provider) {
+		if !isDisplayable(m) {
+			continue
+		}
+		stored, prefix := methodStored(m)
+		ms := MethodStatus{
+			ID:              m.ID(),
+			Label:           methodLabel(m),
+			OAuth:           isOAuthMethod(m),
+			Stored:          stored,
+			Prefix:          prefix,
+			RequiresBaseURL: m.RequiresBaseURL,
+		}
+		if m.RequiresBaseURL && stored {
+			ms.BaseURL = resolveMethodBaseURL(m)
+		}
+		st.Methods = append(st.Methods, ms)
+	}
+	def := effectiveDefaultMethod(st.Methods, ProviderAuthDefault(provider))
+	for i := range st.Methods {
+		st.Methods[i].IsDefault = st.Methods[i].ID == def
 	}
 	return st
 }
 
-// effectiveDefault derives the default auth method when there is no explicit
-// preference: API key if one is stored, else OAuth if a token is stored, else
-// API key. An explicit pref ("api_key"/"oauth") is returned verbatim.
-func effectiveDefault(pref string, apiKeyStored, oauthStored bool) string {
-	switch pref {
-	case AuthDefaultOAuth:
-		return AuthDefaultOAuth
-	case AuthDefaultAPIKey:
-		return AuthDefaultAPIKey
+// effectiveDefaultMethod returns the ID of the default method given the stored
+// preference. An explicit preference wins when it names a method with a stored
+// credential; legacy kind-level preferences ("api_key"/"oauth") promote the
+// first stored method of that kind; otherwise the first method with a stored
+// credential leads, falling back to the first method.
+func effectiveDefaultMethod(methods []MethodStatus, pref string) string {
+	if len(methods) == 0 {
+		return ""
 	}
-	if apiKeyStored {
-		return AuthDefaultAPIKey
+	if pref != "" {
+		for _, m := range methods {
+			if m.ID == pref && m.Stored {
+				return m.ID
+			}
+		}
+		if pref == AuthDefaultAPIKey || pref == AuthDefaultOAuth {
+			preferOAuth := pref == AuthDefaultOAuth
+			for _, m := range methods {
+				if m.OAuth == preferOAuth && m.Stored {
+					return m.ID
+				}
+			}
+		}
 	}
-	if oauthStored {
-		return AuthDefaultOAuth
+	for _, m := range methods {
+		if m.Stored {
+			return m.ID
+		}
 	}
-	return AuthDefaultAPIKey
+	return methods[0].ID
 }
 
 // ListStoredProviderKeys returns the stored key info for all known providers.
@@ -353,7 +565,7 @@ func ListStoredProviderKeys() []ProviderKey {
 	result := make([]ProviderKey, 0, len(providers))
 	for _, p := range providers {
 		pk := ProviderKey{Provider: p}
-		if k, err := keyring.Get(keyringService, providerKeyringUser(p)); err == nil && k != "" {
+		if k, err := defaultStore().Get(providerKeyringUser(p)); err == nil && k != "" {
 			if len(k) > 10 {
 				pk.Prefix = k[:10]
 			} else {
@@ -385,6 +597,7 @@ func loadKeyFromEnvFile(path, varName string) string {
 	}
 	prefix := varName + "="
 	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimPrefix(strings.TrimSpace(line), "export ")
 		if strings.HasPrefix(line, prefix) {
 			return strings.TrimSpace(strings.SplitN(line, "=", 2)[1])
 		}

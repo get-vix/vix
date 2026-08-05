@@ -119,7 +119,7 @@ func TestValidate_RequiredPresence(t *testing.T) {
 	wantErr(t, "write_file", map[string]any{"path": "/x", "content": nil}, "content")
 	// Optional field absent → fine.
 	wantOK(t, "read_file", map[string]any{"path": "/x", "reason": "r"})
-	// Unknown/extra key is ignored (the daemon injects cwd/_session/etc.).
+	// Unknown/extra key is ignored (the daemon injects cwd/_thread/etc.).
 	wantOK(t, "write_file", map[string]any{"path": "/x", "content": "c", "bogus": 1, "cwd": "/y"})
 }
 

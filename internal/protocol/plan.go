@@ -119,7 +119,7 @@ func FormatPlanAsMarkdown(plan *Plan) string {
 }
 
 // SavePlanToFile writes the plan as markdown to <plansDir>/YYYY-MM-DD_HHMMSS.md.
-// plansDir is typically the session's paths.Plans() directory.
+// plansDir is typically the thread's paths.Plans() directory.
 func SavePlanToFile(plan *Plan, plansDir string) error {
 	if plansDir == "" {
 		plansDir = filepath.Join(".vix", "plans")

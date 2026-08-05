@@ -1,0 +1,128 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/get-vix/vix/internal/daemon
+cpu: Apple M1 Max
+BenchmarkThreadStoreSaveLoad/1-10  	    3607	    340947 ns/op	   17160 B/op	     147 allocs/op
+BenchmarkThreadStoreSaveLoad/1-10  	    3597	    344074 ns/op	   17161 B/op	     147 allocs/op
+BenchmarkThreadStoreSaveLoad/1-10  	    3643	    352309 ns/op	   17163 B/op	     147 allocs/op
+BenchmarkThreadStoreSaveLoad/1-10  	    3331	    349046 ns/op	   17160 B/op	     147 allocs/op
+BenchmarkThreadStoreSaveLoad/1-10  	    3388	    353381 ns/op	   17166 B/op	     147 allocs/op
+BenchmarkThreadStoreSaveLoad/1-10  	    3660	    343691 ns/op	   17166 B/op	     147 allocs/op
+BenchmarkThreadStoreSaveLoad/1-10  	    3670	    334682 ns/op	   17156 B/op	     147 allocs/op
+BenchmarkThreadStoreSaveLoad/1-10  	    3686	    371159 ns/op	   17155 B/op	     147 allocs/op
+BenchmarkThreadStoreSaveLoad/1-10  	    3834	    333885 ns/op	   17159 B/op	     147 allocs/op
+BenchmarkThreadStoreSaveLoad/1-10  	    3562	    334673 ns/op	   17148 B/op	     147 allocs/op
+BenchmarkThreadStoreSaveLoad/100-10         	     302	   3960990 ns/op	  574022 B/op	    5310 allocs/op
+BenchmarkThreadStoreSaveLoad/100-10         	     286	   4017688 ns/op	  574092 B/op	    5310 allocs/op
+BenchmarkThreadStoreSaveLoad/100-10         	     291	   4120427 ns/op	  574064 B/op	    5310 allocs/op
+BenchmarkThreadStoreSaveLoad/100-10         	     294	   4048647 ns/op	  574032 B/op	    5310 allocs/op
+BenchmarkThreadStoreSaveLoad/100-10         	     303	   4036153 ns/op	  574052 B/op	    5310 allocs/op
+BenchmarkThreadStoreSaveLoad/100-10         	     298	   4016711 ns/op	  574072 B/op	    5310 allocs/op
+BenchmarkThreadStoreSaveLoad/100-10         	     301	   3976658 ns/op	  573982 B/op	    5310 allocs/op
+BenchmarkThreadStoreSaveLoad/100-10         	     301	   3985388 ns/op	  574049 B/op	    5310 allocs/op
+BenchmarkThreadStoreSaveLoad/100-10         	     296	   3975414 ns/op	  574045 B/op	    5310 allocs/op
+BenchmarkThreadStoreSaveLoad/100-10         	     297	   4009528 ns/op	  573996 B/op	    5310 allocs/op
+BenchmarkThreadStoreSaveLoad/10000-10       	       3	 422293333 ns/op	64655722 B/op	  520141 allocs/op
+BenchmarkThreadStoreSaveLoad/10000-10       	       3	 438428792 ns/op	64655765 B/op	  520141 allocs/op
+BenchmarkThreadStoreSaveLoad/10000-10       	       3	 435000833 ns/op	64655813 B/op	  520142 allocs/op
+BenchmarkThreadStoreSaveLoad/10000-10       	       3	 434307694 ns/op	64655850 B/op	  520142 allocs/op
+BenchmarkThreadStoreSaveLoad/10000-10       	       3	 424206833 ns/op	64655792 B/op	  520142 allocs/op
+BenchmarkThreadStoreSaveLoad/10000-10       	       3	 426765083 ns/op	64655824 B/op	  520142 allocs/op
+BenchmarkThreadStoreSaveLoad/10000-10       	       3	 423815903 ns/op	64655845 B/op	  520142 allocs/op
+BenchmarkThreadStoreSaveLoad/10000-10       	       3	 434012931 ns/op	64655818 B/op	  520142 allocs/op
+BenchmarkThreadStoreSaveLoad/10000-10       	       3	 426938181 ns/op	64655754 B/op	  520141 allocs/op
+BenchmarkThreadStoreSaveLoad/10000-10       	       3	 427979125 ns/op	64655792 B/op	  520142 allocs/op
+BenchmarkAccessStatsLog-10                  	   59076	     21371 ns/op	     673 B/op	      21 allocs/op
+BenchmarkAccessStatsLog-10                  	   58590	     21447 ns/op	     672 B/op	      21 allocs/op
+BenchmarkAccessStatsLog-10                  	   58522	     21067 ns/op	     672 B/op	      21 allocs/op
+BenchmarkAccessStatsLog-10                  	   58426	     21330 ns/op	     672 B/op	      21 allocs/op
+BenchmarkAccessStatsLog-10                  	   59688	     21076 ns/op	     672 B/op	      21 allocs/op
+BenchmarkAccessStatsLog-10                  	   59722	     20925 ns/op	     672 B/op	      21 allocs/op
+BenchmarkAccessStatsLog-10                  	   58168	     20696 ns/op	     672 B/op	      21 allocs/op
+BenchmarkAccessStatsLog-10                  	   60310	     20827 ns/op	     672 B/op	      21 allocs/op
+BenchmarkAccessStatsLog-10                  	   60566	     21635 ns/op	     672 B/op	      21 allocs/op
+BenchmarkAccessStatsLog-10                  	   59685	     21379 ns/op	     672 B/op	      21 allocs/op
+BenchmarkAccessStatsTopFiles-10             	    1191	   1007307 ns/op	    2664 B/op	     116 allocs/op
+BenchmarkAccessStatsTopFiles-10             	    1178	   1011382 ns/op	    2664 B/op	     116 allocs/op
+BenchmarkAccessStatsTopFiles-10             	    1192	   1005762 ns/op	    2664 B/op	     116 allocs/op
+BenchmarkAccessStatsTopFiles-10             	    1207	    999536 ns/op	    2664 B/op	     116 allocs/op
+BenchmarkAccessStatsTopFiles-10             	    1200	   1002120 ns/op	    2664 B/op	     116 allocs/op
+BenchmarkAccessStatsTopFiles-10             	    1196	   1007977 ns/op	    2664 B/op	     116 allocs/op
+BenchmarkAccessStatsTopFiles-10             	    1180	   1008576 ns/op	    2664 B/op	     116 allocs/op
+BenchmarkAccessStatsTopFiles-10             	    1162	   1001778 ns/op	    2664 B/op	     116 allocs/op
+BenchmarkAccessStatsTopFiles-10             	    1204	    997630 ns/op	    2664 B/op	     116 allocs/op
+BenchmarkAccessStatsTopFiles-10             	    1194	   1001590 ns/op	    2664 B/op	     116 allocs/op
+BenchmarkAgentTurn-10                       	    4495	    291441 ns/op	   23339 B/op	      50 allocs/op
+BenchmarkAgentTurn-10                       	    3670	    295617 ns/op	   23365 B/op	      50 allocs/op
+BenchmarkAgentTurn-10                       	    4470	    273326 ns/op	   23408 B/op	      50 allocs/op
+BenchmarkAgentTurn-10                       	    4435	    282744 ns/op	   23389 B/op	      50 allocs/op
+BenchmarkAgentTurn-10                       	    4398	    303210 ns/op	   23397 B/op	      50 allocs/op
+BenchmarkAgentTurn-10                       	    4052	    316551 ns/op	   23386 B/op	      50 allocs/op
+BenchmarkAgentTurn-10                       	    3721	    305793 ns/op	   23398 B/op	      50 allocs/op
+BenchmarkAgentTurn-10                       	    4437	    271129 ns/op	   23379 B/op	      50 allocs/op
+BenchmarkAgentTurn-10                       	    4398	    279301 ns/op	   23347 B/op	      50 allocs/op
+BenchmarkAgentTurn-10                       	    4383	    276389 ns/op	   23407 B/op	      50 allocs/op
+PASS
+ok  	github.com/get-vix/vix/internal/daemon	103.180s
+goos: darwin
+goarch: arm64
+pkg: github.com/get-vix/vix/internal/daemon/brain
+cpu: Apple M1 Max
+BenchmarkScanProject/small-10     	      37	  30770846 ns/op	 3576777 B/op	   14113 allocs/op
+BenchmarkScanProject/small-10     	      44	  28451332 ns/op	 3576993 B/op	   14114 allocs/op
+BenchmarkScanProject/small-10     	      40	  28641879 ns/op	 3576861 B/op	   14116 allocs/op
+BenchmarkScanProject/small-10     	      42	  28044781 ns/op	 3576839 B/op	   14115 allocs/op
+BenchmarkScanProject/small-10     	      42	  29145806 ns/op	 3576846 B/op	   14115 allocs/op
+BenchmarkScanProject/small-10     	      38	  29370670 ns/op	 3576689 B/op	   14113 allocs/op
+BenchmarkScanProject/small-10     	      40	  29333127 ns/op	 3576698 B/op	   14113 allocs/op
+BenchmarkScanProject/small-10     	      39	  29927713 ns/op	 3576676 B/op	   14113 allocs/op
+BenchmarkScanProject/small-10     	      40	  29397032 ns/op	 3576728 B/op	   14113 allocs/op
+BenchmarkScanProject/small-10     	      39	  29573068 ns/op	 3576687 B/op	   14113 allocs/op
+BenchmarkScanProject/big-10       	       7	 157056643 ns/op	209838336 B/op	     264 allocs/op
+BenchmarkScanProject/big-10       	       7	 154468506 ns/op	209838838 B/op	     271 allocs/op
+BenchmarkScanProject/big-10       	       7	 152599494 ns/op	209838717 B/op	     269 allocs/op
+BenchmarkScanProject/big-10       	       7	 156418667 ns/op	209838153 B/op	     260 allocs/op
+BenchmarkScanProject/big-10       	       7	 151331565 ns/op	209838507 B/op	     266 allocs/op
+BenchmarkScanProject/big-10       	       7	 152077619 ns/op	209838077 B/op	     259 allocs/op
+BenchmarkScanProject/big-10       	       7	 152267815 ns/op	209837984 B/op	     258 allocs/op
+BenchmarkScanProject/big-10       	       7	 154238566 ns/op	209838992 B/op	     274 allocs/op
+BenchmarkScanProject/big-10       	       7	 153384143 ns/op	209838612 B/op	     268 allocs/op
+BenchmarkScanProject/big-10       	       7	 154923845 ns/op	209838969 B/op	     273 allocs/op
+BenchmarkScanProject/many-10      	       1	16114352667 ns/op	164925144 B/op	 1105149 allocs/op
+BenchmarkScanProject/many-10      	       1	3026253875 ns/op	164923728 B/op	 1105156 allocs/op
+BenchmarkScanProject/many-10      	       1	3052950250 ns/op	164920896 B/op	 1105110 allocs/op
+BenchmarkScanProject/many-10      	       1	2986678709 ns/op	164921120 B/op	 1105114 allocs/op
+BenchmarkScanProject/many-10      	       1	3002338542 ns/op	164926656 B/op	 1105195 allocs/op
+BenchmarkScanProject/many-10      	       1	3104993917 ns/op	164921488 B/op	 1105120 allocs/op
+BenchmarkScanProject/many-10      	       1	3240741958 ns/op	164927008 B/op	 1105203 allocs/op
+BenchmarkScanProject/many-10      	       1	3036704958 ns/op	164928600 B/op	 1105209 allocs/op
+BenchmarkScanProject/many-10      	       1	3071241666 ns/op	164924496 B/op	 1105165 allocs/op
+BenchmarkScanProject/many-10      	       1	3017036375 ns/op	164922176 B/op	 1105128 allocs/op
+BenchmarkExtractFileImports-10    	   43330	     27785 ns/op	   15191 B/op	      66 allocs/op
+BenchmarkExtractFileImports-10    	   43509	     27909 ns/op	   15193 B/op	      66 allocs/op
+BenchmarkExtractFileImports-10    	   43821	     27025 ns/op	   15183 B/op	      66 allocs/op
+BenchmarkExtractFileImports-10    	   44593	     27024 ns/op	   15174 B/op	      66 allocs/op
+BenchmarkExtractFileImports-10    	   44806	     27015 ns/op	   15172 B/op	      66 allocs/op
+BenchmarkExtractFileImports-10    	   43537	     27448 ns/op	   15188 B/op	      66 allocs/op
+BenchmarkExtractFileImports-10    	   43804	     26933 ns/op	   15172 B/op	      66 allocs/op
+BenchmarkExtractFileImports-10    	   44712	     26811 ns/op	   15181 B/op	      66 allocs/op
+BenchmarkExtractFileImports-10    	   44188	     26810 ns/op	   15165 B/op	      66 allocs/op
+BenchmarkExtractFileImports-10    	   44215	     27428 ns/op	   15176 B/op	      66 allocs/op
+PASS
+ok  	github.com/get-vix/vix/internal/daemon/brain	78.188s
+goos: darwin
+goarch: arm64
+pkg: github.com/get-vix/vix/internal/daemon/llm
+cpu: Apple M1 Max
+BenchmarkLLMStreamDecode-10    	     780	   1511345 ns/op	 1452662 B/op	    8523 allocs/op
+BenchmarkLLMStreamDecode-10    	     802	   1516309 ns/op	 1452140 B/op	    8520 allocs/op
+BenchmarkLLMStreamDecode-10    	     714	   1552479 ns/op	 1454011 B/op	    8522 allocs/op
+BenchmarkLLMStreamDecode-10    	     738	   1620157 ns/op	 1453218 B/op	    8521 allocs/op
+BenchmarkLLMStreamDecode-10    	     766	   1579472 ns/op	 1452888 B/op	    8521 allocs/op
+BenchmarkLLMStreamDecode-10    	     794	   1490460 ns/op	 1452692 B/op	    8521 allocs/op
+BenchmarkLLMStreamDecode-10    	     806	   1506873 ns/op	 1454068 B/op	    8522 allocs/op
+BenchmarkLLMStreamDecode-10    	     801	   1497110 ns/op	 1452655 B/op	    8521 allocs/op
+BenchmarkLLMStreamDecode-10    	     784	   1508809 ns/op	 1453211 B/op	    8522 allocs/op
+BenchmarkLLMStreamDecode-10    	     793	   1499677 ns/op	 1454497 B/op	    8523 allocs/op
+PASS
+ok  	github.com/get-vix/vix/internal/daemon/llm	11.902s

@@ -11,22 +11,22 @@ import (
 	"github.com/get-vix/vix/internal/protocol"
 )
 
-// newMinimalSession builds a Session wired just enough to exercise the
+// newMinimalThread builds a Thread wired just enough to exercise the
 // emit/hook gating logic: an eventChan and a live ctx. It bypasses
-// NewSession (which needs a full *Server) because the silent gating only
+// NewThread (which needs a full *Server) because the silent gating only
 // reads eventChan and ctx.
-func newMinimalSession() *Session {
+func newMinimalThread() *Thread {
 	ctx, cancel := context.WithCancel(context.Background())
 	_ = cancel // test lifetime is short enough that a leak is harmless
-	return &Session{
-		eventChan: make(chan protocol.SessionEvent, 16),
+	return &Thread{
+		eventChan: make(chan protocol.ThreadEvent, 16),
 		ctx:       ctx,
 	}
 }
 
 // drainEventTypes collects the Types of events currently buffered on the
-// session's eventChan, draining it without blocking.
-func drainEventTypes(s *Session) []string {
+// thread's eventChan, draining it without blocking.
+func drainEventTypes(s *Thread) []string {
 	var types []string
 	for {
 		select {
@@ -66,7 +66,7 @@ func TestIsUserFacingEvent(t *testing.T) {
 		"event.plan_proposed",
 		"event.init_state",
 		"event.clear",
-		"event.session_started",
+		"event.thread_started",
 		"", // empty/unknown
 	}
 	for _, et := range alwaysThrough {
@@ -118,7 +118,7 @@ func TestEmitIfVisible_SilentDropsUserFacingEvents(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.eventType, func(t *testing.T) {
-			s := newMinimalSession()
+			s := newMinimalThread()
 			s.emitIfVisible(true, tc.eventType, tc.data)
 
 			got := drainEventTypes(s)
@@ -141,7 +141,7 @@ func TestEmitIfVisible_SilentPassesNonUserFacingEvents(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.eventType, func(t *testing.T) {
-			s := newMinimalSession()
+			s := newMinimalThread()
 			s.emitIfVisible(true, tc.eventType, tc.data)
 
 			got := drainEventTypes(s)
@@ -153,7 +153,7 @@ func TestEmitIfVisible_SilentPassesNonUserFacingEvents(t *testing.T) {
 }
 
 func TestEmitIfVisible_NotSilentPassesEverything(t *testing.T) {
-	s := newMinimalSession()
+	s := newMinimalThread()
 
 	s.emitIfVisible(false, "event.stream_chunk", protocol.EventStreamChunk{Text: "x"})
 	s.emitIfVisible(false, "event.tool_call", protocol.EventToolCall{Name: "bash"})
@@ -177,7 +177,7 @@ func TestEmitIfVisible_NotSilentPassesEverything(t *testing.T) {
 // returned by silentHooks() do not fan out to s.emit for stream/thinking/
 // tool events, even when called directly by the LLM streaming path.
 func TestSilentHooks_DropsUserFacingHookInvocations(t *testing.T) {
-	s := newMinimalSession()
+	s := newMinimalThread()
 	hooks := s.silentHooks()
 
 	hooks.OnStreamDelta("some text")
@@ -194,7 +194,7 @@ func TestSilentHooks_DropsUserFacingHookInvocations(t *testing.T) {
 // TestSilentHooks_PassesToolErrors verifies that tool *failures* still
 // surface even in silent mode — silence should never mask errors.
 func TestSilentHooks_PassesToolErrors(t *testing.T) {
-	s := newMinimalSession()
+	s := newMinimalThread()
 	hooks := s.silentHooks()
 
 	hooks.OnToolResult("id-1", "bash", nil, "error output", true) // isError=true
@@ -208,7 +208,7 @@ func TestSilentHooks_PassesToolErrors(t *testing.T) {
 // TestSilentHooks_PassesStreamDone verifies token-accounting / completion
 // hooks still reach the client so telemetry and turn-end logic work.
 func TestSilentHooks_PassesStreamDone(t *testing.T) {
-	s := newMinimalSession()
+	s := newMinimalThread()
 	hooks := s.silentHooks()
 
 	hooks.OnStreamDone(100, 50, 10, 5, 2000)
@@ -222,10 +222,10 @@ func TestSilentHooks_PassesStreamDone(t *testing.T) {
 // TestHooksForStep_SelectsVariantBySilent verifies the dispatch helper
 // returns the visible hooks when silent=false and the silent hooks when
 // silent=true. We prove it by calling OnStreamDelta and checking whether
-// the session channel saw the event.
+// the thread channel saw the event.
 func TestHooksForStep_SelectsVariantBySilent(t *testing.T) {
 	t.Run("silent=false emits stream_chunk", func(t *testing.T) {
-		s := newMinimalSession()
+		s := newMinimalThread()
 		hooks := s.hooksForStep(false)
 
 		hooks.OnStreamDelta("hello")
@@ -237,7 +237,7 @@ func TestHooksForStep_SelectsVariantBySilent(t *testing.T) {
 	})
 
 	t.Run("silent=true suppresses stream_chunk", func(t *testing.T) {
-		s := newMinimalSession()
+		s := newMinimalThread()
 		hooks := s.hooksForStep(true)
 
 		hooks.OnStreamDelta("hello")

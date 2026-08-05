@@ -6,10 +6,10 @@ import (
 	"path/filepath"
 )
 
-// appendThinking writes a thinking delta to this session's dedicated thinking
+// appendThinking writes a thinking delta to this thread's dedicated thinking
 // log file. The file is opened lazily on the first delta and named after the
-// session ID so concurrent sessions never interleave into the same file.
-func (s *Session) appendThinking(delta string) {
+// thread ID so concurrent threads never interleave into the same file.
+func (s *Thread) appendThinking(delta string) {
 	if delta == "" {
 		return
 	}
@@ -19,7 +19,7 @@ func (s *Session) appendThinking(delta string) {
 		path := filepath.Join(TmpLogDir(), "vix-thinking-"+s.id+".log")
 		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 		if err != nil {
-			log.Printf("[thinking] failed to open log for session %s: %v", s.id, err)
+			log.Printf("[thinking] failed to open log for thread %s: %v", s.id, err)
 			return
 		}
 		s.thinkingLogFile = f
@@ -31,7 +31,7 @@ func (s *Session) appendThinking(delta string) {
 // thinkingBoundary writes a turn-separator line so successive turns are
 // distinguishable when grepping the log. No-op for turns that wrote no
 // thinking content.
-func (s *Session) thinkingBoundary() {
+func (s *Thread) thinkingBoundary() {
 	s.thinkingLogMu.Lock()
 	defer s.thinkingLogMu.Unlock()
 	if s.thinkingLogFile != nil && s.thinkingInTurn {
@@ -40,10 +40,10 @@ func (s *Session) thinkingBoundary() {
 	}
 }
 
-// closeThinkingLog closes the session's thinking log file if it was opened.
-// Called from Session.Run()'s defer so it runs exactly once when the session
+// closeThinkingLog closes the thread's thinking log file if it was opened.
+// Called from Thread.Run()'s defer so it runs exactly once when the thread
 // shuts down.
-func (s *Session) closeThinkingLog() {
+func (s *Thread) closeThinkingLog() {
 	s.thinkingLogMu.Lock()
 	defer s.thinkingLogMu.Unlock()
 	if s.thinkingLogFile != nil {

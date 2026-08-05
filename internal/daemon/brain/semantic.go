@@ -13,9 +13,9 @@ import (
 )
 
 const (
-	semanticModel   = "claude-sonnet-4-5-20250929"
-	maxInputTokens  = 8000
-	maxRetries      = 3
+	semanticModel  = "claude-sonnet-4-5-20250929"
+	maxInputTokens = 8000
+	maxRetries     = 3
 )
 
 func callLLM(ctx context.Context, client anthropic.Client, system, user string) (string, error) {

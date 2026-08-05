@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/posthog/posthog-go"
 	"github.com/zalando/go-keyring"
 )
@@ -100,6 +101,38 @@ func TestHashWorkflowName(t *testing.T) {
 	}
 }
 
+func TestSessionRotation(t *testing.T) {
+	// Reset rotation state for a clean run.
+	sessionMu.Lock()
+	sessionID, lastEventTime, sessionStartTime = "", time.Time{}, time.Time{}
+	sessionMu.Unlock()
+
+	now := time.Now()
+
+	// First call mints a session ID.
+	id1 := currentSessionID(now)
+	if id1 == "" {
+		t.Fatal("expected a session ID")
+	}
+	if v, err := uuid.Parse(id1); err != nil || v.Version() != 7 {
+		t.Fatalf("expected a UUIDv7, got %q (err=%v)", id1, err)
+	}
+
+	// Within the idle timeout, the same ID is reused.
+	if id2 := currentSessionID(now.Add(sessionIdleTimeout - time.Minute)); id2 != id1 {
+		t.Fatalf("expected same session within timeout, got %q then %q", id1, id2)
+	}
+
+	// After exceeding the idle timeout, a fresh ID is minted.
+	id3 := currentSessionID(now.Add(2 * sessionIdleTimeout))
+	if id3 == id1 {
+		t.Fatalf("expected a new session after idle timeout, got same ID %q", id3)
+	}
+	if v, err := uuid.Parse(id3); err != nil || v.Version() != 7 {
+		t.Fatalf("expected rotated ID to be a UUIDv7, got %q (err=%v)", id3, err)
+	}
+}
+
 func TestTrack_NoopWhenDisabled(t *testing.T) {
 	// enabled is false by default (no Init called)
 	enabled = false
@@ -167,10 +200,15 @@ func TestCaptureException_SendsStructuredPayload(t *testing.T) {
 
 	props := findExceptionProps(t, bodies)
 
-	for _, k := range []string{"version", "os", "arch", "mode", "go_stack", "$exception_list"} {
+	for _, k := range []string{"version", "os", "arch", "mode", "go_stack", "$exception_list", "$session_id"} {
 		if _, ok := props[k]; !ok {
 			t.Errorf("exception properties missing %q (got %v)", k, props)
 		}
+	}
+	if sid, _ := props["$session_id"].(string); sid == "" {
+		t.Errorf("$session_id missing or empty, got %v", props["$session_id"])
+	} else if _, err := uuid.Parse(sid); err != nil {
+		t.Errorf("$session_id %q is not a valid UUID: %v", sid, err)
 	}
 	if props["version"] != "v9.9.9-test" {
 		t.Errorf("version = %v, want v9.9.9-test", props["version"])

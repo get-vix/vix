@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -13,7 +14,7 @@ func TestFormatTokenCount(t *testing.T) {
 		{0, "0"},
 		{999, "999"},
 		{1000, "1k"},
-		{1500, "1k"},    // integer truncation, not rounding
+		{1500, "1k"}, // integer truncation, not rounding
 		{125000, "125k"},
 	}
 	for _, tt := range tests {
@@ -40,5 +41,29 @@ func TestFormatDuration(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("formatDuration(%v) = %q, want %q", tt.d, got, tt.want)
 		}
+	}
+}
+
+func TestRenderStatusBar_DraftState(t *testing.T) {
+	s := NewStyles(true)
+	out := renderStatusBar(120, false, false, true, StatusMessage{}, s, TabKindChat, FocusEditor, 0, 0)
+	if !strings.Contains(out, "Draft") {
+		t.Errorf("draft status bar should show a Draft indicator, got:\n%s", out)
+	}
+}
+
+func TestRenderStatusBar_ConnectedBeatsDraft(t *testing.T) {
+	s := NewStyles(true)
+	out := renderStatusBar(120, true, false, true, StatusMessage{}, s, TabKindChat, FocusEditor, 0, 0)
+	if !strings.Contains(out, "Connected") {
+		t.Errorf("connected should take precedence over draft, got:\n%s", out)
+	}
+}
+
+func TestRenderStatusBar_Disconnected(t *testing.T) {
+	s := NewStyles(true)
+	out := renderStatusBar(120, false, false, false, StatusMessage{}, s, TabKindChat, FocusEditor, 0, 0)
+	if !strings.Contains(out, "Disconnected") {
+		t.Errorf("no connection and not a draft should show Disconnected, got:\n%s", out)
 	}
 }

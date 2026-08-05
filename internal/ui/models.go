@@ -8,7 +8,7 @@ import (
 
 // ModelInfo describes a single LLM model available for selection in the
 // Settings tab. Spec is the prefixed identifier that gets sent on
-// session.set_model — the picker never sends a bare model name.
+// thread.set_model — the picker never sends a bare model name.
 type ModelInfo struct {
 	Spec        string // full prefixed identifier, e.g. "anthropic/claude-opus-4-8"
 	Provider    string // "anthropic" | "openai" | "openrouter" | "minimax" | "mimo"
@@ -19,6 +19,7 @@ type ModelInfo struct {
 type ProviderInfo struct {
 	Name        string // matches ModelInfo.Provider; also config.ProviderKey.Provider
 	DisplayName string // human-readable label shown in the UI
+	Local       bool   // user-run local server (Ollama, llama.cpp): grouped separately, models discovered live
 }
 
 // AvailableProviders returns the providers shown in the left column of the
@@ -28,7 +29,7 @@ func AvailableProviders() []ProviderInfo {
 	specs := providers.Default().All()
 	out := make([]ProviderInfo, 0, len(specs))
 	for _, p := range specs {
-		out = append(out, ProviderInfo{Name: p.ID, DisplayName: p.DisplayName})
+		out = append(out, ProviderInfo{Name: p.ID, DisplayName: p.DisplayName, Local: p.Local})
 	}
 	return out
 }
@@ -40,6 +41,23 @@ func DisplayNameForProvider(name string) string {
 		return p.DisplayName
 	}
 	return name
+}
+
+// IsLocalProvider reports whether a provider id is backed by a user-run local
+// server (Ollama, llama.cpp).
+func IsLocalProvider(name string) bool {
+	p, ok := providers.Default().Lookup(name)
+	return ok && p.Local
+}
+
+// LocalProviderUI is the Models-tab view state for one local provider, built
+// from the daemon's providers.local_status probe. Until the first probe result
+// arrives Fetched is false and the provider renders as "probing".
+type LocalProviderUI struct {
+	BaseURL   string      // resolved server endpoint, for display
+	Reachable bool        // the server answered the probe
+	Fetched   bool        // a probe result (success or failure) has arrived
+	Models    []ModelInfo // live-discovered models, specs prefixed
 }
 
 // AvailableModels returns the curated catalogue of selectable models, sourced

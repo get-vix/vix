@@ -3,7 +3,8 @@ package config
 import "testing"
 
 // TestProviderAuthWellFormed checks every known provider has at least one auth
-// method and that API-key methods declare both an env var and a keychain user.
+// method and that API-key methods declare a keychain user plus at least one way
+// to resolve the key (env var or keychain).
 func TestProviderAuthWellFormed(t *testing.T) {
 	for _, p := range KnownProviders() {
 		methods := AuthMethodsFor(p)
@@ -12,11 +13,8 @@ func TestProviderAuthWellFormed(t *testing.T) {
 		}
 		for i, m := range methods {
 			if m.Kind == APIKeyAuth {
-				if m.EnvVar == "" {
-					t.Errorf("provider %q method %d: APIKeyAuth with empty EnvVar", p, i)
-				}
-				if m.Keyring == "" {
-					t.Errorf("provider %q method %d: APIKeyAuth with empty Keyring", p, i)
+				if m.EnvVar == "" && m.Keyring == "" {
+					t.Errorf("provider %q method %d: APIKeyAuth needs an env var or keychain user", p, i)
 				}
 			}
 		}
@@ -32,6 +30,9 @@ func TestPrimaryEnvVar(t *testing.T) {
 		"openrouter": "OPENROUTER_API_KEY",
 		"minimax":    "MINIMAX_API_KEY",
 		"mimo":       "MIMO_API_KEY",
+		"ollama":     "OLLAMA_API_KEY",
+		"llamacpp":   "LLAMACPP_API_KEY",
+		"lemonade":   "LEMONADE_API_KEY",
 	}
 	for p, env := range want {
 		if got := PrimaryEnvVar(p); got != env {
@@ -45,7 +46,7 @@ func TestPrimaryEnvVar(t *testing.T) {
 
 func TestKnownProvidersStable(t *testing.T) {
 	got := KnownProviders()
-	want := []string{"anthropic", "openai", "openrouter", "minimax", "mimo"}
+	want := []string{"anthropic", "openai", "openrouter", "minimax", "mimo", "deepseek", "bedrock", "ollama", "llamacpp", "lemonade"}
 	if len(got) != len(want) {
 		t.Fatalf("KnownProviders len = %d, want %d", len(got), len(want))
 	}

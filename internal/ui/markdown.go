@@ -9,6 +9,8 @@ import (
 	"charm.land/glamour/v2/ansi"
 	"charm.land/glamour/v2/styles"
 	"charm.land/lipgloss/v2"
+
+	"github.com/get-vix/vix/internal/whiteboard"
 )
 
 // boldColor is the hex color applied to bold (Strong) text in markdown.
@@ -33,9 +35,9 @@ func styledConfig(base string) ansi.StyleConfig {
 }
 
 var (
-	codeBlockRe    = regexp.MustCompile("(?s)```(\\w*)\\n(.*?)```")
-	ansiRe         = regexp.MustCompile(`\x1b\[[0-9;]*m`)
-	trailingPadRe  = regexp.MustCompile(`(?:\x1b\[[0-9;]*m| )+$`)
+	codeBlockRe   = regexp.MustCompile("(?s)```(\\w*)\\n(.*?)```")
+	ansiRe        = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+	trailingPadRe = regexp.MustCompile(`(?:\x1b\[[0-9;]*m| )+$`)
 	// emptyTableRe matches markdown tables with only a header row and separator (no data rows).
 	// It matches: | header | ... |\n| --- | ... |\n followed by a blank line or EOF.
 	emptyTableRe = regexp.MustCompile(`(?m)(\|[^\n]+\|\n\|[\s:\-|]+\|\n)(\n|\z)`)
@@ -43,10 +45,24 @@ var (
 
 // MarkdownRenderer wraps Glamour for rendering markdown to styled terminal output.
 type MarkdownRenderer struct {
-	renderer       *glamour.TermRenderer
-	width          int
-	hasDarkBG      bool
-	codeBoxBorder  lipgloss.Style
+	renderer      *glamour.TermRenderer
+	width         int
+	hasDarkBG     bool
+	codeBoxBorder lipgloss.Style
+
+	// whiteboardBase and threadID enable the mermaid treatment: ```mermaid
+	// code blocks are rendered as ASCII graphs with a "See it on the
+	// whiteboard" link. Set per displayed thread via SetWhiteboardContext.
+	// When base is empty (web UI disabled), the link is omitted.
+	whiteboardBase string
+	threadID       string
+}
+
+// SetWhiteboardContext records the web UI origin and thread id used to build
+// whiteboard links for mermaid diagrams rendered by this renderer.
+func (m *MarkdownRenderer) SetWhiteboardContext(base, threadID string) {
+	m.whiteboardBase = base
+	m.threadID = threadID
 }
 
 // NewMarkdownRenderer creates a new markdown renderer with the given width.
@@ -109,12 +125,84 @@ func (m *MarkdownRenderer) Render(md string) string {
 	// Instead, find lines whose stripped text contains the marker and replace them.
 	for i, block := range blocks {
 		marker := fmt.Sprintf("CBLK%dMARKER", i)
-		highlighted := m.glamourHighlight(block.lang, block.code)
-		box := renderCodeBox(block.lang, highlighted, m.width, m.codeBoxBorder)
+		var box string
+		if strings.EqualFold(block.lang, "mermaid") {
+			box = m.renderMermaidBlock(block.code)
+		} else {
+			highlighted := m.glamourHighlight(block.lang, block.code)
+			box = renderCodeBox(block.lang, highlighted, m.width, m.codeBoxBorder)
+		}
 		out = replaceMarkerLine(out, marker, box)
 	}
 
 	return out
+}
+
+// renderMermaidBlock renders a ```mermaid block as an ASCII/Unicode diagram and,
+// when a whiteboard is available, appends a "See it on the whiteboard" link. If
+// the diagram is wider than the terminal, it shows a compact pointer to the
+// whiteboard instead of an overflowing dump. It falls back to a normal
+// syntax-highlighted code box if the diagram can't be rendered.
+func (m *MarkdownRenderer) renderMermaidBlock(code string) string {
+	link := ""
+	if m.whiteboardBase != "" && m.threadID != "" {
+		if l, err := whiteboard.LinkFor(m.whiteboardBase, m.threadID, code); err == nil {
+			link = l
+		}
+	}
+
+	ascii, err := whiteboard.RenderASCII(code, m.width-4)
+	if err != nil {
+		box := renderCodeBox("mermaid", m.glamourHighlight("mermaid", code), m.width, m.codeBoxBorder)
+		if link != "" {
+			box += "\n\n" + m.renderWhiteboardLink(link)
+		}
+		return box
+	}
+
+	// When the diagram overflows the terminal and we can point at the
+	// interactive whiteboard, prefer a compact note over a broken wide dump.
+	if link != "" && asciiTooWide(ascii, m.width) {
+		note := lipgloss.NewStyle().Faint(true).Render("  ▦ Mermaid diagram — too large to draw here.")
+		return note + "\n" + m.renderWhiteboardLink(link)
+	}
+
+	// Indent the diagram by two columns to align with rendered code boxes.
+	var b strings.Builder
+	for _, line := range strings.Split(ascii, "\n") {
+		b.WriteString("  ")
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	out := strings.TrimRight(b.String(), "\n")
+
+	if link != "" {
+		out += "\n\n" + m.renderWhiteboardLink(link)
+	}
+	return out
+}
+
+// asciiTooWide reports whether any line of the rendered diagram exceeds the
+// available terminal width (leaving room for the 2-column indent).
+func asciiTooWide(ascii string, width int) bool {
+	limit := width - 2
+	if limit < 10 {
+		limit = 10
+	}
+	for _, line := range strings.Split(ascii, "\n") {
+		if lipgloss.Width(line) > limit {
+			return true
+		}
+	}
+	return false
+}
+
+// renderWhiteboardLink renders a clickable (OSC 8) terminal hyperlink to the
+// browser whiteboard.
+func (m *MarkdownRenderer) renderWhiteboardLink(url string) string {
+	label := "↗ See it on the whiteboard"
+	styled := lipgloss.NewStyle().Foreground(lipgloss.Color("#6ea8ff")).Underline(true).Render(label)
+	return "  " + fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", url, styled)
 }
 
 // glamourHighlight renders a code block through glamour to get its native

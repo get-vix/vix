@@ -103,6 +103,13 @@ github.com/dlclark/regexp2/syntax
 # github.com/dustin/go-humanize v1.0.1
 ## explicit; go 1.16
 github.com/dustin/go-humanize
+# github.com/elliotchance/orderedmap/v2 v2.2.0
+## explicit; go 1.18
+github.com/elliotchance/orderedmap/v2
+# github.com/fsnotify/fsnotify v1.10.1
+## explicit; go 1.23
+github.com/fsnotify/fsnotify
+github.com/fsnotify/fsnotify/internal
 # github.com/goccy/go-json v0.10.5
 ## explicit; go 1.19
 github.com/goccy/go-json
@@ -120,6 +127,9 @@ github.com/godbus/dbus/v5
 # github.com/google/uuid v1.6.0
 ## explicit
 github.com/google/uuid
+# github.com/gookit/color v1.5.4
+## explicit; go 1.18
+github.com/gookit/color
 # github.com/gorilla/css v1.0.1
 ## explicit; go 1.20
 github.com/gorilla/css/scanner
@@ -175,6 +185,33 @@ github.com/openai/openai-go/responses
 github.com/openai/openai-go/shared
 github.com/openai/openai-go/shared/constant
 github.com/openai/openai-go/webhooks
+# github.com/pgavlin/mermaid-ascii v0.0.0-20260322123205-ab8074a98bef => github.com/kirby88/mermaid-ascii v0.0.0-20260727160108-bb79308cf13d
+## explicit; go 1.25.0
+github.com/pgavlin/mermaid-ascii/pkg/architecture
+github.com/pgavlin/mermaid-ascii/pkg/blockdiagram
+github.com/pgavlin/mermaid-ascii/pkg/c4
+github.com/pgavlin/mermaid-ascii/pkg/canvas
+github.com/pgavlin/mermaid-ascii/pkg/classdiagram
+github.com/pgavlin/mermaid-ascii/pkg/diagram
+github.com/pgavlin/mermaid-ascii/pkg/erdiagram
+github.com/pgavlin/mermaid-ascii/pkg/gantt
+github.com/pgavlin/mermaid-ascii/pkg/gitgraph
+github.com/pgavlin/mermaid-ascii/pkg/graph
+github.com/pgavlin/mermaid-ascii/pkg/journey
+github.com/pgavlin/mermaid-ascii/pkg/kanban
+github.com/pgavlin/mermaid-ascii/pkg/mindmap
+github.com/pgavlin/mermaid-ascii/pkg/packet
+github.com/pgavlin/mermaid-ascii/pkg/parser
+github.com/pgavlin/mermaid-ascii/pkg/piechart
+github.com/pgavlin/mermaid-ascii/pkg/quadrant
+github.com/pgavlin/mermaid-ascii/pkg/render
+github.com/pgavlin/mermaid-ascii/pkg/requirement
+github.com/pgavlin/mermaid-ascii/pkg/sankey
+github.com/pgavlin/mermaid-ascii/pkg/sequence
+github.com/pgavlin/mermaid-ascii/pkg/statediagram
+github.com/pgavlin/mermaid-ascii/pkg/timeline
+github.com/pgavlin/mermaid-ascii/pkg/xychart
+github.com/pgavlin/mermaid-ascii/pkg/zenuml
 # github.com/posthog/posthog-go v1.11.2
 ## explicit; go 1.21
 github.com/posthog/posthog-go
@@ -184,6 +221,12 @@ github.com/remyoudompheng/bigfft
 # github.com/rivo/uniseg v0.4.7
 ## explicit; go 1.18
 github.com/rivo/uniseg
+# github.com/robfig/cron/v3 v3.0.1
+## explicit; go 1.12
+github.com/robfig/cron/v3
+# github.com/sirupsen/logrus v1.9.0
+## explicit; go 1.13
+github.com/sirupsen/logrus
 # github.com/tidwall/gjson v1.18.0
 ## explicit; go 1.12
 github.com/tidwall/gjson
@@ -278,6 +321,10 @@ golang.org/x/exp/constraints
 golang.org/x/net/html
 golang.org/x/net/html/atom
 golang.org/x/net/websocket
+# golang.org/x/oauth2 v0.36.0
+## explicit; go 1.25.0
+golang.org/x/oauth2
+golang.org/x/oauth2/internal
 # golang.org/x/sync v0.19.0
 ## explicit; go 1.24.0
 golang.org/x/sync/errgroup
@@ -334,3 +381,4 @@ modernc.org/memory
 modernc.org/sqlite
 modernc.org/sqlite/lib
 modernc.org/sqlite/vtab
+# github.com/pgavlin/mermaid-ascii => github.com/kirby88/mermaid-ascii v0.0.0-20260727160108-bb79308cf13d

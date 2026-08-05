@@ -1,0 +1,1699 @@
+{
+  "$defs": {
+    "Attachment": {
+      "properties": {
+        "data": {
+          "type": "string"
+        },
+        "media_type": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "data",
+        "media_type",
+        "type"
+      ],
+      "type": "object"
+    },
+    "DirUsage": {
+      "properties": {
+        "count": {
+          "type": "integer"
+        },
+        "last_request_at": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "count",
+        "path"
+      ],
+      "type": "object"
+    },
+    "EventCompacted": {
+      "properties": {
+        "auto": {
+          "type": "boolean"
+        },
+        "from_tokens": {
+          "type": "integer"
+        },
+        "summarized_turns": {
+          "type": "integer"
+        },
+        "to_tokens": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "auto",
+        "from_tokens",
+        "summarized_turns",
+        "to_tokens"
+      ],
+      "type": "object"
+    },
+    "EventConfirmRequest": {
+      "properties": {
+        "detail": {
+          "type": "string"
+        },
+        "params": {
+          "type": "object"
+        },
+        "requested_dirs": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "tool_name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "params",
+        "tool_name"
+      ],
+      "type": "object"
+    },
+    "EventError": {
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "type": "object"
+    },
+    "EventInitState": {
+      "properties": {
+        "model": {
+          "type": "string"
+        },
+        "state": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "type": "object"
+    },
+    "EventJobDone": {
+      "properties": {
+        "error": {
+          "type": "string"
+        },
+        "job_id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "thread_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "job_id",
+        "status"
+      ],
+      "type": "object"
+    },
+    "EventJobRun": {
+      "properties": {
+        "error": {
+          "type": "string"
+        },
+        "job_id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "job_id",
+        "status"
+      ],
+      "type": "object"
+    },
+    "EventJobsChanged": {
+      "properties": {},
+      "type": "object"
+    },
+    "EventMCPChanged": {
+      "properties": {},
+      "type": "object"
+    },
+    "EventPlanComplete": {
+      "properties": {
+        "plan": {
+          "$ref": "#/$defs/Plan"
+        }
+      },
+      "required": [
+        "plan"
+      ],
+      "type": "object"
+    },
+    "EventPlanProposed": {
+      "properties": {
+        "plan": {
+          "$ref": "#/$defs/Plan"
+        }
+      },
+      "required": [
+        "plan"
+      ],
+      "type": "object"
+    },
+    "EventPlanTaskDone": {
+      "properties": {
+        "success": {
+          "type": "boolean"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "task_idx": {
+          "type": "integer"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "success",
+        "summary",
+        "task_idx",
+        "title"
+      ],
+      "type": "object"
+    },
+    "EventPlanTaskStart": {
+      "properties": {
+        "task_idx": {
+          "type": "integer"
+        },
+        "title": {
+          "type": "string"
+        },
+        "total": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "task_idx",
+        "title",
+        "total"
+      ],
+      "type": "object"
+    },
+    "EventQuestionOption": {
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "has_user_input": {
+          "type": "boolean"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "description",
+        "title"
+      ],
+      "type": "object"
+    },
+    "EventReplay": {
+      "properties": {
+        "active_plan": {
+          "$ref": "#/$defs/Plan"
+        },
+        "active_workflow": {
+          "type": "string"
+        },
+        "messages": {
+          "items": {
+            "$ref": "#/$defs/ReplayMessage"
+          },
+          "type": "array"
+        },
+        "model": {
+          "type": "string"
+        },
+        "thread_mode": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "todos": {
+          "items": {
+            "$ref": "#/$defs/TodoItem"
+          },
+          "type": "array"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "messages"
+      ],
+      "type": "object"
+    },
+    "EventRetry": {
+      "properties": {
+        "attempt": {
+          "type": "integer"
+        },
+        "max_retries": {
+          "type": "integer"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "wait_secs": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "attempt",
+        "max_retries",
+        "reason",
+        "wait_secs"
+      ],
+      "type": "object"
+    },
+    "EventSkillsAvailable": {
+      "properties": {
+        "skills": {
+          "items": {
+            "$ref": "#/$defs/SkillInfo"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "skills"
+      ],
+      "type": "object"
+    },
+    "EventStreamChunk": {
+      "properties": {
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "type": "object"
+    },
+    "EventStreamDone": {
+      "properties": {
+        "cache_creation_tokens": {
+          "type": "integer"
+        },
+        "cache_read_tokens": {
+          "type": "integer"
+        },
+        "elapsed_ms": {
+          "type": "integer"
+        },
+        "input_tokens": {
+          "type": "integer"
+        },
+        "output_tokens": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "cache_creation_tokens",
+        "cache_read_tokens",
+        "elapsed_ms",
+        "input_tokens",
+        "output_tokens"
+      ],
+      "type": "object"
+    },
+    "EventThinkingChunk": {
+      "properties": {
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "type": "object"
+    },
+    "EventThinkingStall": {
+      "properties": {
+        "elapsed_ms": {
+          "type": "integer"
+        },
+        "summary_chars": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "elapsed_ms",
+        "summary_chars"
+      ],
+      "type": "object"
+    },
+    "EventThreadStarted": {
+      "properties": {
+        "fork_turn_idx": {
+          "type": "integer"
+        },
+        "parent_id": {
+          "type": "string"
+        },
+        "started_at": {
+          "type": "string"
+        },
+        "thread_id": {
+          "type": "string"
+        },
+        "whiteboard_base": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "started_at",
+        "thread_id"
+      ],
+      "type": "object"
+    },
+    "EventThreadsChanged": {
+      "properties": {},
+      "type": "object"
+    },
+    "EventTitleUpdated": {
+      "properties": {
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "type": "object"
+    },
+    "EventTodoListUpdated": {
+      "properties": {
+        "todos": {
+          "items": {
+            "$ref": "#/$defs/TodoItem"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "todos"
+      ],
+      "type": "object"
+    },
+    "EventToolBackends": {
+      "properties": {
+        "glob_configured": {
+          "type": "string"
+        },
+        "glob_effective": {
+          "type": "string"
+        },
+        "grep_configured": {
+          "type": "string"
+        },
+        "grep_effective": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "glob_configured",
+        "glob_effective",
+        "grep_configured",
+        "grep_effective"
+      ],
+      "type": "object"
+    },
+    "EventToolCall": {
+      "properties": {
+        "arguments": {
+          "type": "object"
+        },
+        "name": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "reason_not_edit_file": {
+          "type": "string"
+        },
+        "reason_not_glob_files": {
+          "type": "string"
+        },
+        "reason_not_read_file": {
+          "type": "string"
+        },
+        "reason_to_increase_timeout": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "timeout_sec": {
+          "type": "integer"
+        },
+        "tool_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "summary",
+        "tool_id"
+      ],
+      "type": "object"
+    },
+    "EventToolResult": {
+      "properties": {
+        "detail": {
+          "type": "string"
+        },
+        "is_error": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "output": {
+          "type": "string"
+        },
+        "tool_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "is_error",
+        "name",
+        "output",
+        "tool_id"
+      ],
+      "type": "object"
+    },
+    "EventUpdateAvailable": {
+      "properties": {
+        "current": {
+          "type": "string"
+        },
+        "latest": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "current"
+      ],
+      "type": "object"
+    },
+    "EventUserQuestion": {
+      "properties": {
+        "category": {
+          "type": "string"
+        },
+        "options": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "placeholder": {
+          "type": "string"
+        },
+        "question": {
+          "type": "string"
+        },
+        "questions": {
+          "items": {
+            "$ref": "#/$defs/QuestionDef"
+          },
+          "type": "array"
+        },
+        "rich_options": {
+          "items": {
+            "$ref": "#/$defs/EventQuestionOption"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "options",
+        "question"
+      ],
+      "type": "object"
+    },
+    "EventWorkflowComplete": {
+      "properties": {
+        "duration_ms": {
+          "type": "integer"
+        },
+        "step_costs": {
+          "items": {
+            "$ref": "#/$defs/StepCost"
+          },
+          "type": "array"
+        },
+        "success": {
+          "type": "boolean"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "workflow_name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "success",
+        "workflow_name"
+      ],
+      "type": "object"
+    },
+    "EventWorkflowStart": {
+      "properties": {
+        "steps": {
+          "items": {
+            "$ref": "#/$defs/WorkflowStepInfo"
+          },
+          "type": "array"
+        },
+        "total_steps": {
+          "type": "integer"
+        },
+        "workflow_name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "total_steps",
+        "workflow_name"
+      ],
+      "type": "object"
+    },
+    "EventWorkflowStatus": {
+      "properties": {
+        "elapsed_seconds": {
+          "type": "integer"
+        },
+        "iteration": {
+          "type": "integer"
+        },
+        "note": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "step_id": {
+          "type": "string"
+        },
+        "token_budget": {
+          "type": "integer"
+        },
+        "tokens_used": {
+          "type": "integer"
+        },
+        "workflow_name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "workflow_name"
+      ],
+      "type": "object"
+    },
+    "EventWorkflowStepDone": {
+      "properties": {
+        "bash_output": {
+          "type": "string"
+        },
+        "cache_creation_tokens": {
+          "type": "integer"
+        },
+        "cache_read_tokens": {
+          "type": "integer"
+        },
+        "command": {
+          "type": "string"
+        },
+        "display": {
+          "type": "string"
+        },
+        "duration_ms": {
+          "type": "integer"
+        },
+        "input_tokens": {
+          "type": "integer"
+        },
+        "model": {
+          "type": "string"
+        },
+        "output_tokens": {
+          "type": "integer"
+        },
+        "step_id": {
+          "type": "string"
+        },
+        "step_idx": {
+          "type": "integer"
+        },
+        "success": {
+          "type": "boolean"
+        },
+        "timed_out": {
+          "type": "boolean"
+        },
+        "tool_stats": {
+          "items": {
+            "$ref": "#/$defs/ToolStat"
+          },
+          "type": "array"
+        },
+        "total": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "step_id",
+        "step_idx",
+        "success",
+        "total"
+      ],
+      "type": "object"
+    },
+    "EventWorkflowStepStart": {
+      "properties": {
+        "agent": {
+          "type": "string"
+        },
+        "explanation": {
+          "type": "string"
+        },
+        "step_id": {
+          "type": "string"
+        },
+        "step_idx": {
+          "type": "integer"
+        },
+        "total": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "agent",
+        "step_id",
+        "step_idx",
+        "total"
+      ],
+      "type": "object"
+    },
+    "EventWorkflowsAvailable": {
+      "properties": {
+        "workflows": {
+          "items": {
+            "$ref": "#/$defs/WorkflowInfo"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "workflows"
+      ],
+      "type": "object"
+    },
+    "HookSummary": {
+      "properties": {
+        "created_by": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "event": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "last_fired_at": {
+          "type": "string"
+        },
+        "last_status": {
+          "type": "string"
+        },
+        "matcher": {
+          "type": "string"
+        },
+        "mode": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "enabled",
+        "id"
+      ],
+      "type": "object"
+    },
+    "InstanceRegisterData": {
+      "properties": {
+        "instance_id": {
+          "type": "string"
+        },
+        "mode": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "JobSummary": {
+      "properties": {
+        "created_by": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string"
+        },
+        "last_run_at": {
+          "type": "string"
+        },
+        "last_status": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "next_run_at": {
+          "type": "string"
+        },
+        "running": {
+          "type": "boolean"
+        },
+        "schedule": {
+          "type": "string"
+        },
+        "trigger_type": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "enabled",
+        "id"
+      ],
+      "type": "object"
+    },
+    "MCPServerSummary": {
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "tool_count": {
+          "type": "integer"
+        },
+        "type": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "enabled",
+        "name",
+        "status",
+        "tool_count",
+        "type"
+      ],
+      "type": "object"
+    },
+    "Plan": {
+      "properties": {
+        "architecture": {
+          "type": "string"
+        },
+        "context": {
+          "type": "string"
+        },
+        "current_idx": {
+          "type": "integer"
+        },
+        "files": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        },
+        "risks": {
+          "type": "string"
+        },
+        "tasks": {
+          "items": {
+            "$ref": "#/$defs/PlanTask"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "context",
+        "current_idx",
+        "name",
+        "tasks"
+      ],
+      "type": "object"
+    },
+    "PlanTask": {
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "id": {
+          "type": "integer"
+        },
+        "result": {
+          "type": "string"
+        },
+        "status": {
+          "type": "integer"
+        },
+        "substeps": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "description",
+        "id",
+        "status",
+        "title"
+      ],
+      "type": "object"
+    },
+    "QuestionDef": {
+      "properties": {
+        "category": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "options": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "question": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "category",
+        "id",
+        "question"
+      ],
+      "type": "object"
+    },
+    "ReplayBlock": {
+      "properties": {
+        "attempt": {
+          "type": "integer"
+        },
+        "input": {
+          "type": "object"
+        },
+        "is_error": {
+          "type": "boolean"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "max_retries": {
+          "type": "integer"
+        },
+        "output": {
+          "type": "string"
+        },
+        "step_id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "tool_id": {
+          "type": "string"
+        },
+        "tool_name": {
+          "type": "string"
+        },
+        "wait_secs": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "ReplayMessage": {
+      "properties": {
+        "blocks": {
+          "items": {
+            "$ref": "#/$defs/ReplayBlock"
+          },
+          "type": "array"
+        },
+        "role": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "blocks",
+        "role"
+      ],
+      "type": "object"
+    },
+    "SkillInfo": {
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "description",
+        "name"
+      ],
+      "type": "object"
+    },
+    "StepCost": {
+      "properties": {
+        "cache_creation_tokens": {
+          "type": "integer"
+        },
+        "cache_read_tokens": {
+          "type": "integer"
+        },
+        "cost": {
+          "type": "number"
+        },
+        "duration_ms": {
+          "type": "integer"
+        },
+        "explanation": {
+          "type": "string"
+        },
+        "input_tokens": {
+          "type": "integer"
+        },
+        "model": {
+          "type": "string"
+        },
+        "output_tokens": {
+          "type": "integer"
+        },
+        "step_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cache_creation_tokens",
+        "cache_read_tokens",
+        "cost",
+        "input_tokens",
+        "model",
+        "output_tokens",
+        "step_id"
+      ],
+      "type": "object"
+    },
+    "ThreadCommand": {
+      "properties": {
+        "auth_token": {
+          "type": "string"
+        },
+        "data": {
+          "description": "arbitrary JSON value"
+        },
+        "type": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "data",
+        "type"
+      ],
+      "type": "object"
+    },
+    "ThreadConfirmData": {
+      "properties": {
+        "approved": {
+          "type": "boolean"
+        },
+        "persist_dirs": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "approved"
+      ],
+      "type": "object"
+    },
+    "ThreadEvent": {
+      "properties": {
+        "data": {},
+        "type": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "data",
+        "type"
+      ],
+      "type": "object"
+    },
+    "ThreadInputData": {
+      "properties": {
+        "attachments": {
+          "items": {
+            "$ref": "#/$defs/Attachment"
+          },
+          "type": "array"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "type": "object"
+    },
+    "ThreadPlanActionData": {
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "type": "object"
+    },
+    "ThreadSetModelData": {
+      "properties": {
+        "model": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "type": "object"
+    },
+    "ThreadStartData": {
+      "properties": {
+        "attach_thread_id": {
+          "type": "string"
+        },
+        "client_version": {
+          "type": "string"
+        },
+        "config_dir": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "enable_automatic_directory_access": {
+          "type": "boolean"
+        },
+        "enable_automatic_write_permission": {
+          "type": "boolean"
+        },
+        "force_init": {
+          "type": "boolean"
+        },
+        "fork_thread_id": {
+          "type": "string"
+        },
+        "fork_turn_idx": {
+          "type": "integer"
+        },
+        "headless": {
+          "type": "boolean"
+        },
+        "model": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cwd",
+        "enable_automatic_directory_access",
+        "enable_automatic_write_permission",
+        "force_init",
+        "headless",
+        "model"
+      ],
+      "type": "object"
+    },
+    "ThreadSummary": {
+      "properties": {
+        "attached": {
+          "type": "boolean"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "first_message": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "job_status": {
+          "type": "string"
+        },
+        "last_request_at": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "origin": {
+          "type": "string"
+        },
+        "started_at": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "trigger": {
+          "$ref": "#/$defs/TriggerInfo"
+        },
+        "unread": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "cwd",
+        "id",
+        "model"
+      ],
+      "type": "object"
+    },
+    "ThreadTrimData": {
+      "properties": {
+        "turn_idx": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "turn_idx"
+      ],
+      "type": "object"
+    },
+    "ThreadUserAnswerData": {
+      "properties": {
+        "answer": {
+          "type": "string"
+        },
+        "answers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "answer"
+      ],
+      "type": "object"
+    },
+    "ThreadWorkflowData": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "workflow": {
+          "description": "arbitrary JSON value"
+        }
+      },
+      "required": [
+        "name",
+        "text"
+      ],
+      "type": "object"
+    },
+    "ThreadWorkflowMessageData": {
+      "properties": {
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "type": "object"
+    },
+    "TodoItem": {
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "depends_on": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "content",
+        "id",
+        "status"
+      ],
+      "type": "object"
+    },
+    "ToolStat": {
+      "properties": {
+        "calls": {
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "calls",
+        "name",
+        "summary"
+      ],
+      "type": "object"
+    },
+    "TriggerInfo": {
+      "properties": {
+        "ref": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "WorkflowInfo": {
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "WorkflowStepInfo": {
+      "properties": {
+        "explanation": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://getvix.dev/schema/vix-protocol.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "commands": {
+    "instance.register": {
+      "payload": {
+        "$ref": "#/$defs/InstanceRegisterData"
+      }
+    },
+    "thread.cancel": {
+      "payload": null
+    },
+    "thread.close": {
+      "payload": null
+    },
+    "thread.confirm": {
+      "payload": {
+        "$ref": "#/$defs/ThreadConfirmData"
+      }
+    },
+    "thread.input": {
+      "payload": {
+        "$ref": "#/$defs/ThreadInputData"
+      }
+    },
+    "thread.mark_read": {
+      "payload": null
+    },
+    "thread.plan_action": {
+      "payload": {
+        "$ref": "#/$defs/ThreadPlanActionData"
+      }
+    },
+    "thread.set_model": {
+      "payload": {
+        "$ref": "#/$defs/ThreadSetModelData"
+      }
+    },
+    "thread.start": {
+      "payload": {
+        "$ref": "#/$defs/ThreadStartData"
+      }
+    },
+    "thread.trim": {
+      "payload": {
+        "$ref": "#/$defs/ThreadTrimData"
+      }
+    },
+    "thread.user_answer": {
+      "payload": {
+        "$ref": "#/$defs/ThreadUserAnswerData"
+      }
+    },
+    "thread.workflow": {
+      "payload": {
+        "$ref": "#/$defs/ThreadWorkflowData"
+      }
+    },
+    "thread.workflow_message": {
+      "payload": {
+        "$ref": "#/$defs/ThreadWorkflowMessageData"
+      }
+    },
+    "update.quit": {
+      "payload": null
+    }
+  },
+  "description": "Generated from internal/protocol Go structs by cmd/protoschema. DO NOT EDIT — run `make proto-schema`.",
+  "envelopes": {
+    "command": {
+      "$ref": "#/$defs/ThreadCommand"
+    },
+    "event": {
+      "$ref": "#/$defs/ThreadEvent"
+    }
+  },
+  "events": {
+    "event.agent_done": {
+      "payload": null
+    },
+    "event.clear": {
+      "payload": null
+    },
+    "event.compacted": {
+      "payload": {
+        "$ref": "#/$defs/EventCompacted"
+      }
+    },
+    "event.confirm_request": {
+      "payload": {
+        "$ref": "#/$defs/EventConfirmRequest"
+      }
+    },
+    "event.error": {
+      "payload": {
+        "$ref": "#/$defs/EventError"
+      }
+    },
+    "event.init_state": {
+      "payload": {
+        "$ref": "#/$defs/EventInitState"
+      }
+    },
+    "event.job_done": {
+      "payload": {
+        "$ref": "#/$defs/EventJobDone"
+      }
+    },
+    "event.job_run": {
+      "payload": {
+        "$ref": "#/$defs/EventJobRun"
+      }
+    },
+    "event.jobs_changed": {
+      "payload": {
+        "$ref": "#/$defs/EventJobsChanged"
+      }
+    },
+    "event.mcp_changed": {
+      "payload": {
+        "$ref": "#/$defs/EventMCPChanged"
+      }
+    },
+    "event.plan_complete": {
+      "payload": {
+        "$ref": "#/$defs/EventPlanComplete"
+      }
+    },
+    "event.plan_proposed": {
+      "payload": {
+        "$ref": "#/$defs/EventPlanProposed"
+      }
+    },
+    "event.plan_task_done": {
+      "payload": {
+        "$ref": "#/$defs/EventPlanTaskDone"
+      }
+    },
+    "event.plan_task_start": {
+      "payload": {
+        "$ref": "#/$defs/EventPlanTaskStart"
+      }
+    },
+    "event.quit": {
+      "payload": null
+    },
+    "event.replay": {
+      "payload": {
+        "$ref": "#/$defs/EventReplay"
+      }
+    },
+    "event.retry": {
+      "payload": {
+        "$ref": "#/$defs/EventRetry"
+      }
+    },
+    "event.skills_available": {
+      "payload": {
+        "$ref": "#/$defs/EventSkillsAvailable"
+      }
+    },
+    "event.stream_chunk": {
+      "payload": {
+        "$ref": "#/$defs/EventStreamChunk"
+      }
+    },
+    "event.stream_done": {
+      "payload": {
+        "$ref": "#/$defs/EventStreamDone"
+      }
+    },
+    "event.thinking_chunk": {
+      "payload": {
+        "$ref": "#/$defs/EventThinkingChunk"
+      }
+    },
+    "event.thinking_stall": {
+      "payload": {
+        "$ref": "#/$defs/EventThinkingStall"
+      }
+    },
+    "event.thread_started": {
+      "payload": {
+        "$ref": "#/$defs/EventThreadStarted"
+      }
+    },
+    "event.threads_changed": {
+      "payload": {
+        "$ref": "#/$defs/EventThreadsChanged"
+      }
+    },
+    "event.title_updated": {
+      "payload": {
+        "$ref": "#/$defs/EventTitleUpdated"
+      }
+    },
+    "event.todo_list_updated": {
+      "payload": {
+        "$ref": "#/$defs/EventTodoListUpdated"
+      }
+    },
+    "event.tool_backends": {
+      "payload": {
+        "$ref": "#/$defs/EventToolBackends"
+      }
+    },
+    "event.tool_call": {
+      "payload": {
+        "$ref": "#/$defs/EventToolCall"
+      }
+    },
+    "event.tool_result": {
+      "payload": {
+        "$ref": "#/$defs/EventToolResult"
+      }
+    },
+    "event.update_available": {
+      "payload": {
+        "$ref": "#/$defs/EventUpdateAvailable"
+      }
+    },
+    "event.user_question": {
+      "payload": {
+        "$ref": "#/$defs/EventUserQuestion"
+      }
+    },
+    "event.workflow_complete": {
+      "payload": {
+        "$ref": "#/$defs/EventWorkflowComplete"
+      }
+    },
+    "event.workflow_start": {
+      "payload": {
+        "$ref": "#/$defs/EventWorkflowStart"
+      }
+    },
+    "event.workflow_status": {
+      "payload": {
+        "$ref": "#/$defs/EventWorkflowStatus"
+      }
+    },
+    "event.workflow_step_done": {
+      "payload": {
+        "$ref": "#/$defs/EventWorkflowStepDone"
+      }
+    },
+    "event.workflow_step_start": {
+      "payload": {
+        "$ref": "#/$defs/EventWorkflowStepStart"
+      }
+    },
+    "event.workflows_available": {
+      "payload": {
+        "$ref": "#/$defs/EventWorkflowsAvailable"
+      }
+    }
+  },
+  "rpc": {
+    "DirUsage": {
+      "$ref": "#/$defs/DirUsage"
+    },
+    "HookSummary": {
+      "$ref": "#/$defs/HookSummary"
+    },
+    "JobSummary": {
+      "$ref": "#/$defs/JobSummary"
+    },
+    "MCPServerSummary": {
+      "$ref": "#/$defs/MCPServerSummary"
+    },
+    "ThreadSummary": {
+      "$ref": "#/$defs/ThreadSummary"
+    }
+  },
+  "title": "Vix daemon protocol"
+}

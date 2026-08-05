@@ -39,19 +39,19 @@ const maxQuestionLines = 5
 
 // QuestionPanel is a dedicated input panel for answering questions with selectable options.
 type QuestionPanel struct {
-	visible           bool
-	tabs              []questionTab
-	currentTab        int
-	textInput         textarea.Model // shared inline textarea for "Type something." option
-	width             int
-	maxVisible        int // max visible options before scrolling
-	offset            int // scroll offset for current tab's options
+	visible              bool
+	tabs                 []questionTab
+	currentTab           int
+	textInput            textarea.Model // shared inline textarea for "Type something." option
+	width                int
+	maxVisible           int      // max visible options before scrolling
+	offset               int      // scroll offset for current tab's options
 	confirmMode          bool     // true when used for tool permission prompts
 	confirmDirRequest    bool     // true when confirming directory access (3 options)
 	confirmRequestedDirs []string // directories being requested in a directory-access confirm
 	preview              string   // tool preview content shown in confirm mode
-	questionLines     []string // pre-split rendered question text lines
-	questionOffset    int      // scroll offset within the question text block
+	questionLines        []string // pre-split rendered question text lines
+	questionOffset       int      // scroll offset within the question text block
 }
 
 // NewQuestionPanel returns a QuestionPanel with its inline textarea fully
@@ -770,7 +770,6 @@ func (qp *QuestionPanel) Render(s Styles, focused bool, md *MarkdownRenderer) st
 
 	return sb.String()
 }
-
 
 // renderTabBar builds the tab bar for multi-question mode.
 func (qp *QuestionPanel) renderTabBar(s Styles) string {

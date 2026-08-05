@@ -1,5 +1,14 @@
 # Project-specific
-.vix/
+# Ignore every .vix tree (root + nested), but ship the e2e-writing skill as a
+# project skill. Re-inclusion must walk each level: git won't recurse into an
+# ignored dir, so the root .vix dir is re-included, its contents re-ignored,
+# then the one skill dir re-included.
+**/.vix/
+!/.vix/
+/.vix/*
+!/.vix/skills/
+/.vix/skills/*
+!/.vix/skills/write-e2e-test/
 bin/
 dist/
 /vix
@@ -27,6 +36,8 @@ changelog.txt
 *.dylib
 *.test
 *.out
+# e2e report output (also covered by e2e/.gitignore)
+e2e/out/
 # vendor/
 go.work
 

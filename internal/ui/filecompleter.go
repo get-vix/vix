@@ -11,6 +11,45 @@ import (
 
 const fileCompleterMaxVisible = 8
 
+// truncatePathLeft shortens p to fit width columns, keeping the tail (the most
+// specific path segments) and prefixing with an ellipsis when truncated.
+func truncatePathLeft(p string, width int) string {
+	if width <= 1 || lipgloss.Width(p) <= width {
+		return p
+	}
+	runes := []rune(p)
+	keep := width - 1
+	if keep >= len(runes) {
+		return p
+	}
+	return "…" + string(runes[len(runes)-keep:])
+}
+
+// resolveWorkDir normalizes a working-directory string (from the picker or a
+// typed path) to an absolute path, expanding a leading ~ to the home directory.
+func resolveWorkDir(dir string) string {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		if wd, err := os.Getwd(); err == nil {
+			return wd
+		}
+		return dir
+	}
+	if dir == "~" {
+		if home, err := os.UserHomeDir(); err == nil {
+			dir = home
+		}
+	} else if strings.HasPrefix(dir, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			dir = filepath.Join(home, dir[2:])
+		}
+	}
+	if abs, err := filepath.Abs(dir); err == nil {
+		return abs
+	}
+	return dir
+}
+
 // FileCompleter is a popup that lists filesystem entries matching a typed @-query.
 type FileCompleter struct {
 	visible    bool
@@ -18,10 +57,46 @@ type FileCompleter struct {
 	query      string // prefix filter (part after last / in the @-token)
 	entries    []os.DirEntry
 	selected   int
+	// dirsOnly restricts the listing to directories. Used by the welcome-screen
+	// working-directory picker (Ctrl+O on a draft thread).
+	dirsOnly bool
+	// title overrides the popup's border title. Empty renders the default
+	// " Files " label.
+	title string
+}
+
+// OpenDir shows the completer in directory-only mode, rooted at dir. Used by the
+// draft welcome screen to let the user pick a working directory before the
+// thread starts.
+func (f *FileCompleter) OpenDir(dir string) {
+	f.dirsOnly = true
+	f.title = " Select working directory "
+	f.visible = true
+	f.currentDir = resolveWorkDir(dir)
+	f.query = ""
+	f.reload()
+	f.selected = 0
+}
+
+// CurrentDir returns the directory currently being listed.
+func (f *FileCompleter) CurrentDir() string { return f.currentDir }
+
+// Parent navigates to the parent of the current directory, resetting the query.
+func (f *FileCompleter) Parent() {
+	parent := filepath.Dir(f.currentDir)
+	if parent == f.currentDir {
+		return // already at root
+	}
+	f.currentDir = parent
+	f.query = ""
+	f.reload()
+	f.selected = 0
 }
 
 // Open shows the completer for the given directory and filter prefix.
 func (f *FileCompleter) Open(dir, query string) {
+	f.dirsOnly = false
+	f.title = ""
 	f.visible = true
 	f.currentDir = dir
 	f.query = query
@@ -97,12 +172,17 @@ func (f *FileCompleter) reload() {
 	lowerQuery := strings.ToLower(f.query)
 	var filtered []os.DirEntry
 	for _, e := range all {
+		entry := resolvedDirEntry(f.currentDir, e)
+		// Directory-only mode (working-directory picker) skips plain files.
+		if f.dirsOnly && !entry.IsDir() {
+			continue
+		}
 		// Skip hidden files (starting with .) unless the query starts with .
 		if strings.HasPrefix(e.Name(), ".") && !strings.HasPrefix(lowerQuery, ".") {
 			continue
 		}
 		if lowerQuery == "" || strings.HasPrefix(strings.ToLower(e.Name()), lowerQuery) {
-			filtered = append(filtered, resolvedDirEntry(f.currentDir, e))
+			filtered = append(filtered, entry)
 		}
 	}
 	f.entries = filtered
@@ -146,6 +226,9 @@ func (f *FileCompleter) View(width, maxHeight int, s Styles) string {
 	borderCharStyle := lipgloss.NewStyle().Foreground(borderColor)
 
 	title := " Files "
+	if f.title != "" {
+		title = f.title
+	}
 	titleStyle := lipgloss.NewStyle().Foreground(borderColor)
 	titleRendered := titleStyle.Render(title)
 	titleLen := lipgloss.Width(titleRendered)
