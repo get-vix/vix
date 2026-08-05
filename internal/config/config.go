@@ -82,8 +82,8 @@ func HomeVixDir() string {
 type DaemonConfig struct {
 	HomeVixDir string
 	// AuthToken is the shared-secret string the daemon will require on every
-	// incoming socket message. Loaded from the file pointed at by vixd's
-	// -auth-token-path flag (cmd/vixd/main.go). Empty means "no auth check"
+	// incoming socket message. Loaded from daz-secrets account
+	// vix/daemon-auth-token (cmd/vixd/main.go). Empty means "no auth check"
 	// — that mode exists for in-process tests and trusted-host embeddings;
 	// production deployments always populate it.
 	AuthToken string

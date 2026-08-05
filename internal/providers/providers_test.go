@@ -243,9 +243,15 @@ func TestAuthLogins(t *testing.T) {
 	}
 }
 
-// TestInterpolation covers ${env:VAR} and ${env:VAR:-default}.
+// TestInterpolation covers the legacy ${env:VAR} schema syntax without using
+// the process environment. Production resolves the same names via daz-secrets.
 func TestInterpolation(t *testing.T) {
-	t.Setenv("VIX_TEST_SET", "hello")
+	lookup := func(name string) string {
+		if name == "VIX_TEST_SET" {
+			return "hello"
+		}
+		return ""
+	}
 	cases := []struct {
 		in   string
 		want string
@@ -260,7 +266,7 @@ func TestInterpolation(t *testing.T) {
 		{"${env:VIX_TEST_UNTERMINATED", "${env:VIX_TEST_UNTERMINATED"},
 	}
 	for _, c := range cases {
-		if got := interpolate(c.in); got != c.want {
+		if got := interpolateWith(c.in, lookup); got != c.want {
 			t.Errorf("interpolate(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
@@ -274,11 +280,15 @@ func TestResolveDropsEmptyQueryParams(t *testing.T) {
 		AuthScheme:  AuthSchemeBearer,
 		QueryParams: map[string]string{"GroupId": "${env:VIX_TEST_GROUP}"},
 	}
-	if got := in.Resolve(); len(got.QueryParams) != 0 {
+	if got := in.resolveWith(func(string) string { return "" }); len(got.QueryParams) != 0 {
 		t.Errorf("unset GroupId should be dropped, got %v", got.QueryParams)
 	}
-	t.Setenv("VIX_TEST_GROUP", "grp_1")
-	if got := in.Resolve(); got.QueryParams["GroupId"] != "grp_1" {
+	if got := in.resolveWith(func(name string) string {
+		if name == "VIX_TEST_GROUP" {
+			return "grp_1"
+		}
+		return ""
+	}); got.QueryParams["GroupId"] != "grp_1" {
 		t.Errorf("set GroupId = %v, want grp_1", got.QueryParams)
 	}
 }
@@ -487,30 +497,43 @@ func TestEmbeddedLoadIgnoresEnv(t *testing.T) {
 	}
 }
 
-// TestConfigureValidatesEffectiveURLs covers the Configure path, which resolves
-// ${env:...} against the real environment and reports problems gracefully (a
-// returned error, never a panic). A LAN host over plain HTTP is accepted for a
-// local provider; a malformed override is rejected.
+// TestConfigureValidatesEffectiveURLs covers provider-backed interpolation
+// without placing config in the process environment. A LAN host over plain
+// HTTP is accepted for a local provider; a malformed override is rejected.
 func TestConfigureValidatesEffectiveURLs(t *testing.T) {
+	base, err := parseFile(embeddedJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Run("LAN host accepted", func(t *testing.T) {
-		t.Setenv("LLAMACPP_BASE_URL", "http://freyr.local:8080/v1")
-		t.Cleanup(resetDefault)
-		if err := Configure(nil); err != nil {
-			t.Fatalf("Configure with LAN llamacpp base URL: %v", err)
+		lookup := func(name string) string {
+			if name == "LLAMACPP_BASE_URL" {
+				return "http://freyr.local:8080/v1"
+			}
+			return ""
 		}
-		p, ok := Default().Lookup("llamacpp")
+		interp := func(value string) string { return interpolateWith(value, lookup) }
+		if err := validate(base, interp); err != nil {
+			t.Fatalf("validate with LAN llamacpp base URL: %v", err)
+		}
+		p, ok := newRegistry(base).Lookup("llamacpp")
 		if !ok {
-			t.Fatal("llamacpp missing after Configure")
+			t.Fatal("llamacpp missing")
 		}
-		if got := p.Inference.Resolve().BaseURL; got != "http://freyr.local:8080/v1" {
+		if got := p.Inference.resolveWith(lookup).BaseURL; got != "http://freyr.local:8080/v1" {
 			t.Errorf("resolved base URL = %q, want LAN host", got)
 		}
 	})
 	t.Run("malformed override rejected gracefully", func(t *testing.T) {
-		t.Setenv("LLAMACPP_BASE_URL", "ftp://nope")
-		t.Cleanup(resetDefault)
-		if err := Configure(nil); err == nil {
-			t.Error("Configure: expected error for non-HTTP(S) base URL, got nil")
+		lookup := func(name string) string {
+			if name == "LLAMACPP_BASE_URL" {
+				return "ftp://nope"
+			}
+			return ""
+		}
+		interp := func(value string) string { return interpolateWith(value, lookup) }
+		if err := validate(base, interp); err == nil {
+			t.Error("validate: expected error for non-HTTP(S) base URL, got nil")
 		}
 	})
 }

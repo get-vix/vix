@@ -2,7 +2,6 @@ package harness
 
 import (
 	"io"
-	"net/http"
 	"strings"
 	"testing"
 )
@@ -37,7 +36,7 @@ func TestLocalProviderEndpoints(t *testing.T) {
 
 func get(t *testing.T, m *Mock, path string) string {
 	t.Helper()
-	resp, err := http.Get(m.BaseURL() + path)
+	resp, err := m.srv.Client().Get(m.BaseURL() + path)
 	if err != nil {
 		t.Fatalf("GET %s: %v", path, err)
 	}

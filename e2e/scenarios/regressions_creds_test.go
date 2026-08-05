@@ -7,96 +7,53 @@ import (
 	"github.com/get-vix/vix/e2e/harness"
 )
 
-// TestEnvFileCredentialResolution is a staged acceptance spec for issues #29 and
-// #30. On current main, resolveKey searches the CWD .env for API keys but NOT
-// ~/.vix/.env (#30), and resolveMethodBaseURL reads ANTHROPIC_BASE_URL via
-// os.Getenv only — bypassing the .env search (#29). Until both land, this test
-// can't route to the mock through a .env, so it is skipped.
-//
-// When enabled it proves: with no API-key/base-URL env vars, both the key and
-// the base URL resolve from a .env (CWD and ~/.vix variants), so a turn reaches
-// the mock. T1.3 · asserts wire (request reached the mock via .env resolution).
-func TestEnvFileCredentialResolution(t *testing.T) {
-	harness.SkipScenario(t, harness.Meta{
-		Category:    "creds",
-		Subcategory: "creds.env_files",
-		Description: "API key + base URL resolve from a .env so the request reaches the mock (#29/#30)",
-		Wire:        harness.WireMessages,
-	}, "acceptance spec for #29/#30 (open): ANTHROPIC_BASE_URL and ~/.vix/.env are not yet resolved from .env files; enable when fixed")
-
-	cases := []struct {
-		name string
-		opts []harness.Option
-	}{
-		{
-			name: "cwd-dotenv",
-			opts: []harness.Option{
-				harness.WithoutDefaultCreds(),
-				harness.WithWorkdirFile(".env", "ANTHROPIC_API_KEY=test\nANTHROPIC_BASE_URL={{MOCK_URL}}\n"),
-			},
-		},
-		{
-			name: "home-vix-dotenv",
-			opts: []harness.Option{
-				harness.WithoutDefaultCreds(),
-				harness.WithHomeFile(".vix/.env", "ANTHROPIC_API_KEY=test\nANTHROPIC_BASE_URL={{MOCK_URL}}\n"),
-			},
-		},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			h := harness.Start(t, harness.Meta{
-				Category:    "creds",
-				Subcategory: "creds.env_files",
-				Description: "API key + base URL resolve from a .env so the request reaches the mock (#29/#30)",
-				Wire:        harness.WireMessages,
-				Variant:     c.name,
-			}, c.opts...)
-
-			h.UI.WaitStable(400 * time.Millisecond)
-			h.Mock.Enqueue(harness.Text("Resolved credentials from .env."))
-			h.UI.Type("say hello")
-			h.UI.Enter()
-			h.UI.WaitFor("Resolved credentials from .env.")
-
-			if len(h.Mock.Requests()) == 0 {
-				t.Fatalf("no request reached the mock — .env credentials were not resolved")
-			}
-		})
-	}
-}
-
-// TestApiKeyHelperResolvesKey is a staged acceptance spec for issue #31
-// (apiKeyHelper). There is currently no apiKeyHelper support in the codebase, so
-// this is skipped until the feature lands.
-//
-// When enabled it proves: with no API-key env var, settings.json's apiKeyHelper
-// command supplies the key (via `sh -c`), and the base URL comes from a .env, so
-// a turn reaches the mock. T1.4 · asserts wire (request reached the mock using
-// the helper-provided key).
-func TestApiKeyHelperResolvesKey(t *testing.T) {
+// TestCredentialEnvironmentAndDotenvAreIgnored proves credential-like process
+// variables and dotenv files cannot shadow the daz-secrets provider. The
+// harness provider holds the real test credential while both legacy channels
+// carry deliberately wrong values.
+func TestCredentialEnvironmentAndDotenvAreIgnored(t *testing.T) {
 	meta := harness.Meta{
 		Category:    "creds",
-		Subcategory: "creds.api_key_helper",
-		Description: "apiKeyHelper command supplies the API key (#31)",
+		Subcategory: "creds.provider_only",
+		Description: "credential env and dotenv decoys are ignored while daz-secrets reaches the real LLM endpoint",
 		Wire:        harness.WireMessages,
 	}
-	harness.SkipScenario(t, meta, "acceptance spec for #31 (open): settings.json apiKeyHelper is not implemented; enable when the feature lands")
-
 	h := harness.Start(t, meta,
-		harness.WithoutDefaultCreds(),
-		// Base URL from .env (so the request is offline); key from the helper.
-		harness.WithHomeFile(".vix/.env", "ANTHROPIC_BASE_URL={{MOCK_URL}}\n"),
-		harness.WithSettings(`{"apiKeyHelper":"echo test"}`),
+		harness.WithEnv("ANTHROPIC_API_KEY", "wrong-environment-key"),
+		harness.WithWorkdirFile(".env", "ANTHROPIC_API_KEY=wrong-dotenv-key\nANTHROPIC_BASE_URL=https://wrong.invalid\n"),
+		harness.WithHomeFile(".vix/.env", "ANTHROPIC_API_KEY=another-wrong-key\n"),
 	)
 
 	h.UI.WaitStable(400 * time.Millisecond)
-	h.Mock.Enqueue(harness.Text("Used the apiKeyHelper key."))
+	h.Mock.Enqueue(harness.Text("Resolved credentials through daz-secrets."))
 	h.UI.Type("say hello")
 	h.UI.Enter()
-	h.UI.WaitFor("Used the apiKeyHelper key.")
-
+	h.UI.WaitFor("Resolved credentials through daz-secrets.")
 	if len(h.Mock.Requests()) == 0 {
-		t.Fatalf("no request reached the mock — apiKeyHelper key was not used")
+		t.Fatal("no request reached the real HTTP test endpoint through daz-secrets")
+	}
+}
+
+// TestLegacyAPIKeyHelperCannotExecute proves a settings entry cannot reinstate
+// command-based secret injection. Vix still completes through daz-secrets and
+// the helper side effect never appears.
+func TestLegacyAPIKeyHelperCannotExecute(t *testing.T) {
+	meta := harness.Meta{
+		Category:    "creds",
+		Subcategory: "creds.no_helper",
+		Description: "legacy apiKeyHelper cannot execute or inject credentials",
+		Wire:        harness.WireMessages,
+	}
+	h := harness.Start(t, meta,
+		harness.WithSettings(`{"apiKeyHelper":"touch {{WORKDIR}}/helper-ran"}`),
+	)
+
+	h.UI.WaitStable(400 * time.Millisecond)
+	h.Mock.Enqueue(harness.Text("Used only the configured secret provider."))
+	h.UI.Type("say hello")
+	h.UI.Enter()
+	h.UI.WaitFor("Used only the configured secret provider.")
+	if h.FS.Exists("helper-ran") {
+		t.Fatal("legacy apiKeyHelper executed")
 	}
 }

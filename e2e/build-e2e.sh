@@ -12,6 +12,7 @@
 # Output:
 #   e2e/bin/e2e.test    (compiled `go test -c ./scenarios`)
 #   e2e/bin/report      (the report CLI)
+#   e2e/bin/daz-secrets + e2e/bin/vix-e2e-secrets--ok (real process protocol)
 
 set -euo pipefail
 
@@ -22,6 +23,8 @@ mkdir -p "$E2E_DIR/bin"
 
 echo "==> Building e2e binaries for linux/${ARCH}"
 
+DAZ_SECRETS_DIR="$(go list -mod=mod -m -f '{{.Dir}}' github.com/darrenoakey/daz-secrets)"
+
 # -C enters the e2e module; -o paths are relative to it, so they land in e2e/bin.
 CGO_ENABLED=0 GOOS=linux GOARCH="$ARCH" \
   go test -C "$E2E_DIR" -c -o bin/e2e.test ./scenarios
@@ -29,4 +32,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH="$ARCH" \
 CGO_ENABLED=0 GOOS=linux GOARCH="$ARCH" \
   go build -C "$E2E_DIR" -trimpath -o bin/report ./cmd/report
 
-echo "==> e2e binaries → $E2E_DIR/bin (e2e.test, report)"
+CGO_ENABLED=0 GOOS=linux GOARCH="$ARCH" \
+  go build -C "$DAZ_SECRETS_DIR" -trimpath -o "$E2E_DIR/bin/daz-secrets" \
+    ./cmd/daz-secrets
+
+CGO_ENABLED=0 GOOS=linux GOARCH="$ARCH" \
+  go build -C "$DAZ_SECRETS_DIR" -trimpath -o "$E2E_DIR/bin/vix-e2e-secrets--ok" \
+    ./cmd/daz-secrets-conformance-provider
+
+echo "==> e2e binaries → $E2E_DIR/bin (e2e.test, report, daz-secrets, vix-e2e-secrets--ok)"

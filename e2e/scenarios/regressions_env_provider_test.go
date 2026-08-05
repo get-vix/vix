@@ -9,9 +9,9 @@ import (
 )
 
 // customEnvProvider is a ~/.vix/providers.json overlay defining a custom
-// provider whose only credential method is an env_var (no keyring) — the exact
-// shape from issue #57. Its base_url is never contacted; the scenario only
-// exercises credential *availability*, not a request.
+// provider whose credential uses only the legacy env_var schema field. Vix
+// maps that name to daz-secrets account acme-env-api-key without reading the
+// process environment.
 const customEnvProvider = `{
   "schema_version": 1,
   "providers": [
@@ -24,22 +24,17 @@ const customEnvProvider = `{
 }`
 
 // TestEnvOnlyCustomProviderIsConfigured is the live regression for issue #57: a
-// custom provider defined in providers.json with an env_var and no keyring must
-// be recognised as configured when the env var is set, even with no usable OS
-// keychain (the offline e2e container has none). Before the fix, the Models tab
-// gated a provider's "configured" state on a keychain entry, so a custom
-// env_var-only provider was wrongly listed under "Available:" (no credential)
-// instead of "Logged in:".
-func TestEnvOnlyCustomProviderIsConfigured(t *testing.T) {
+// custom provider using that legacy field must be recognised as configured
+// from the provider-backed account pre-seeded by the e2e image.
+func TestLegacyEnvFieldMapsToSecretProviderAccount(t *testing.T) {
 	meta := harness.Meta{
 		Category:    "regressions",
-		Subcategory: "models.env_provider",
-		Description: "custom providers.json provider with env_var (no keyring) resolves without a keychain (#57)",
+		Subcategory: "models.secret_provider_account",
+		Description: "legacy env_var metadata maps to a daz-secrets account without reading env (#57)",
 		Wire:        harness.WireMessages,
 	}
 	h := harness.Start(t, meta,
 		harness.WithProviders(customEnvProvider),
-		harness.WithEnv("ACME_ENV_API_KEY", "acme-env-secret"),
 	)
 	h.UI.WaitStable(400 * time.Millisecond)
 
@@ -56,8 +51,8 @@ func TestEnvOnlyCustomProviderIsConfigured(t *testing.T) {
 	if iLoggedIn < 0 || iAvailable < 0 || iAcme < 0 {
 		t.Fatalf("Models tab missing expected sections; screen:\n%s", s)
 	}
-	// The custom provider must sit in the "Logged in:" group (env var resolved a
-	// credential), i.e. between the two group headers — not under "Available:".
+	// The custom provider must sit in the "Logged in:" group (the mapped provider
+	// account resolved), i.e. between the two group headers.
 	if !(iLoggedIn < iAcme && iAcme < iAvailable) {
 		t.Fatalf("Acme Env not under \"Logged in:\" (loggedIn=%d acme=%d available=%d); screen:\n%s",
 			iLoggedIn, iAcme, iAvailable, s)

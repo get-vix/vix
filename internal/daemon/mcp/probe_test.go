@@ -8,6 +8,24 @@ import (
 	"testing"
 )
 
+func TestSecretAccount(t *testing.T) {
+	cases := map[string]struct {
+		account string
+		ok      bool
+	}{
+		"literal":                  {"", false},
+		"${secret:mcp-api-token}":  {"mcp-api-token", true},
+		"${MCP_EXAMPLE_API_TOKEN}": {"mcp-example-api-token", true},
+		"${secret:}":               {"", false},
+	}
+	for value, want := range cases {
+		account, ok := secretAccount(value)
+		if account != want.account || ok != want.ok {
+			t.Errorf("secretAccount(%q) = (%q, %v), want (%q, %v)", value, account, ok, want.account, want.ok)
+		}
+	}
+}
+
 // mockMCPHTTPServer returns an httptest server implementing the minimal MCP
 // HTTP handshake (initialize + tools/list) advertising the given tool names.
 func mockMCPHTTPServer(t *testing.T, toolNames ...string) *httptest.Server {

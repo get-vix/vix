@@ -33,20 +33,20 @@ type Properties struct {
 type nodeShape int
 
 const (
-	shapeRect      nodeShape = iota // A[text] or bare A - rectangle (default)
-	shapeRounded                    // A(text) - rounded rectangle
-	shapeStadium                    // A([text]) - stadium-shaped (rounded sides)
-	shapeSubroutine                 // A[[text]] - subroutine (double vertical borders)
-	shapeCylinder                   // A[(text)] - cylinder (curved top/bottom)
-	shapeCircle                     // A((text)) - circle/double circle
-	shapeDiamond                    // A{text} - diamond/rhombus
-	shapeHexagon                    // A{{text}} - hexagon
-	shapeFlag                       // A>text] - asymmetric/flag shape
+	shapeRect       nodeShape = iota // A[text] or bare A - rectangle (default)
+	shapeRounded                     // A(text) - rounded rectangle
+	shapeStadium                     // A([text]) - stadium-shaped (rounded sides)
+	shapeSubroutine                  // A[[text]] - subroutine (double vertical borders)
+	shapeCylinder                    // A[(text)] - cylinder (curved top/bottom)
+	shapeCircle                      // A((text)) - circle/double circle
+	shapeDiamond                     // A{text} - diamond/rhombus
+	shapeHexagon                     // A{{text}} - hexagon
+	shapeFlag                        // A>text] - asymmetric/flag shape
 )
 
 type textNode struct {
-	id         string    // unique identifier used as map key (e.g. "A" from "A[text]")
-	name       string    // display label (e.g. "text" from "A[text]", or "A" for bare nodes)
+	id         string // unique identifier used as map key (e.g. "A" from "A[text]")
+	name       string // display label (e.g. "text" from "A[text]", or "A" for bare nodes)
 	styleClass string
 	shape      nodeShape
 }
@@ -636,6 +636,51 @@ func (p *graphParser) parseStyleDirective() {
 	}
 }
 
+// parseClassDirective parses: class nodeId[,nodeId...] className[;]
+//
+// Mermaid's class statement assigns an existing style class to one or more
+// nodes. Treating the leading "class" token as an ordinary node creates a
+// visible phantom node, so this directive must be consumed explicitly.
+func (p *graphParser) parseClassDirective() {
+	p.s.Next() // consume "class"
+	p.s.SkipWhitespace()
+
+	var nodeIDs []string
+	for {
+		nodeID, ok := p.parseNodeID()
+		if !ok {
+			break
+		}
+		nodeIDs = append(nodeIDs, nodeID)
+		p.s.SkipWhitespace()
+		if p.s.Peek().Kind != parser.TokenComma {
+			break
+		}
+		p.s.Next()
+		p.s.SkipWhitespace()
+	}
+
+	p.s.SkipWhitespace()
+	className := ""
+	if p.s.Peek().Kind == parser.TokenIdent {
+		className = p.s.Next().Text
+	}
+	parser.SkipToEndOfLine(p.s)
+
+	if className == "" {
+		return
+	}
+	for _, nodeID := range nodeIDs {
+		if info, exists := p.props.nodeInfo[nodeID]; exists {
+			info.styleClass = className
+			p.props.nodeInfo[nodeID] = info
+			continue
+		}
+		node := textNode{id: nodeID, name: nodeID, styleClass: className, shape: shapeRect}
+		addNode(node, p.props.data, p.props.nodeInfo)
+	}
+}
+
 // parseLinkStyle parses: linkStyle N styles... (parsed but not applied)
 func (p *graphParser) parseLinkStyle() {
 	p.s.Next() // consume "linkStyle"
@@ -694,6 +739,9 @@ func (p *graphParser) parseStatement() {
 			return
 		case "classdef":
 			p.parseClassDef()
+			return
+		case "class":
+			p.parseClassDirective()
 			return
 		case "style":
 			p.parseStyleDirective()

@@ -59,13 +59,6 @@ if [[ "$MODE" == "local" ]]; then
     -v "$DIST_DIR:/tmp/dist:ro" \
     homebrew/brew:latest \
     bash -c "
-      if sudo apt-get update -qq 2>/dev/null && sudo apt-get install -y -qq dbus-x11 gnome-keyring libsecret-tools >/dev/null 2>&1; then
-        eval \$(dbus-launch --sh-syntax)
-        echo '' | gnome-keyring-daemon --unlock --components=secrets >/dev/null 2>&1 || true
-        echo '==> Keychain tools installed (secret-tool available)'
-      else
-        echo '==> Skipping keychain tools (apt failed — not required for testing)'
-      fi
       mkdir -p \$(brew --repo)/Library/Taps/local/homebrew-vix/Formula
       cp /tmp/dist/vix-local.rb \$(brew --repo)/Library/Taps/local/homebrew-vix/Formula/vix.rb
       echo '==> Installing vix via Homebrew...'
@@ -73,11 +66,7 @@ if [[ "$MODE" == "local" ]]; then
       echo ''
       echo '==> Done! Type \"vix\" to test.'
       echo ''
-      echo '  # Store a test secret'
-      echo '  secret-tool store --label=\"vix api key\" service vix username anthropic-api-key'
-      echo ''
-      echo '  # Look it up'
-      echo '  secret-tool lookup service vix username anthropic-api-key'
+      echo '  Configure a daz-secrets provider before exercising an LLM.'
       echo ''
       exec bash
     "
@@ -87,13 +76,6 @@ else
     --platform "$PLATFORM" \
     homebrew/brew:latest \
     bash -c "
-      if sudo apt-get update -qq 2>/dev/null && sudo apt-get install -y -qq dbus-x11 gnome-keyring libsecret-tools >/dev/null 2>&1; then
-        eval \$(dbus-launch --sh-syntax)
-        echo '' | gnome-keyring-daemon --unlock --components=secrets >/dev/null 2>&1 || true
-        echo '==> Keychain tools installed (secret-tool available)'
-      else
-        echo '==> Skipping keychain tools (apt failed — not required for testing)'
-      fi
       echo '==> brew tap $TAP'
       brew tap $TAP
       echo '==> brew install vix'
@@ -101,11 +83,7 @@ else
       echo ''
       echo '==> Done! Type \"vix\" to test.'
       echo ''
-      echo '  # Store a test secret'
-      echo '  secret-tool store --label=\"vix api key\" service vix username anthropic-api-key'
-      echo ''
-      echo '  # Look it up'
-      echo '  secret-tool lookup service vix username anthropic-api-key'
+      echo '  Configure a daz-secrets provider before exercising an LLM.'
       echo ''
       exec bash
     "

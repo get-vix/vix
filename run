@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+command_check() {
+  local files=()
+  while IFS= read -r -d '' file; do
+    files+=("${file}")
+  done < <(git ls-files -z '*.go' ':!vendor/**' ':!internal/daemon/testdata/**/tmp.min.go')
+  local unformatted
+  unformatted="$(gofmt -l "${files[@]}")"
+  if [[ -n "${unformatted}" ]]; then
+    echo "gofmt required:" >&2
+    echo "${unformatted}" >&2
+    return 1
+  fi
+
+  go vet ./...
+  go test -p 1 ./...
+  (cd apps/vix-mac && swift test)
+  make build
+  make test-e2e
+}
+
+command_deploy() {
+  go install ./cmd/vix ./cmd/vixd
+  command_health
+}
+
+command_health() {
+  local go_bin
+  go_bin="$(go env GOPATH)/bin"
+  [[ -x "${go_bin}/vix" ]]
+  [[ -x "${go_bin}/vixd" ]]
+  "${go_bin}/vix" --help >/dev/null
+  "${go_bin}/vixd" --help >/dev/null
+}
+
+case "${1:-}" in
+  check)
+    command_check
+    ;;
+  deploy)
+    command_deploy
+    ;;
+  health)
+    command_health
+    ;;
+  *)
+    echo "usage: ./run {check|deploy|health}" >&2
+    exit 2
+    ;;
+esac

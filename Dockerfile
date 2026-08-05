@@ -17,7 +17,7 @@
 # Build (source — requires bin/ populated by script/build.sh first):
 #   docker build --build-arg VIX_INSTALL_MODE=source -t vix-test .
 # Run:
-#   docker run --rm -it -e ANTHROPIC_API_KEY vix-test
+#   docker run --rm -it vix-test
 #
 # Prefer the script/vix-docker.sh wrapper, which handles platform, build args,
 # and (for source mode) running script/build.sh for you.
@@ -105,20 +105,6 @@ RUN echo "alias ll='ls -al'" >> /root/.bashrc
 
 WORKDIR /workspace
 
-# Entrypoint: seed /workspace/.env from a read-only mount at /seed/.env (if the
-# host provided one), so `vix` picks up the API key with zero extra steps. It's
-# a copy, not the mount itself, so you can `rm /workspace/.env` inside the
-# container to drop the key and enter it yourself. We never bake the key into
-# the image — the .env only arrives via a runtime bind mount.
-RUN cat > /usr/local/bin/vix-docker-entrypoint.sh <<'EOF' \
-    && chmod +x /usr/local/bin/vix-docker-entrypoint.sh
-#!/usr/bin/env bash
-set -e
-if [ -f /seed/.env ] && [ ! -f /workspace/.env ]; then
-  cp /seed/.env /workspace/.env
-fi
-exec "$@"
-EOF
-
-ENTRYPOINT ["vix-docker-entrypoint.sh"]
+# Mount a daz-secrets provider and provider.toml at runtime when credentialed
+# behavior is required. No secret is baked into or copied inside this image.
 CMD ["bash"]

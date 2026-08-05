@@ -3,12 +3,35 @@ package daemon
 import (
 	"testing"
 
-	"github.com/zalando/go-keyring"
+	"github.com/get-vix/vix/internal/config"
 )
 
-func init() {
-	// Hermetic: keep credential RPC tests off the real OS keychain.
-	keyring.MockInit()
+type credentialTestStore struct{ values map[string]string }
+
+func (s *credentialTestStore) Get(account string) (string, error) {
+	value, ok := s.values[account]
+	if !ok {
+		return "", config.ErrCredNotFound
+	}
+	return value, nil
+}
+func (s *credentialTestStore) Set(account, value string) error {
+	s.values[account] = value
+	return nil
+}
+func (s *credentialTestStore) Delete(account string) error {
+	if _, ok := s.values[account]; !ok {
+		return config.ErrCredNotFound
+	}
+	delete(s.values, account)
+	return nil
+}
+func (*credentialTestStore) Backend() string { return config.BackendProvider }
+
+func isolateCredentialHandlers(t *testing.T) {
+	t.Helper()
+	restore := config.UseCredentialStoreForTesting(&credentialTestStore{values: make(map[string]string)})
+	t.Cleanup(restore)
 }
 
 // callHandler invokes a registered handler by name and fails the test on error.
@@ -35,6 +58,7 @@ func providerEntry(t *testing.T, resp map[string]any, provider string) ProviderC
 }
 
 func TestCredentialHandlers_StoreStatusDelete(t *testing.T) {
+	isolateCredentialHandlers(t)
 	s := &Server{handlers: make(map[string]HandlerFunc)}
 	RegisterCredentialHandlers(s)
 
@@ -83,6 +107,7 @@ func TestCredentialHandlers_StoreStatusDelete(t *testing.T) {
 }
 
 func TestCredentialHandlers_Validation(t *testing.T) {
+	isolateCredentialHandlers(t)
 	s := &Server{handlers: make(map[string]HandlerFunc)}
 	RegisterCredentialHandlers(s)
 

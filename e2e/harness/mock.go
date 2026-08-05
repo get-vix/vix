@@ -2,6 +2,7 @@ package harness
 
 import (
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -163,12 +164,19 @@ func newMock() *Mock {
 	mux.HandleFunc("/props", m.handleLlamaProps)
 	mux.HandleFunc("/api/ps", m.handleOllamaPS)
 	mux.HandleFunc("/api/show", m.handleOllamaShow)
-	m.srv = httptest.NewServer(mux)
+	m.srv = httptest.NewTLSServer(mux)
 	return m
 }
 
 // BaseURL is the loopback URL vix should target (no trailing /v1).
 func (m *Mock) BaseURL() string { return m.srv.URL }
+
+// CACertificatePEM returns the test server's self-signed certificate. The
+// harness writes it into each isolated HOME and points only the spawned test
+// processes at it, preserving production's HTTPS-only provider validation.
+func (m *Mock) CACertificatePEM() []byte {
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: m.srv.Certificate().Raw})
+}
 
 // close shuts the server down. It first unblocks any handler parked in
 // nextReply (e.g. an unexpected async request like auto-title generation with an

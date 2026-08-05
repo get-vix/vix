@@ -39,7 +39,16 @@ COPY bin/vix-linux-${TARGETARCH}  /usr/local/bin/vix
 COPY bin/vixd-linux-${TARGETARCH} /usr/local/bin/vixd
 COPY e2e/bin/e2e.test             /usr/local/bin/e2e.test
 COPY e2e/bin/report               /usr/local/bin/report
-RUN chmod +x /usr/local/bin/vix /usr/local/bin/vixd /usr/local/bin/e2e.test /usr/local/bin/report
+COPY e2e/bin/daz-secrets           /usr/local/bin/daz-secrets
+COPY e2e/bin/vix-e2e-secrets--ok    /usr/local/bin/vix-e2e-secrets--ok
+RUN chmod +x /usr/local/bin/vix /usr/local/bin/vixd /usr/local/bin/e2e.test /usr/local/bin/report /usr/local/bin/daz-secrets /usr/local/bin/vix-e2e-secrets--ok \
+ && mkdir -p /root/.config/daz-secrets \
+ && printf 'version = 1\nprovider_path = "/usr/local/bin/vix-e2e-secrets--ok"\nprovider_id = "vix-e2e-secrets"\ntimeout_ms = 5000\n' > /root/.config/daz-secrets/provider.toml \
+ && chmod 600 /root/.config/daz-secrets/provider.toml \
+ && printf test | daz-secrets set vix anthropic-api-key \
+ && printf test | daz-secrets set vix openai-api-key \
+ && printf test | daz-secrets set vix minimax-api-key \
+ && printf acme-test | daz-secrets set vix acme-env-api-key
 
 # Deterministic locale/terminal for stable screenshots.
 ENV LC_ALL=C.UTF-8 \

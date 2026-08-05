@@ -7,13 +7,14 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"golang.org/x/net/html"
 	"golang.org/x/net/html/atom"
+
+	"github.com/get-vix/vix/internal/config"
 )
 
 // webFetchImpl fetches a URL and returns its content as text.
@@ -198,9 +199,9 @@ func extractText(n *html.Node, b *strings.Builder) {
 
 // webSearchImpl performs a web search using the Brave Search API.
 func webSearchImpl(query string, count int) (string, error) {
-	apiKey := os.Getenv("BRAVE_SEARCH_API_KEY")
+	apiKey, _ := config.ResolveStoredSecret("brave-search-api-key")
 	if apiKey == "" {
-		return "", fmt.Errorf("BRAVE_SEARCH_API_KEY environment variable is not set. Get a free API key at https://brave.com/search/api/")
+		return "", fmt.Errorf("Brave Search API key is not stored; add vix/brave-search-api-key with daz-secrets")
 	}
 
 	if count <= 0 {

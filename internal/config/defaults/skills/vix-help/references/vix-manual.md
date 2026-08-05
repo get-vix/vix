@@ -191,7 +191,7 @@ Vix is multi-provider. You need a credential for at least one supported provider
 
 ## Interactive setup (recommended)
 
-The interactive flow is the easiest way to add a credential — it writes straight to your OS keychain, so you are never asked again on subsequent runs. Run `vix` and press `F3` to open the **Models** tab.
+The interactive flow is the easiest way to add a credential. Vix writes it through [daz-secrets](https://github.com/darrenoakey/daz-secrets), whose configured provider is the only credential backend Vix uses. Vix never reads credentials from environment variables or dotenv files and never calls an operating-system credential store directly. Run `vix` and press `F3` to open the **Models** tab.
 
 The tab has three areas — the **provider** column on the left, the **authentication** panel on the right, and the **model** grid below. Use `↑↓` to navigate, `Tab` to switch between areas, and `Enter` to select.
 
@@ -210,11 +210,9 @@ Shortcut: you can also just pick a model in the grid. If that provider has no cr
 
 **Anthropic**, **OpenAI**, and **OpenRouter** support an interactive OAuth login instead of a raw API key — select `[ Create token ]` on the OAuth row and complete the flow in your browser. **MiniMax** and **Xiaomi MiMo** are API-key only and show `OAuth token: (not available)`.
 
-OAuth tokens and the OS keychain
+OAuth tokens and daz-secrets
 
-OAuth tokens are long-lived, auto-refreshing secrets, so vix prefers to store them in the OS keychain (macOS Keychain, or the Linux Secret Service via D-Bus). On a machine with no usable keychain — headless Linux, a minimal container, or WSL without gnome-keyring — vix falls back to writing the token to `~/.vix/auth.json` (mode `0600`), the same file API keys fall back to. The Models tab and the logs surface that the token is stored unencrypted on disk (`token will be stored in plaintext auth.json`).
-
-If you would rather not keep refresh tokens on disk, run vix with a working keychain, or authenticate with an API-key environment variable (e.g. `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`) instead of an interactive login — env vars are read directly and never written to disk.
+OAuth access and refresh tokens use the same daz-secrets provider as API keys. There is no plaintext `auth.json`, dotenv, environment-variable, or implicit OS-credential-store fallback. If the provider is unavailable, login and refresh fail closed without an authentication dialog.
 
 Key saved but still reported as missing?
 
@@ -223,60 +221,42 @@ If you select a model but vix reports `no credential for <provider>` — or the 
 -   You pressed `Enter` in the popup — highlighting the field is not enough to save.
 -   The key was pasted in full, with no missing characters at the start or end.
 -   You added the key to the _same_ provider as the model — a `mimo/…` model needs a **Xiaomi MiMo** key, not MiniMax.
--   No stale environment variable is shadowing it. An env var (e.g. an empty or old `MIMO_API_KEY` in your shell profile) takes priority over the keychain — see the resolution order below.
+-   The configured daz-secrets provider is available and the selected provider account contains the intended value.
 
 To fix it, re-open the Models tab (`F3`), choose `[ Delete key ]`, and paste the key again.
 
 ## Supported providers
 
-| Provider | API key env var | OAuth login |
+| Provider | daz-secrets account (service `vix`) | OAuth login |
 | --- | --- | --- |
-| Anthropic | ANTHROPIC\_API\_KEY (or CLAUDE\_CODE\_OAUTH\_TOKEN) | Yes (Claude) |
-| OpenAI | OPENAI\_API\_KEY | Yes (Codex) |
-| OpenRouter | OPENROUTER\_API\_KEY | Yes |
-| MiniMax | MINIMAX\_API\_KEY | — |
-| Xiaomi MiMo | MIMO\_API\_KEY | — |
+| Anthropic | `anthropic-api-key` | Yes (Claude) |
+| OpenAI | `openai-api-key` | Yes (Codex) |
+| OpenRouter | `openrouter-api-key` | Yes |
+| MiniMax | `minimax-api-key` | — |
+| Xiaomi MiMo | `mimo-api-key` | — |
 
-## Environment variable
+## Command-line setup
 
-Set the relevant provider's env var in your shell profile (see the table above):
-
-```
-export ANTHROPIC_API_KEY=sk-ant-...
-export OPENAI_API_KEY=sk-...
-export OPENROUTER_API_KEY=sk-or-...
-```
-
-An env var takes priority over the keychain if set.
-
-## .env file
-
-Vix will pick up a `.env` file in your project directory or next to the `vix` binary:
+Install and configure daz-secrets first, then pipe the secret to its `set` command through standard input. The secret never appears in argv, an environment variable, or a plaintext file:
 
 ```
-# .env
-ANTHROPIC_API_KEY=sk-ant-...
+python3 -c 'import getpass,sys; sys.stdout.write(getpass.getpass("Anthropic key: "))' \
+  | daz-secrets set vix anthropic-api-key
 ```
-
-Useful for team setups where the key is committed to a secrets manager and written to `.env` at deploy time. Make sure `.env` is in your `.gitignore`.
 
 ## Key resolution order
 
 | Priority | Source |
 | --- | --- |
-| 1 | Provider env var (e.g. `ANTHROPIC_API_KEY`) |
-| 2 | OS keychain (incl. stored OAuth tokens) |
-| 3 | `.env` next to the `vix` binary |
-| 4 | `.env` in the current working directory |
+| 1 | The explicitly configured daz-secrets primary provider |
+| 2 | An explicitly configured daz-secrets fallback provider, only for `UNAVAILABLE` or `UNSUPPORTED` responses |
 
 ## Removing a saved key
 
-The easiest way is the Models tab (F3) → select the provider → **Delete**. Keys are stored in the OS keychain under service `vix`, with account `<provider>-api-key`. To delete from the command line on macOS:
+The easiest way is the Models tab (F3) → select the provider → **Delete**. To delete from the command line:
 
 ```
-# macOS Keychain Access → search for "vix" → delete
-# or via the security CLI:
-security delete-generic-password -s vix -a anthropic-api-key
+daz-secrets delete vix anthropic-api-key
 ```
 
 ---
@@ -678,18 +658,18 @@ Vix is multi-provider. Every model is addressed by a **provider-prefixed spec** 
 
 ## Supported providers
 
-| Provider | Prefix | API key env var | OAuth login |
+| Provider | Prefix | daz-secrets account (service `vix`) | OAuth login |
 | --- | --- | --- | --- |
-| Anthropic | anthropic/ | ANTHROPIC\_API\_KEY | Yes (Claude) |
-| OpenAI | openai/ | OPENAI\_API\_KEY | Yes (Codex) |
-| OpenRouter | openrouter/ | OPENROUTER\_API\_KEY | Yes |
-| MiniMax | minimax/ | MINIMAX\_API\_KEY | — |
-| Xiaomi MiMo | mimo/ | MIMO\_API\_KEY | — |
-| Ollama (local) | ollama/ | OLLAMA\_API\_KEY (optional) | — |
-| llama.cpp (local) | llamacpp/ | LLAMACPP\_API\_KEY (optional) | — |
-| Lemonade (local) | lemonade/ | LEMONADE\_API\_KEY (optional) | — |
+| Anthropic | anthropic/ | `anthropic-api-key` | Yes (Claude) |
+| OpenAI | openai/ | `openai-api-key` | Yes (Codex) |
+| OpenRouter | openrouter/ | `openrouter-api-key` | Yes |
+| MiniMax | minimax/ | `minimax-api-key` | — |
+| Xiaomi MiMo | mimo/ | `mimo-api-key` | — |
+| Ollama (local) | ollama/ | `ollama-api-key` (optional) | — |
+| llama.cpp (local) | llamacpp/ | `llamacpp-api-key` (optional) | — |
+| Lemonade (local) | lemonade/ | `lemonade-api-key` (optional) | — |
 
-Anthropic also accepts an OAuth bearer token via `CLAUDE_CODE_OAUTH_TOKEN`. Each provider ships a curated model catalogue — Anthropic Claude, OpenAI GPT / o-series, and hundreds of models through OpenRouter, plus MiniMax and Xiaomi MiMo.
+Each provider ships a curated model catalogue — Anthropic Claude, OpenAI GPT / o-series, and hundreds of models through OpenRouter, plus MiniMax and Xiaomi MiMo.
 
 ## Choosing a model
 
@@ -702,13 +682,11 @@ The active model can be set in several places — the most specific wins:
 
 ## Credentials
 
-Credentials are resolved per provider in order: environment variable → OS keychain → `.env` next to the binary → `.env` in the working directory. Add or remove keys from the Models tab (F3). See [API Key Setup](/docs#api-key-setup) for the full reference.
+Credentials are resolved only through daz-secrets. Add or remove keys from the Models tab (F3). See [API Key Setup](/docs#api-key-setup) for the full reference.
 
 ## OAuth logins
 
-Three providers support an interactive OAuth login instead of a raw API key — **Anthropic** (Claude subscription), **OpenAI** (Codex), and **OpenRouter**. Start the flow from the Models tab; tokens are stored in the OS keychain and refreshed automatically. When both an API key and an OAuth token exist for a provider, the Models tab lets you choose which one is the default.
-
-Without a usable OS keychain, the OAuth token falls back to on-disk storage in `~/.vix/auth.json` (mode `0600`) automatically — the same fallback API keys use — and the Models tab notes that the token is stored in plaintext. To avoid on-disk tokens, use a working keychain or an API-key environment variable. See [API Key Setup](/docs#api-key-setup) for details.
+Three providers support an interactive OAuth login instead of a raw API key — **Anthropic** (Claude subscription), **OpenAI** (Codex), and **OpenRouter**. Start the flow from the Models tab; tokens are stored through daz-secrets and refreshed automatically. When both an API key and an OAuth token exist for a provider, the Models tab lets you choose which one is the default. Provider failure is terminal and noninteractive; Vix never falls back to plaintext storage.
 
 ## Effort / reasoning
 
@@ -2635,7 +2613,6 @@ vix [flags]
 | \--disable-automatic-write-permission | bool | false | Require user confirmation before each write\_file / edit\_file / delete\_file. By default, writes execute without confirmation. |
 | \--disable-automatic-directory-access | bool | false | Restrict tool calls to paths within the working directory. By default, other paths are reachable (with a prompt). |
 | \--socket-path <path> | string | /tmp/vixd.sock | Unix socket for the vix↔vixd connection. Must match the running vixd. Env: VIX\_SOCKET\_PATH. |
-| \--auth-token-path <path> | string | — | File holding the shared-secret token used to authenticate every socket message. |
 | \--pprof-port <n> | int | 0 | Port for the pprof HTTP server. 0 disables. Env: VIX\_PPROF\_PORT. |
 | \--vfs <cmd> … | — | — | Run a one-off VFS command, e.g. vix --vfs read\_file <path>. |
 | \--test | bool | false | Fill chat with fake data for UI testing. Does not connect to daemon. |
@@ -2658,11 +2635,11 @@ vix daemon <start|stop|status|install|uninstall> [flags]
 | install | Register vixd to start at login (macOS LaunchAgent / Linux systemd user unit). Prints what it will write and asks first. |
 | uninstall | Remove the login registration. A running daemon is untouched. |
 
-All subcommands accept `--socket-path` and `--auth-token-path` to target a non-default daemon.
+All subcommands accept `--socket-path` to target a non-default daemon. Socket authentication is read from daz-secrets account `vix/daemon-auth-token` when present.
 
 ## vix job / vix hook
 
-Fire a scheduled job or a lifecycle hook immediately by id, out of band from its schedule or event. Both print the run's thread id and accept `--socket-path` / `--auth-token-path`.
+Fire a scheduled job or a lifecycle hook immediately by id, out of band from its schedule or event. Both print the run's thread id and accept `--socket-path`.
 
 shell
 
@@ -2687,22 +2664,20 @@ vixd [flags]
 | \--log-dir | $TMPDIR | VIX\_LOG\_DIR | Directory for daemon log files. |
 | \--web-port | 1337 | VIX\_WEB\_PORT | Port for the local web UI. 0 disables it. |
 | \--no-mission-control | false | VIX\_NO\_MISSION\_CONTROL | Disable the web UI server entirely. |
-| \--auth-token-path | — | VIX\_AUTH\_TOKEN\_PATH | File holding the shared-secret socket auth token. |
 | \--pprof-port | 0 | VIX\_PPROF\_PORT | Port for the pprof HTTP server. 0 disables it. |
 
-## Credential & tool environment variables
+## Credential accounts
 
 There is no `VIX_MODEL` variable — the model is resolved per thread from the active agent's `model:` frontmatter and the Models tab (F3).
 
-| Variable | Description |
+| daz-secrets account under service `vix` | Description |
 | --- | --- |
-| ANTHROPIC\_API\_KEY | Anthropic key (also resolvable via keychain / .env). |
-| CLAUDE\_CODE\_OAUTH\_TOKEN | Anthropic OAuth bearer token alternative. |
-| OPENAI\_API\_KEY | OpenAI key. |
-| OPENROUTER\_API\_KEY | OpenRouter key. |
-| MINIMAX\_API\_KEY | MiniMax key. |
-| MIMO\_API\_KEY | Xiaomi MiMo key. |
-| BRAVE\_SEARCH\_API\_KEY | Required for the web\_search tool. |
+| `anthropic-api-key` | Anthropic key. |
+| `openai-api-key` | OpenAI key. |
+| `openrouter-api-key` | OpenRouter key. |
+| `minimax-api-key` | MiniMax key. |
+| `mimo-api-key` | Xiaomi MiMo key. |
+| `brave-search-api-key` | Required for the web\_search tool. |
 
 ## Output formats
 
@@ -4041,7 +4016,7 @@ Pass `--disable-automatic-directory-access` to confine tool calls to `cwd` inste
 
 ## Socket authentication
 
-By default any local caller can connect to the daemon socket. For multi-user or shared hosts, point both `vixd` and `vix` at the same secret file with `--auth-token-path` (env `VIX_AUTH_TOKEN_PATH`). Every socket message must then carry the matching token. Keep the file outside the agent's reachable path tree.
+By default any local caller can connect to the daemon socket. For multi-user or shared hosts, store a token in daz-secrets account `vix/daemon-auth-token`; both `vixd` and `vix` load it noninteractively and every socket message must carry the matching value.
 
 ## Linux: Landlock
 
@@ -4069,7 +4044,7 @@ A handful of lifecycle and activity events, plus crash reports. Every event carr
 | daemon\_started | vixd starts | startup duration (ms) |
 | $exception | a panic is recovered | recover site + goroutine stack (Go internals, not your data) |
 
-Common properties attached to every event: vix version, OS, architecture, process mode, and a rotating thread id. The distinct identifier is a random device UUID generated once and stored in your OS keychain — it is not tied to your name, email, or account. Coarse location may be derived server-side from the request IP (standard GeoIP); no precise location is sent. Events go to PostHog at `us.i.posthog.com`.
+Common properties attached to every event: vix version, OS, architecture, process mode, and a rotating thread id. The distinct identifier is a random device UUID generated once and stored through daz-secrets — it is not tied to your name, email, or account. Coarse location may be derived server-side from the request IP (standard GeoIP); no precise location is sent. Events go to PostHog at `us.i.posthog.com`.
 
 ## How to opt out
 

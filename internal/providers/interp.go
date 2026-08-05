@@ -1,16 +1,25 @@
 package providers
 
 import (
-	"os"
 	"strings"
+
+	"github.com/get-vix/vix/internal/secretstore"
 )
 
-// interpolate expands ${env:VAR} and ${env:VAR:-default} references in s
-// against the process environment. An unset (or empty) VAR with no default
-// expands to "". Unknown ${...} forms are left verbatim. The function makes a
-// single left-to-right pass and does not re-expand substituted text.
+// interpolate preserves the legacy ${env:VAR} provider schema syntax but
+// resolves VAR through the daz-secrets account var (lowercase, hyphenated).
+// Vix never reads credentials or provider overrides from the environment.
 func interpolate(s string) string {
-	return interpolateWith(s, os.Getenv)
+	return interpolateWith(s, secretValue)
+}
+
+func secretValue(name string) string {
+	account := strings.ToLower(strings.ReplaceAll(name, "_", "-"))
+	value, ok, err := secretstore.Default().Get(account)
+	if err != nil || !ok {
+		return ""
+	}
+	return value
 }
 
 // interpolateDefaults expands the same references as interpolate but ignores
@@ -76,8 +85,12 @@ func resolveEnvExpr(expr string, lookup func(string) string) string {
 // this when constructing a client so env-driven overrides (base URLs, region,
 // attribution headers, group id) take effect without per-provider Go code.
 func (in InferenceSpec) Resolve() InferenceSpec {
+	return in.resolveWith(secretValue)
+}
+
+func (in InferenceSpec) resolveWith(lookup func(string) string) InferenceSpec {
 	out := InferenceSpec{
-		BaseURL:     interpolate(in.BaseURL),
+		BaseURL:     interpolateWith(in.BaseURL, lookup),
 		AuthScheme:  in.AuthScheme,
 		AuthHeader:  in.AuthHeader,
 		EffortStyle: in.EffortStyle,
@@ -86,7 +99,7 @@ func (in InferenceSpec) Resolve() InferenceSpec {
 	if len(in.Headers) > 0 {
 		out.Headers = make(map[string]string, len(in.Headers))
 		for k, v := range in.Headers {
-			rv := interpolate(v)
+			rv := interpolateWith(v, lookup)
 			if rv == "" {
 				continue
 			}
@@ -96,7 +109,7 @@ func (in InferenceSpec) Resolve() InferenceSpec {
 	if len(in.QueryParams) > 0 {
 		out.QueryParams = make(map[string]string, len(in.QueryParams))
 		for k, v := range in.QueryParams {
-			rv := interpolate(v)
+			rv := interpolateWith(v, lookup)
 			if rv == "" {
 				// Drop unset query params (e.g. MiniMax GroupId when the env
 				// var is absent) — matches the prior middleware behavior.

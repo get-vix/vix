@@ -254,21 +254,6 @@ func (p VixPaths) AccessStatsDB() string {
 	return filepath.Join(p.Primary(), "access_stats.db")
 }
 
-// AuthFile returns the path of the plaintext credential fallback (auth.json),
-// used only when no OS keyring is available. Credentials are user-global, so it
-// lives alongside threads: override mode uses override/auth.json; normal mode
-// uses home/auth.json (empty when home is unavailable). It is deliberately not
-// under cwd/.vix so secrets never land in a project repo.
-func (p VixPaths) AuthFile() string {
-	if p.override != "" {
-		return filepath.Join(p.override, "auth.json")
-	}
-	if p.home == "" {
-		return ""
-	}
-	return filepath.Join(p.home, "auth.json")
-}
-
 // History returns the TUI input history file path.
 func (p VixPaths) History() string {
 	return filepath.Join(p.Primary(), "history.txt")

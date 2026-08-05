@@ -5,9 +5,8 @@
 // HTTP server, a provider registry, and credential storage with automatic token
 // refresh.
 //
-// Credentials are stored exclusively in the OS keychain (see storage.go). When
-// no keychain is reachable, login and refresh fail loudly rather than writing
-// secrets to disk.
+// Credentials are stored exclusively through daz-secrets (see storage.go).
+// When the provider is unavailable, login and refresh fail closed.
 package auth
 
 import (
@@ -35,7 +34,7 @@ type Credentials struct {
 }
 
 // MarshalJSON flattens Extra into the same object as access/refresh/expires so
-// the keychain representation stays a single flat object.
+// the provider representation stays a single flat object.
 func (c Credentials) MarshalJSON() ([]byte, error) {
 	m := make(map[string]any, len(c.Extra)+3)
 	for k, v := range c.Extra {

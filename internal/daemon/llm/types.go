@@ -18,7 +18,7 @@ const (
 )
 
 // CredentialName returns the name used for credential resolution and
-// keyring lookups for this provider.
+// secret-provider lookups for this provider.
 func (p ProviderID) CredentialName() string {
 	return string(p)
 }

@@ -1038,6 +1038,18 @@ func (m *Model) repositionView() {
 	} else if row > maximum {
 		m.viewport.ScrollDown(row - maximum)
 	}
+
+	// Scroll up to fill space that became available when the viewport grew
+	// (e.g. after SetHeight increases the textarea height). The smallest valid
+	// yOffset that still keeps the cursor visible is max(0, cursor-(height-1)).
+	// If the current yOffset is larger, we can reveal hidden content above.
+	neededOffset := m.cursorLineNumber() - (m.viewport.Height() - 1)
+	if neededOffset < 0 {
+		neededOffset = 0
+	}
+	if m.viewport.YOffset() > neededOffset {
+		m.viewport.SetYOffset(neededOffset)
+	}
 }
 
 // Width returns the width of the textarea.

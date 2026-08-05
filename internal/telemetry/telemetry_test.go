@@ -5,7 +5,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -13,19 +12,22 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/posthog/posthog-go"
-	"github.com/zalando/go-keyring"
 )
 
-func init() {
-	// Use in-memory mock keyring for all tests
-	keyring.MockInit()
+type testDeviceIDStore struct{ values map[string]string }
+
+func (s *testDeviceIDStore) Get(account string) (string, bool, error) {
+	value, ok := s.values[account]
+	return value, ok, nil
+}
+func (s *testDeviceIDStore) Set(account, value string) error {
+	s.values[account] = value
+	return nil
 }
 
 func TestGetOrCreateDeviceID_CreatesNew(t *testing.T) {
-	// Clean slate
-	keyring.MockInit()
-
-	id, err := GetOrCreateDeviceID()
+	store := &testDeviceIDStore{values: make(map[string]string)}
+	id, err := getOrCreateDeviceID(store)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -38,50 +40,20 @@ func TestGetOrCreateDeviceID_CreatesNew(t *testing.T) {
 }
 
 func TestGetOrCreateDeviceID_ReadsExisting(t *testing.T) {
-	keyring.MockInit()
-
-	// Create first
-	id1, err := GetOrCreateDeviceID()
+	store := &testDeviceIDStore{values: make(map[string]string)}
+	id1, err := getOrCreateDeviceID(store)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	// Read again
-	id2, err := GetOrCreateDeviceID()
+	id2, err := getOrCreateDeviceID(store)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	if id1 != id2 {
 		t.Fatalf("expected same device ID, got %q and %q", id1, id2)
-	}
-}
-
-func TestOptOut_EnvVar(t *testing.T) {
-	tests := []struct {
-		value    string
-		expected bool
-	}{
-		{"off", true},
-		{"false", true},
-		{"0", true},
-		{"OFF", true},
-		{"False", true},
-		{"", false},
-		{"on", false},
-		{"1", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.value, func(t *testing.T) {
-			os.Setenv("VIX_TELEMETRY", tt.value)
-			defer os.Unsetenv("VIX_TELEMETRY")
-
-			got := isOptedOut()
-			if got != tt.expected {
-				t.Errorf("VIX_TELEMETRY=%q: isOptedOut()=%v, want %v", tt.value, got, tt.expected)
-			}
-		})
 	}
 }
 
@@ -159,8 +131,6 @@ func TestTrackPanic_NoopWhenDisabled(t *testing.T) {
 // structured $exception_list plus the build/runtime context and raw go_stack in
 // its properties (the PostHog "Properties" tab).
 func TestCaptureException_SendsStructuredPayload(t *testing.T) {
-	keyring.MockInit()
-
 	var mu sync.Mutex
 	var batchBodies [][]byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

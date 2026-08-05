@@ -7,15 +7,13 @@ import (
 	"github.com/get-vix/vix/internal/config"
 )
 
-// Credential management is daemon-owned: the TUI never touches the keychain or
-// the auth.json fallback directly. It issues these request/response RPCs and the
-// daemon performs the store/delete/read against config's credential store. This
+// Credential management is daemon-owned: the TUI never touches a provider
+// process directly. It issues these request/response RPCs and the daemon
+// performs the store/delete/read against config's credential store. This
 // keeps a single writer/reader of credentials (the daemon is also the sole
 // consumer when it resolves a credential to build the LLM client) and makes the
-// fallback-store path authoritative on one side.
-//
-// Credentials are user-global (the keychain is global; the auth.json fallback
-// lives at ~/.vix/auth.json), so these handlers take no cwd/config_dir.
+// keeps the provider path authoritative on one side. Credentials are
+// user-global, so these handlers take no cwd/config_dir.
 
 // ProviderCredEntry pairs a provider id with its credential status. Defined in
 // the daemon package so the handler (producer) and Client method (consumer)
@@ -37,7 +35,7 @@ func credStatusAll() []ProviderCredEntry {
 }
 
 // credStatusResponse is the common reply shape: ok status, the active backend
-// (so the UI can warn about plaintext storage), and the refreshed per-provider
+// and the refreshed per-provider
 // statuses so a mutating call updates the UI in a single round-trip.
 func credStatusResponse() map[string]any {
 	return map[string]any{
@@ -108,7 +106,7 @@ func RegisterCredentialHandlers(s *Server) {
 // --- Client side (connection-level RPCs) ---
 
 // CredStatus bundles the per-provider credential statuses with the active
-// storage backend ("keyring" | "file").
+// storage backend.
 type CredStatus struct {
 	Backend   string
 	Providers map[string]config.ProviderAuthStatus

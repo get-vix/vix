@@ -2,7 +2,7 @@
 """Refresh internal/providers/providers.json from each provider's live catalogue.
 
 This walks the providers defined in internal/providers/providers.json, reads
-each provider's API key from the repo .env file, calls the provider's `/models`
+each provider's API key through daz-secrets, calls the provider's `/models`
 endpoint, and rewrites each provider's `models` array with what the API returns.
 
 Display names are auto-generated from the model id. Context windows come from the
@@ -18,6 +18,7 @@ Standard library only — no pip installs required.
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import urllib.error
@@ -25,36 +26,28 @@ import urllib.request
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROVIDERS_JSON = os.path.join(REPO_ROOT, "internal", "providers", "providers.json")
-ENV_FILE = os.path.join(REPO_ROOT, ".env")
-
 # Anthropic's REST API requires a version header on every request.
 ANTHROPIC_VERSION = "2023-06-01"
 
 
-def load_env_file(path):
-    """Parse a .env file into a dict, ignoring comments, blanks, and any line
-    that isn't a bare KEY=VALUE pair (e.g. the `minimax: sk-...` notes)."""
-    env = {}
-    if not os.path.exists(path):
-        return env
-    with open(path, "r", encoding="utf-8") as fh:
-        for raw in fh:
-            line = raw.strip()
-            if not line or line.startswith("#"):
-                continue
-            m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", line)
-            if not m:
-                continue
-            key, val = m.group(1), m.group(2).strip()
-            if len(val) >= 2 and val[0] == val[-1] and val[0] in ("'", '"'):
-                val = val[1:-1]
-            env[key] = val
-    return env
+def read_secret(account):
+    """Read one Vix account without placing the value in argv, env, or a file."""
+    try:
+        completed = subprocess.run(
+            ["daz-secrets", "get", "vix", account],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        return ""
+    if completed.returncode != 0:
+        return ""
+    return completed.stdout.decode("utf-8").strip()
 
 
-def interpolate(value, env):
-    """Resolve ${env:VAR} and ${env:VAR:-default} references in a string using
-    the supplied env dict (mirrors the Go inference layer, best-effort)."""
+def interpolate(value):
+    """Resolve legacy ${env:VAR} syntax through daz-secrets."""
 
     def repl(match):
         body = match.group(1)
@@ -63,7 +56,8 @@ def interpolate(value, env):
         else:
             name, default = body, ""
         name = name[len("env:"):] if name.startswith("env:") else name
-        return env.get(name, default)
+        account = name.lower().replace("_", "-")
+        return read_secret(account) or default
 
     return re.sub(r"\$\{([^}]*)\}", repl, value)
 
@@ -81,18 +75,12 @@ def primary_api_key_method(provider):
     return None
 
 
-def bedrock_region(env):
-    """Resolve the AWS region for Bedrock, mirroring the Go client: AWS_REGION,
-    then AWS_DEFAULT_REGION (from the .env file or the process environment),
-    falling back to us-east-1."""
-    for name in ("AWS_REGION", "AWS_DEFAULT_REGION"):
-        val = env.get(name) or os.environ.get(name)
-        if val:
-            return val
-    return "us-east-1"
+def bedrock_region():
+    """Resolve the Bedrock region from vix/aws-region or use the public default."""
+    return read_secret("aws-region") or "us-east-1"
 
 
-def build_request(provider, key, env):
+def build_request(provider, key):
     """Construct the urllib Request for a provider's model-listing endpoint."""
     inference = provider.get("inference", {})
 
@@ -102,9 +90,9 @@ def build_request(provider, key, env):
         # /foundation-models. Filter to text models; context windows aren't
         # reported (handled by the existing-catalogue fallback).
         url = ("https://bedrock.%s.amazonaws.com/foundation-models"
-               "?byOutputModality=TEXT" % bedrock_region(env))
+               "?byOutputModality=TEXT" % bedrock_region())
     else:
-        base_url = interpolate(inference.get("base_url", ""), env).rstrip("/")
+        base_url = interpolate(inference.get("base_url", "")).rstrip("/")
         url = base_url + "/models"
 
     headers = {"Accept": "application/json"}
@@ -189,17 +177,19 @@ def is_openai_chat_model(model_id):
     return any(mid.startswith(p) for p in OPENAI_CHAT_PREFIXES)
 
 
-def fetch_models(provider, env):
+def fetch_models(provider):
     method = primary_api_key_method(provider)
     if not method:
         return ("skip", "no API-key credential method defined", [])
 
-    env_var = method.get("env_var", "")
-    key = env.get(env_var, "")
+    account = method.get("keyring", "")
+    if not account:
+        account = method.get("env_var", "").lower().replace("_", "-")
+    key = read_secret(account)
     if not key:
-        return ("skip", "no key for %s in .env" % env_var, [])
+        return ("skip", "no daz-secrets account vix/%s" % account, [])
 
-    request, url = build_request(provider, key, env)
+    request, url = build_request(provider, key)
     try:
         with urllib.request.urlopen(request, timeout=30) as resp:
             body = resp.read().decode("utf-8", "replace")
@@ -339,7 +329,6 @@ def main():
         raw = fh.read()
     spec = json.loads(raw)
 
-    env = load_env_file(ENV_FILE)
     providers = spec.get("providers", [])
     existing_ctx = existing_context_windows(spec)
 
@@ -353,7 +342,7 @@ def main():
         print("%s (%s)" % (name, pid))
         print("=" * 60)
 
-        status, info, models = fetch_models(provider, env)
+        status, info, models = fetch_models(provider)
         if status == "ok":
             print("  endpoint: %s" % info)
             print("  %d models:" % len(models))

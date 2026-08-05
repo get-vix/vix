@@ -2,7 +2,8 @@
 # Build and run a throwaway container with vix installed on PATH.
 #
 # Usage:
-#   script/vix-docker.sh [VERSION] [--from-source] [--mount] [--force-gpg] [--env-file PATH] [--no-env]
+#   script/vix-docker.sh [VERSION] [--from-source] [--mount] [--force-gpg]
+#                        [--provider PATH --provider-id ID]
 #
 #   VERSION       Version of vix to install in release mode: "latest" (default),
 #                 "1.2.3", or "v1.2.3". Ignored with --from-source.
@@ -13,20 +14,18 @@
 #                 so you can test vix against real code.
 #   --force-gpg   Abort the install unless the GPG signature verifies.
 #                 (release mode only.)
-#   --env-file P  Seed /workspace/.env from P (default: <repo>/.env if present).
-#                 vix reads .env from its working dir, so the API key just works.
-#                 It's copied in, so you can `rm /workspace/.env` to drop it.
-#   --no-env      Don't seed any .env — you'll enter the key yourself.
+#   --provider P  Mount a Linux daz-secrets provider executable read-only.
+#   --provider-id I  Exact provider identity reported by that executable.
 #
 # Examples:
-#   script/vix-docker.sh                 # latest release, seeds <repo>/.env if present
+#   script/vix-docker.sh                 # latest release, no credential provider
 #   script/vix-docker.sh v1.2.3          # a specific released version
 #   script/vix-docker.sh latest --mount  # latest, with the cwd mounted in
 #   script/vix-docker.sh --from-source   # build from the working tree, then run
-#   script/vix-docker.sh --no-env        # no key baked in; enter it yourself
+#   script/vix-docker.sh --provider ./provider-linux-arm64 --provider-id example.provider
 #
 # Inside the container, just run `vix`. It auto-spawns the vixd daemon.
-# vix needs ANTHROPIC_API_KEY — this script forwards it from your environment.
+# Credentials stay behind the mounted daz-secrets provider process.
 
 set -euo pipefail
 
@@ -36,8 +35,8 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 VERSION="latest"
 MOUNT=false
 FORCE_GPG=false
-NO_ENV=false
-ENV_FILE=""
+PROVIDER_PATH=""
+PROVIDER_ID=""
 FROM_SOURCE=false
 
 while [ $# -gt 0 ]; do
@@ -45,8 +44,8 @@ while [ $# -gt 0 ]; do
     --from-source) FROM_SOURCE=true; shift ;;
     --mount)     MOUNT=true; shift ;;
     --force-gpg) FORCE_GPG=true; shift ;;
-    --no-env)    NO_ENV=true; shift ;;
-    --env-file)  ENV_FILE="${2:-}"; shift 2 ;;
+    --provider)  PROVIDER_PATH="${2:-}"; shift 2 ;;
+    --provider-id) PROVIDER_ID="${2:-}"; shift 2 ;;
     -h|--help)
       sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
@@ -60,15 +59,12 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# Resolve the .env to seed into /workspace. Default to the repo's .env when the
-# caller didn't pass --env-file and didn't opt out with --no-env.
-if [ "$NO_ENV" = true ]; then
-  ENV_FILE=""
-elif [ -z "$ENV_FILE" ] && [ -f "$ROOT_DIR/.env" ]; then
-  ENV_FILE="$ROOT_DIR/.env"
+if [ -n "$PROVIDER_PATH" ] && [ ! -x "$PROVIDER_PATH" ]; then
+  echo "Error: --provider must name an executable Linux provider: $PROVIDER_PATH" >&2
+  exit 1
 fi
-if [ -n "$ENV_FILE" ] && [ ! -f "$ENV_FILE" ]; then
-  echo "Error: --env-file path not found: $ENV_FILE" >&2
+if { [ -n "$PROVIDER_PATH" ] && [ -z "$PROVIDER_ID" ]; } || { [ -z "$PROVIDER_PATH" ] && [ -n "$PROVIDER_ID" ]; }; then
+  echo "Error: --provider and --provider-id must be supplied together" >&2
   exit 1
 fi
 
@@ -108,22 +104,22 @@ else
     "$ROOT_DIR"
 fi
 
-if [ -n "$ENV_FILE" ]; then
-  echo "==> Seeding /workspace/.env from $ENV_FILE (rm it inside the container to drop the key)"
-elif [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+RUN_ARGS=(--rm -it --platform "$PLATFORM")
+PROVIDER_CONFIG_DIR=""
+if [ -n "$PROVIDER_PATH" ]; then
+  PROVIDER_CONFIG_DIR="$(mktemp -d)"
+  trap 'rm -rf "$PROVIDER_CONFIG_DIR"' EXIT
+  printf 'version = 1\nprovider_path = "/run/daz-secrets/provider"\nprovider_id = "%s"\ntimeout_ms = 5000\n' "$PROVIDER_ID" > "$PROVIDER_CONFIG_DIR/provider.toml"
+  chmod 600 "$PROVIDER_CONFIG_DIR/provider.toml"
+  RUN_ARGS+=(-v "$PROVIDER_PATH:/run/daz-secrets/provider:ro")
+  RUN_ARGS+=(-v "$PROVIDER_CONFIG_DIR/provider.toml:/root/.config/daz-secrets/provider.toml:ro")
+  echo "==> Mounting daz-secrets provider $PROVIDER_ID"
+else
   echo ""
-  echo "!!  No .env to seed and ANTHROPIC_API_KEY is not set in your environment."
-  echo "    vix will start but can't reach the LLM until you provide a key. Either:"
-  echo "      export ANTHROPIC_API_KEY=sk-ant-...   # then re-run this script"
-  echo "      script/vix-docker.sh --env-file /path/to/.env"
-  echo "    or set it from inside the container shell."
+  echo "!!  No daz-secrets provider was supplied."
+  echo "    Vix will install and start, but credential-backed features fail closed."
+  echo "    Pass --provider and --provider-id to exercise real credentials."
   echo ""
-fi
-
-RUN_ARGS=(--rm -it --platform "$PLATFORM" -e ANTHROPIC_API_KEY)
-
-if [ -n "$ENV_FILE" ]; then
-  RUN_ARGS+=(-v "$ENV_FILE:/seed/.env:ro")
 fi
 
 if [ "$MOUNT" = true ]; then

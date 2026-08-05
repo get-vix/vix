@@ -858,6 +858,9 @@
     },
     "MCPServerSummary": {
       "properties": {
+        "auth": {
+          "type": "string"
+        },
         "enabled": {
           "type": "boolean"
         },

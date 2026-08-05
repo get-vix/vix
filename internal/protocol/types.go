@@ -9,11 +9,11 @@ import (
 
 // ThreadCommand is a message sent from client to daemon.
 //
-// AuthToken carries the shared-secret token the daemon was started with via
-// -auth-token-path. The daemon validates it on every message — both the
+// AuthToken carries the shared-secret token loaded from daz-secrets account
+// vix/daemon-auth-token. The daemon validates it on every message — both the
 // initial thread.start and every follow-up — and closes the connection on
-// mismatch. The auth check is OFF by default: when vixd is launched without
-// -auth-token-path the daemon-side token is empty, AuthToken is ignored,
+// mismatch. The auth check is OFF when that account is absent: the daemon-side
+// token is empty, AuthToken is ignored,
 // and any caller is accepted (legacy single-user-host behaviour). The
 // omitempty tag keeps the wire format clean in that mode.
 type ThreadCommand struct {

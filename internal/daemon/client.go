@@ -29,9 +29,8 @@ type Client struct {
 	socketPath string
 	// Shared-secret token injected on every outgoing request as the
 	// `auth_token` field. Set via SetAuthToken from cmd/vix/main.go after
-	// reading the token file pointed at by -auth-token-path. Empty when the
-	// daemon is also unauthenticated (the default when vixd was started
-	// without -auth-token-path, or in-process test embeddings).
+	// reading daz-secrets account vix/daemon-auth-token. Empty when the daemon
+	// is also unauthenticated or in-process test embeddings are used.
 	authToken string
 }
 
@@ -41,8 +40,7 @@ func NewClient(path string) *Client {
 }
 
 // SetAuthToken stores the shared-secret token used to authenticate every
-// request. Must be called before any RPC if the daemon was started with
-// -auth-token-path.
+// request. Must be called before any RPC when vix/daemon-auth-token exists.
 func (c *Client) SetAuthToken(token string) {
 	c.authToken = token
 }
@@ -504,8 +502,8 @@ type ThreadClient struct {
 	// thread_started event before the TUI's event loop can see it.
 	whiteboardBase string
 	// Shared-secret token stamped onto every outgoing ThreadCommand. Set
-	// via SetAuthToken before Connect; matches the daemon's
-	// -auth-token-path. Empty when the daemon side is also unauthenticated.
+	// via SetAuthToken before Connect; matches vix/daemon-auth-token. Empty
+	// when the daemon side is also unauthenticated.
 	authToken string
 	// Client build version stamped into ThreadStartData so the daemon can
 	// enforce the version gate. Defaults to the process-wide value set via
@@ -531,8 +529,8 @@ func NewThreadClient(socketPath string) *ThreadClient {
 }
 
 // SetAuthToken stores the shared-secret token used to authenticate every
-// ThreadCommand. Must be called before Connect if the daemon was started
-// with -auth-token-path.
+// ThreadCommand. Must be called before Connect when vix/daemon-auth-token
+// exists.
 func (sc *ThreadClient) SetAuthToken(token string) {
 	sc.authToken = token
 }

@@ -94,18 +94,17 @@ func withConfigVersion(s string) string {
 }
 
 type config struct {
-	env            map[string]string
-	settings       string   // raw settings.json content (optional)
-	providers      string   // raw providers.json content (optional)
-	denyPaths      []string // workdir-relative paths to add to deny_list (expanded to abs)
-	model          string   // thread model spec written to state.json (optional)
-	fixture        string   // dir copied into the workdir
-	homeFiles      []homeFile
-	workdirFiles   []homeFile
-	cols           int
-	rows           int
-	noDefaultCreds bool     // omit the default ANTHROPIC_*/OPENAI_* env (force .env resolution)
-	tuiArgs        []string // extra CLI flags appended to the `vix` TUI launch
+	env          map[string]string
+	settings     string   // raw settings.json content (optional)
+	providers    string   // raw providers.json content (optional)
+	denyPaths    []string // workdir-relative paths to add to deny_list (expanded to abs)
+	model        string   // thread model spec written to state.json (optional)
+	fixture      string   // dir copied into the workdir
+	homeFiles    []homeFile
+	workdirFiles []homeFile
+	cols         int
+	rows         int
+	tuiArgs      []string // extra CLI flags appended to the `vix` TUI launch
 }
 
 // homeFile seeds a file under the per-test HOME before vixd starts. Content
@@ -145,13 +144,6 @@ func WithSettings(json string) Option { return func(c *config) { c.settings = js
 
 // WithProviders writes raw JSON to ~/.vix/providers.json (custom wires/models).
 func WithProviders(json string) Option { return func(c *config) { c.providers = json } }
-
-// WithoutDefaultCreds omits the default ANTHROPIC_*/OPENAI_* API-key and
-// base-URL environment variables the harness normally injects, so a scenario can
-// prove credentials resolve from another source (a .env file, apiKeyHelper…).
-// The scenario is responsible for pointing the base URL at the mock (use the
-// {{MOCK_URL}} placeholder in a seeded .env), or every request fails offline.
-func WithoutDefaultCreds() Option { return func(c *config) { c.noDefaultCreds = true } }
 
 // WithDenyPath adds a workdir-relative path to the deny_list (expanded to an
 // absolute path under the per-test workdir) in the project-level .vix/settings.json.
@@ -211,15 +203,6 @@ func Start(t *testing.T, meta Meta, opts ...Option) *Harness {
 		meta.Wire = WireMessages
 	}
 	_, file, line, _ := runtime.Caller(1)
-	if meta.Wire == WireChatCompletions {
-		// Routing an http loopback mock through a cloud chat_completions provider
-		// trips vix's providers HTTPS validation, and the local-provider path
-		// forbids a credential. Pending a TLS mock or local-provider cred path.
-		// Record it as skipped (not vanished) in the report, then skip.
-		const reason = "e2e: chat_completions wire routing pending (needs TLS mock); see e2e/README.md"
-		writeSkipArtifact(t, meta, file, line, reason)
-		t.Skip(reason)
-	}
 	cfg := &config{env: map[string]string{}, cols: 120, rows: 40}
 	for _, o := range opts {
 		o(cfg)
@@ -322,6 +305,7 @@ func (h *Harness) buildEnv(cfg *config) {
 	h.workdir = filepath.Join(tmp, "work")
 	mustMkdir(t, filepath.Join(h.home, ".vix"))
 	mustMkdir(t, h.workdir)
+	mustWrite(t, filepath.Join(h.home, ".vix", "e2e-mock-ca.pem"), string(h.Mock.CACertificatePEM()))
 
 	logs := filepath.Join(tmp, "logs")
 	mustMkdir(t, logs)
@@ -356,9 +340,7 @@ func (h *Harness) buildEnv(cfg *config) {
 		})
 		mustWrite(t, filepath.Join(h.workdir, ".vix", "settings.json"), string(blob))
 	}
-	if cfg.providers != "" {
-		mustWrite(t, filepath.Join(h.home, ".vix", "providers.json"), cfg.providers)
-	}
+	mustWrite(t, filepath.Join(h.home, ".vix", "providers.json"), h.providerOverlay(cfg.providers))
 	if cfg.fixture != "" {
 		copyTree(t, cfg.fixture, h.workdir)
 	}
@@ -372,6 +354,31 @@ func (h *Harness) buildEnv(cfg *config) {
 	for _, wf := range cfg.workdirFiles {
 		mustWrite(t, filepath.Join(h.workdir, wf.rel), h.expandPlaceholders(wf.content))
 	}
+}
+
+// providerOverlay routes the built-in cloud wires to this test's real HTTPS
+// server while leaving credentials in the container's real daz-secrets
+// provider process. Any scenario-specific provider entries are retained.
+func (h *Harness) providerOverlay(custom string) string {
+	doc := map[string]any{"schema_version": 1, "providers": []any{}}
+	if custom != "" {
+		if err := json.Unmarshal([]byte(h.expandPlaceholders(custom)), &doc); err != nil {
+			h.t.Fatalf("e2e: parse providers overlay: %v", err)
+		}
+	}
+	providers, _ := doc["providers"].([]any)
+	for _, id := range []string{"anthropic", "openai", "minimax"} {
+		providers = append(providers, map[string]any{
+			"id":        id,
+			"inference": map[string]any{"base_url": h.Mock.BaseURL() + "/v1"},
+		})
+	}
+	doc["providers"] = providers
+	blob, err := json.Marshal(doc)
+	if err != nil {
+		h.t.Fatalf("e2e: encode providers overlay: %v", err)
+	}
+	return string(blob)
 }
 
 // expandPlaceholders substitutes the per-test {{WORKDIR}}, {{HOME}} and
@@ -393,19 +400,14 @@ func (h *Harness) daemonEnv(cfg *config, extra map[string]string) []string {
 			env[kv[:i]] = kv[i+1:]
 		}
 	}
-	// Isolation + redirection (override anything inherited).
+	// Isolation + redirection (override anything inherited). Credentials are
+	// supplied by the container's daz-secrets provider, never this environment.
 	env["HOME"] = h.home
-	if !cfg.noDefaultCreds {
-		env["ANTHROPIC_API_KEY"] = "test"
-		env["ANTHROPIC_BASE_URL"] = h.Mock.BaseURL()
-		env["OPENAI_API_KEY"] = "test"
-		env["OPENAI_BASE_URL"] = h.Mock.BaseURL()
-	} else {
-		// Force credential resolution through non-env sources (.env, apiKeyHelper).
-		delete(env, "ANTHROPIC_API_KEY")
-		delete(env, "ANTHROPIC_BASE_URL")
-		delete(env, "OPENAI_API_KEY")
-		delete(env, "OPENAI_BASE_URL")
+	// Trust only the harness TLS endpoint inside the isolated test process. The
+	// provider overlay still goes through production's HTTPS-only validation.
+	env["SSL_CERT_FILE"] = filepath.Join(h.home, ".vix", "e2e-mock-ca.pem")
+	for _, key := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY", "OPENAI_BASE_URL"} {
+		delete(env, key)
 	}
 	env["VIX_SOCKET_PATH"] = h.socket
 	env["VIX_NO_MISSION_CONTROL"] = "1"

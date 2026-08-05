@@ -9,11 +9,9 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
-	"github.com/get-vix/vix/internal/auth"
 	"github.com/get-vix/vix/internal/config"
 	"github.com/get-vix/vix/internal/daemon"
 	"github.com/get-vix/vix/internal/daemon/brain"
@@ -40,7 +38,6 @@ func main() {
 
 	logDir := flag.String("log-dir", "", "Directory for daemon log files (vix-thinking.log, vix-bash-history.log, vix-jobs/). Defaults to the system temp dir. Env: VIX_LOG_DIR.")
 	socketPathFlag := flag.String("socket-path", "", "Unix socket path for the vix↔vixd connection. Env: VIX_SOCKET_PATH. Default: "+defaultSocketPath+".")
-	authTokenPath := flag.String("auth-token-path", "", "Path to a file holding the shared-secret token required on every incoming socket message. Empty means no auth check (in-process tests / trusted-host runs only — production deployments must set this and put the file outside the agent's reachable path tree, e.g. on a Landlock-blocked location). Env: VIX_AUTH_TOKEN_PATH.")
 	webPort := flag.Int("web-port", 1337, "Port for the local web UI. 0 disables it. Env: VIX_WEB_PORT.")
 	noMissionControl := flag.Bool("no-mission-control", false, "Disable the mission-control web UI server. Env: VIX_NO_MISSION_CONTROL.")
 	pprofPort := flag.Int("pprof-port", 0, "Port for the pprof HTTP server (GET /debug/pprof/*). 0 disables it. Env: VIX_PPROF_PORT.")
@@ -60,9 +57,6 @@ func main() {
 		} else {
 			*socketPathFlag = defaultSocketPath
 		}
-	}
-	if *authTokenPath == "" {
-		*authTokenPath = os.Getenv("VIX_AUTH_TOKEN_PATH")
 	}
 	if v := os.Getenv("VIX_WEB_PORT"); v != "" {
 		if p, err := strconv.Atoi(v); err == nil {
@@ -115,33 +109,17 @@ func main() {
 		log.Printf("WARNING: Failed to load daemon config: %v", err)
 		daemonConfig = &config.DaemonConfig{}
 	}
-	// Load the shared-secret socket auth token, if requested. -auth-token-path
-	// is OPTIONAL: when unset, the daemon serves any caller that can connect
-	// (legacy / single-user-host behaviour). When set, every incoming socket
-	// message must carry a matching auth_token field. We fail-fast only on a
-	// misconfigured path (file missing or empty) — silently running with no
-	// auth despite the operator pointing at a file would defeat the purpose.
-	if *authTokenPath != "" {
-		raw, readErr := os.ReadFile(*authTokenPath)
-		if readErr != nil {
-			log.Fatalf("auth-token-path %q: %v", *authTokenPath, readErr)
-		}
-		token := strings.TrimSpace(string(raw))
-		if token == "" {
-			log.Fatalf("auth-token-path %q is empty after trimming whitespace", *authTokenPath)
-		}
+	// Socket authentication is optional for trusted single-user hosts. When the
+	// provider contains vix/daemon-auth-token, both client and daemon load the
+	// same value without a file, environment variable, argument, or prompt.
+	if token, ok := config.ResolveStoredSecret("daemon-auth-token"); ok {
 		daemonConfig.AuthToken = token
-		log.Printf("Socket auth: enabled (%d-byte token loaded from %s)", len(token), *authTokenPath)
+		log.Printf("Socket auth: enabled from secret provider")
 	} else {
-		log.Printf("Socket auth: not configured (no -auth-token-path) — daemon will accept any caller on %s", *socketPathFlag)
+		log.Printf("Socket auth: not configured — daemon will accept any caller on %s", *socketPathFlag)
 	}
 	telemetry.Init(telemetry.Config{Version: Version, Mode: "daemon", Enabled: config.TelemetryEnabled()})
 	defer telemetry.Shutdown()
-	// OAuth logins persist their token to the OS keychain, or to the plaintext,
-	// home-global auth.json (shared with API-key credentials) when the OS
-	// keychain is unusable (headless Linux/WSL/containers). The UI and logs
-	// surface that tokens then live unencrypted on disk.
-	auth.SetAuthFilePath(config.NewVixPaths("", config.HomeVixDir(), "").AuthFile())
 	// Top-level crash handler: capture the panic as a PostHog exception and
 	// flush synchronously (Shutdown is bounded by ShutdownTimeout) before the
 	// process dies, then re-panic to preserve Go's crash output and exit code.

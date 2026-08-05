@@ -166,8 +166,8 @@ in the daemon's `state → *mcp.AuthFlow` registry (`registerMCPAuthFlow` /
 (`mcp.Authorize`); pin its port with `redirect_port` and register
 `http://127.0.0.1:<port>/callback` instead.
 
-Tokens are stored through the vix credential store (OS keyring, `0600`
-`auth.json` fallback) under key `mcp-oauth-<server>` (`mcp_oauth.go`,
+Tokens are stored through the configured daz-secrets provider under account
+`mcp-oauth-<server>` and service `vix` (`mcp_oauth.go`,
 `mcpTokenStore`), refreshed automatically, and injected as `Authorization:
 Bearer`; a `401` triggers one refresh+retry (`client_http.go`). Consider
 deny-listing the credential file. The interactive flow is a one-time step —
@@ -433,7 +433,7 @@ The daemon nudges the model if it finishes a turn with pending/in-progress todos
 ## Environment
 
 - **Go 1.26+** required
-- **ANTHROPIC_API_KEY** environment variable or `.env` file for LLM access
+- A configured [daz-secrets](https://github.com/darrenoakey/daz-secrets) provider and at least one provider credential under service `vix`
 - **LSP servers** (optional): gopls, pylsp, typescript-language-server for code intelligence
 - **LSP config**: `.vix/settings.json` in project root
 

@@ -27,7 +27,7 @@ type loginDoneMsg struct {
 // oauthLoginID maps a UI provider column name to its auth-subsystem login id and
 // reports whether that provider supports interactive OAuth login. The mapping
 // lives in the config layer (derived from the provider auth methods) so the UI
-// and credential-status helpers agree on which keychain entry holds the token.
+// and credential-status helpers agree on which provider account holds the token.
 func oauthLoginID(uiProvider string) (string, bool) {
 	id := config.OAuthLoginID(uiProvider)
 	return id, id != ""
@@ -41,9 +41,8 @@ func ProviderSupportsLogin(uiProvider string) bool {
 
 // startProviderLogin runs the OAuth login flow for a UI provider in the
 // background, pushing status updates to the program. On success the credential
-// is stored by the auth subsystem (OS keychain, or the plaintext auth.json when
-// the OS keychain is unusable). It returns a tea.Cmd so any immediate error
-// is delivered through the Bubble Tea event loop; emitting it synchronously via
+// is stored by the auth subsystem through daz-secrets. It returns a tea.Cmd so
+// any immediate error is delivered through the Bubble Tea event loop; emitting it synchronously via
 // sendToProgram from within Update would deadlock Program.Send (issue #53).
 func startProviderLogin(uiProvider string) tea.Cmd {
 	loginID, ok := oauthLoginID(uiProvider)

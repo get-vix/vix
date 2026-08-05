@@ -73,19 +73,8 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# Load DISCORD_WEBHOOK_URL from .env if not already set. Release must have a webhook.
-if [[ -z "${DISCORD_WEBHOOK_URL:-}" ]]; then
-  ENV_FILE="$ROOT_DIR/.env"
-  if [[ -f "$ENV_FILE" ]]; then
-    DISCORD_WEBHOOK_URL="$(grep '^DISCORD_WEBHOOK_URL=' "$ENV_FILE" | head -n1 | cut -d= -f2-)"
-    export DISCORD_WEBHOOK_URL
-  fi
-fi
-
-if [[ -z "${DISCORD_WEBHOOK_URL:-}" ]]; then
-  echo "!! DISCORD_WEBHOOK_URL is not set. Configure it in your environment or in .env before releasing."
-  exit 1
-fi
+# publish.sh reads the release webhook directly from daz-secrets account
+# vix-release/discord-webhook-url. It is never exported or read from dotenv.
 
 # --- Optionally refresh the provider/model catalogue ---
 echo "==> Refresh the provider model list (script/fetch_models.py)?"

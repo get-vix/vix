@@ -51,10 +51,11 @@ func (g *graph) drawEdge(e *edge) (*drawing, *drawing, *drawing, *drawing, *draw
 
 func (d *drawing) drawText(start drawingCoord, text string) {
 	// Increase dimensions if necessary.
-	d.increaseSize(start.x+len(text), start.y)
-	log.Debug("Drawing '", text, "' from ", start, " to ", drawingCoord{x: start.x + len(text), y: start.y})
-	for x := 0; x < len(text); x++ {
-		(*d)[x+start.x][start.y] = string(text[x])
+	cells := displayCells(text)
+	d.increaseSize(start.x+len(cells), start.y)
+	log.Debug("Drawing '", text, "' from ", start, " to ", drawingCoord{x: start.x + len(cells), y: start.y})
+	for x, cell := range cells {
+		(*d)[x+start.x][start.y] = cell
 	}
 }
 
@@ -208,9 +209,10 @@ func drawNodeText(d *drawing, n *node, g graph, w, h int) {
 	startY := h/2 - (numLines-1)/2
 	for i, line := range lines {
 		textY := startY + i
-		textX := w/2 - CeilDiv(len(line), 2) + 1
-		for x := 0; x < len(line); x++ {
-			(*d)[textX+x][textY] = wrapTextInColor(string(line[x]), n.styleClass.styles["color"], g.styleType)
+		cells := displayCells(line)
+		textX := w/2 - CeilDiv(len(cells), 2) + 1
+		for x, cell := range cells {
+			(*d)[textX+x][textY] = wrapTextInColor(cell, n.styleClass.styles["color"], g.styleType)
 		}
 	}
 }
@@ -684,13 +686,13 @@ func drawSubgraphLabel(sg *subgraph, g graph) (*drawing, drawingCoord) {
 
 	// Draw label centered at top
 	labelY := from.y + 1
-	labelX := from.x + width/2 - len(sg.name)/2
+	labelX := from.x + width/2 - displayWidth(sg.name)/2
 	if labelX < from.x+1 {
 		labelX = from.x + 1
 	}
-	for i, char := range sg.name {
+	for i, cell := range displayCells(sg.name) {
 		if labelX+i < to.x {
-			labelDrawing[labelX+i][labelY] = string(char)
+			labelDrawing[labelX+i][labelY] = cell
 		}
 	}
 

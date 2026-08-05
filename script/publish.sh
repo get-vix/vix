@@ -289,8 +289,9 @@ RELEASE_URL="https://github.com/${REPO}/releases/tag/${VERSION}"
 echo ""
 echo "==> Release published: $RELEASE_URL"
 
-# Announce on Discord
-DISCORD_WEBHOOK_URL="${DISCORD_WEBHOOK_URL:-}"
+# Announce on Discord. The webhook remains in shell/Python memory and crosses
+# the process boundary only through stdin; it never enters argv or env.
+DISCORD_WEBHOOK_URL="$(daz-secrets get vix-release discord-webhook-url 2>/dev/null || true)"
 if [[ -n "$DISCORD_WEBHOOK_URL" ]]; then
   echo "==> Announcing $VERSION on Discord..."
   DISCORD_MSG="**vix ${VERSION}** is out! ${RELEASE_URL}
@@ -306,8 +307,7 @@ ${CHANGELOG}"
     DISCORD_BUDGET=$(( DISCORD_LIMIT - ${#DISCORD_SUFFIX} ))
     DISCORD_MSG="${DISCORD_MSG:0:DISCORD_BUDGET}${DISCORD_SUFFIX}"
   fi
-  DISCORD_PAYLOAD=$(CONTENT="$DISCORD_MSG" python3 -c 'import json, os; print(json.dumps({"content": os.environ["CONTENT"]}))')
-  if curl -fsS -X POST -H "Content-Type: application/json" -d "$DISCORD_PAYLOAD" "$DISCORD_WEBHOOK_URL" >/dev/null; then
+  if printf '%s\0%s' "$DISCORD_WEBHOOK_URL" "$DISCORD_MSG" | python3 -c 'import json,sys,urllib.request; url,msg=sys.stdin.buffer.read().split(b"\0",1); req=urllib.request.Request(url.decode(), data=json.dumps({"content":msg.decode()}).encode(), headers={"Content-Type":"application/json"}, method="POST"); urllib.request.urlopen(req, timeout=30).read()' >/dev/null; then
     echo "==> Discord announcement sent."
   else
     echo "!! Failed to post to Discord (release still published)."

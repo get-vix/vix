@@ -232,15 +232,20 @@ func TestCheckDenyList_UnknownTool(t *testing.T) {
 	}
 }
 
-// Bash table: best-effort path-like token scan. A token is only a path
-// when it contains '/'. Bare words (prose or identifiers) are not paths.
+// Bash table: best-effort path-like token scan. Bare tokens match only an
+// exact deny entry that is a regular file; denied directory names in prose do
+// not count as paths.
 func TestCheckDenyList_Bash_Table(t *testing.T) {
 	root := testRoot(t)
 	secrets := filepath.Join(root, "secrets")
 	safe := filepath.Join(root, "safe")
 	os.MkdirAll(secrets, 0o755)
 	os.MkdirAll(safe, 0o755)
-	deny := []string{secrets}
+	secretFile := filepath.Join(root, "secret.txt")
+	if err := os.WriteFile(secretFile, []byte("classified"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deny := []string{secrets, secretFile}
 
 	cases := []struct {
 		name    string
@@ -251,6 +256,7 @@ func TestCheckDenyList_Bash_Table(t *testing.T) {
 		{"absolute path", "cat " + filepath.Join(secrets, "api.txt"), true},
 		{"dot-relative", "cat ./secrets/api.txt", true},
 		{"bare relative", "cat secrets/api.txt", true},
+		{"bare denied file", "cat secret.txt", true},
 		{"dotdot-relative", "cat ../" + filepath.Base(root) + "/secrets/api.txt", true},
 		{"ls dir", "ls -la " + secrets, true},
 		{"grep into dir", "grep foo " + secrets + "/", true},

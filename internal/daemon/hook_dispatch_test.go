@@ -90,6 +90,11 @@ func TestAnnounceStart_SourceClassification(t *testing.T) {
 			if _, err := os.Stat(filepath.Join(cwd, tc.want)); err != nil {
 				t.Fatalf("expected %s (the %q hook should have fired)", tc.want, strings.TrimSuffix(tc.want, ".flag"))
 			}
+			// The marker is written before the async runner persists its final
+			// state. Wait for that terminal record so TempDir cleanup cannot race
+			// a still-running state.json write.
+			matchedID := strings.TrimSuffix(tc.want, ".flag")
+			waitForFileContains(t, filepath.Join(hd, matchedID, "state.json"), `"status": "done"`)
 			// The other source's hook started concurrently; by now its marker
 			// would exist too if it had wrongly matched.
 			if _, err := os.Stat(filepath.Join(cwd, tc.absent)); err == nil {

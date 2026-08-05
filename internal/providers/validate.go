@@ -162,7 +162,7 @@ func validateProvider(p ProviderSpec, interp func(string) string) error {
 		switch m.Kind {
 		case CredAPIKey:
 			if m.EnvVar == "" && m.Keyring == "" {
-				return fmt.Errorf("provider %q credential[%d]: api_key needs env_var or keyring", p.ID, i)
+				return fmt.Errorf("provider %q credential[%d]: api_key needs a provider account name", p.ID, i)
 			}
 		case CredOAuthMintKey, CredOAuthToken:
 			if m.LoginID == "" {
@@ -170,11 +170,11 @@ func validateProvider(p ProviderSpec, interp func(string) string) error {
 			}
 		case CredNone:
 			if m.EnvVar != "" || m.Keyring != "" || m.LoginID != "" {
-				return fmt.Errorf("provider %q credential[%d]: none must not set env_var, keyring or login_id", p.ID, i)
+				return fmt.Errorf("provider %q credential[%d]: none must not set credential account metadata or login_id", p.ID, i)
 			}
 		}
 		if m.RequiresBaseURL && m.Keyring == "" {
-			return fmt.Errorf("provider %q credential[%d]: requires_base_url needs keyring to store the endpoint", p.ID, i)
+			return fmt.Errorf("provider %q credential[%d]: requires_base_url needs a provider account to store the endpoint", p.ID, i)
 		}
 		if m.BaseURL != "" {
 			if err := checkURL(interp(m.BaseURL), httpRequireHTTPS); err != nil {

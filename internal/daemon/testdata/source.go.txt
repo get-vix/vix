@@ -1,0 +1,270 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"math/rand"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+) // init function
+var startTime time.Time
+
+func init() { startTime = time.Now() } // Const block with typed constants (iota enums)
+type Priority int
+
+const (
+	Low Priority = iota
+	Medium
+	High
+	Critical
+)
+
+func (p Priority) String() string { return [...]string{"Low", "Medium", "High", "Critical"}[p] }
+
+type Status int
+
+const (
+	Pending Status = iota
+	Running
+	Done
+	Failed
+)
+
+func (s Status) String() string { return [...]string{"Pending", "Running", "Done", "Failed"}[s] } // Generics: type constraint + generic function + generic type
+type Numeric interface{ ~int | ~int64 | ~float64 }
+
+func Max[T Numeric](a, b T) T {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+type Pair[K comparable, V any] struct {
+	Key   K
+	Value V
+}
+
+func NewPair[K comparable, V any](k K, v V) Pair[K, V] { return Pair[K, V]{k, v} } // Interface with embedding (composed interfaces)
+type Describable interface{ Describe() string }
+type Runnable interface {
+	Run(ctx context.Context) error
+}
+type Job interface {
+	Describable
+	Runnable
+} // Struct embedding
+type BaseTask struct {
+	ID   int
+	Name string
+}
+
+func (b BaseTask) Describe() string { return fmt.Sprintf("task#%d[%s]", b.ID, b.Name) }
+
+type Task struct {
+	BaseTask
+	Priority Priority
+	Status   Status
+	Result   string
+	Err      error
+} // Value receiver: reads only
+func (t Task) Summary() string {
+	return fmt.Sprintf("%s pri=%s status=%s", t.Describe(), t.Priority, t.Status)
+}                                      // Pointer receivers: mutate
+func (t *Task) MarkDone(result string) { t.Status = Done; t.Result = result }
+func (t *Task) MarkFailed(err error)   { t.Status = Failed; t.Err = err } // Named return values
+func parseTask(raw string) (task Task, err error) {
+	if raw == "" {
+		err = errors.New("empty task descriptor")
+		return
+	}
+	task = Task{BaseTask: BaseTask{Name: raw}, Priority: Medium, Status: Pending}
+	return
+} // Multiple return values with (value, error) pattern
+var ErrTaskFailed = errors.New("task processing failed")
+
+func processTask(t Task) (Task, error) {
+	delay := time.Duration(rand.Intn(50)+10) * time.Millisecond
+	time.Sleep(delay)
+	if rand.Intn(5) < 1 {
+		wrapped := fmt.Errorf("%w: task %d timed out", ErrTaskFailed, t.ID)
+		t.MarkFailed(wrapped)
+		return t, wrapped
+	}
+	t.MarkDone(fmt.Sprintf("completed in %s [priority=%s]", delay.Round(time.Millisecond), t.Priority))
+	return t, nil
+} /*
+WorkerPool manages a fixed set of goroutines that pull tasks from
+a shared channel and write results back to a collector channel.
+*/
+type WorkerPool struct {
+	concurrency int
+	jobs        chan Task
+	results     chan Task
+	wg          sync.WaitGroup
+}
+
+func NewWorkerPool(concurrency int) *WorkerPool {
+	return &WorkerPool{concurrency: concurrency, jobs: make(chan Task, 100), results: make(chan Task, 100),}
+} // Select with default case + range over channel + defer + blank identifier
+func (wp *WorkerPool) Start(ctx context.Context) {
+	for i := 0; i < wp.concurrency; i++ {
+		wp.wg.Add(1)
+		go func(workerID int) {
+			defer wp.wg.Done()
+			for {
+				select {
+				case task, ok := <-wp.jobs:
+					if !ok {
+						return
+					}
+					task.Status = Running
+					result, _ := processTask(task) // blank identifier
+					wp.results <- result
+				case <-ctx.Done():
+					return
+				default:
+					time.Sleep(time.Millisecond)
+				}
+			}
+		}(i)
+	}
+}
+func (wp *WorkerPool) Submit(t Task) { wp.jobs <- t }
+func (wp *WorkerPool) Close()        { close(wp.jobs); wp.wg.Wait(); close(wp.results) } // Scheduler with Mutex, defer, sort, slice append
+type Scheduler struct {
+	pool  *WorkerPool
+	tasks []Task
+	mu    sync.Mutex
+}
+
+func NewScheduler(pool *WorkerPool) *Scheduler { return &Scheduler{pool: pool} }
+func (s *Scheduler) Enqueue(t Task)            { s.mu.Lock(); defer s.mu.Unlock(); s.tasks = append(s.tasks, t) }
+func (s *Scheduler) Flush() {
+	s.mu.Lock()
+	sort.Slice(s.tasks, func(i, j int) bool { return s.tasks[i].Priority > s.tasks[j].Priority })
+	tasks := s.tasks
+	s.tasks = nil
+	s.mu.Unlock()
+	for _, t := range tasks {
+		// range over slice
+		s.pool.Submit(t)
+	}
+} // Maps: creation, iteration, deletion
+func buildRegistryMap(tasks []Task) map[int]Task {
+	registry := make(map[int]Task, len(tasks))
+	for _, t := range tasks {
+		registry[t.ID] = t
+	}
+	delete(registry, 0)
+	for id, t := range registry {
+		// range over map
+		_ = id
+		_ = t
+	}
+	return registry
+} // strings.Builder usage
+func formatReport(report Report) string {
+	var sb strings.Builder
+	sb.WriteString("=== Task Report ===\n")
+	fmt.Fprintf(&sb, "Total: %d | Success: %d | Failed: %d\n", report.Total, report.Success, report.Failure)
+	for _, t := range report.Tasks {
+		if t.Status == Done {
+			fmt.Fprintf(&sb, "  [%2d] %-18s %-8s OK  %s\n", t.ID, t.Name, t.Priority, t.Result)
+		} else {
+			fmt.Fprintf(&sb, "  [%2d] %-18s %-8s ERR %v\n", t.ID, t.Name, t.Priority, t.Err)
+		}
+	}
+	return sb.String()
+} // Type assertions and type switches
+func describeValue(v interface{}) string {
+	switch val := v.(type) {
+	case Job:
+		return "Job: " + val.Describe()
+	case string:
+		return "string: " + val
+	case int:
+		return fmt.Sprintf("int: %d", val)
+	case error:
+		return "error: " + val.Error()
+	default:
+		return fmt.Sprintf("unknown: %T", val)
+	}
+}                             // Function as first-class value / closures
+func makeCounter() func() int { n := 0; return func() int { n++; return n } } // Panic and recover with deferred recovery
+func safeDivide(a, b int) (result int, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("recovered panic: %v", r)
+		}
+	}()
+	return a / b, nil
+} // Defer for cleanup on channel
+func withTempChannel() <-chan int {
+	ch := make(chan int, 1)
+	go func() { defer close(ch); ch <- 42 }()
+	return ch
+} // Result collector (range over channel)
+type Report struct {
+	Total, Success, Failure int
+	Tasks                   []Task
+}
+
+func collectResults(results <-chan Task, expected int) Report {
+	var report Report
+	for task := range results {
+		report.Tasks = append(report.Tasks, task)
+		report.Total++
+		if task.Status == Done {
+			report.Success++
+		} else {
+			report.Failure++
+		}
+		if report.Total == expected {
+			break
+		}
+	}
+	return report
+}
+func main() {
+	rand.Seed(time.Now().UnixNano()) //nolint:staticcheck
+	// Generics
+	fmt.Println("max(3,7) =", Max(3, 7))
+	fmt.Println("max(2.5,1.1) =", Max(2.5, 1.1))
+	p := NewPair("build", 42)
+	fmt.Printf("pair: %s=%d\n", p.Key, p.Value) // Closure
+	counter := makeCounter()
+	fmt.Println("counter:", counter(), counter(), counter()) // Panic/recover
+	_, err := safeDivide(10, 0)
+	fmt.Println("safe divide by zero:", err) // Type switch
+	fmt.Println(describeValue("hello"))
+	fmt.Println(describeValue(99))
+	fmt.Println(describeValue(errors.New("oops"))) // Named return values
+	if _, err := parseTask(""); err != nil {
+		fmt.Println("parse empty:", err)
+	} // Deferred close channel
+	fmt.Println("temp channel:", <-withTempChannel()) // Slice literals
+	const numTasks, workers = 12, 4
+	taskNames := []string{"migrate-db", "send-email", "resize-image", "generate-report", "sync-files", "clear-cache", "backup-data", "index-search", "compile-assets", "run-tests", "deploy-service", "notify-user",}
+	priorities := []Priority{Low, Medium, High, Critical}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pool := NewWorkerPool(workers)
+	pool.Start(ctx)
+	scheduler := NewScheduler(pool)
+	for i := 0; i < numTasks; i++ {
+		scheduler.Enqueue(Task{BaseTask: BaseTask{ID: i + 1, Name: taskNames[i]}, Priority: priorities[rand.Intn(len(priorities))], Status: Pending,})
+	}
+	scheduler.Flush()
+	_ = buildRegistryMap(scheduler.tasks) // map usage
+	done := make(chan Report, 1)
+	go func() { done <- collectResults(pool.results, numTasks) }()
+	pool.Close()
+	report := <-done
+	sort.Slice(report.Tasks, func(i, j int) bool { return report.Tasks[i].ID < report.Tasks[j].ID })
+	fmt.Print(formatReport(report))
+	fmt.Printf("elapsed: %s\n", time.Since(startTime).Round(time.Millisecond))
+}

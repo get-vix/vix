@@ -25,9 +25,7 @@ func activateOAuthCreateToken(h *harness.Harness) bool {
 		h.UI.Key("enter")
 		h.UI.WaitStable(300 * time.Millisecond)
 		s := h.UI.Snapshot()
-		if strings.Contains(s, "plaintext auth.json") ||
-			strings.Contains(s, "Opened your browser") ||
-			strings.Contains(s, "keychain") ||
+		if strings.Contains(s, "Opened your browser") ||
 			strings.Contains(s, "Login failed") ||
 			strings.Contains(s, "login…") {
 			return true
@@ -41,46 +39,34 @@ func activateOAuthCreateToken(h *harness.Harness) bool {
 	return false
 }
 
-// TestOAuthLoginWithoutKeychainFallsBackToPlaintext is the live regression for
-// issues #53 and #56. On a machine with no usable OS keychain:
+// TestOAuthLoginWithDazSecretsKeepsTUILive is the live regression for issues
+// #53 and #56 with the provider-only credential architecture:
 //
 //   - #53: activating an OAuth "Create token" must NOT deadlock the TUI. The
 //     login result travels through the Bubble Tea event loop (a tea.Cmd), never
 //     emitted synchronously via Program.Send from inside Model.Update.
-//   - #56: the login must NOT be refused with "OS keychain unavailable". OAuth
-//     tokens now fall back to the plaintext auth.json automatically — no opt-in
-//     flag — so the flow proceeds past the storage gate to the browser step,
-//     surfacing the "token will be stored in plaintext auth.json" disclosure.
-//
-// This scenario only runs where no keychain exists (the offline e2e container);
-// on a developer machine with a keychain it skips, since activating the button
-// there would start a real browser OAuth flow.
-func TestOAuthLoginWithoutKeychainFallsBackToPlaintext(t *testing.T) {
+//   - #56: the login proceeds to the browser when the configured daz-secrets
+//     provider is available, without an OS credential-store probe or prompt.
+func TestOAuthLoginWithDazSecretsKeepsTUILive(t *testing.T) {
 	meta := harness.Meta{
 		Category:    "regressions",
-		Subcategory: "models.oauth_plaintext_fallback",
-		Description: "without a keychain, OAuth login falls back to plaintext auth.json instead of being refused, and the TUI stays live (#53, #56)",
+		Subcategory: "models.oauth_daz_secrets",
+		Description: "OAuth login uses daz-secrets without an OS credential-store prompt and the TUI stays live (#53, #56)",
 		Wire:        harness.WireMessages,
 	}
 	h := harness.Start(t, meta)
 	h.UI.WaitStable(400 * time.Millisecond)
 
-	if !strings.Contains(h.Daemon.LogTail(400), "OS keyring unavailable") {
-		t.Skip("requires an environment without an OS keychain (the e2e container); a keychain is present here")
-	}
-
 	if !activateOAuthCreateToken(h) {
 		t.Fatalf("could not reach an OAuth Create token button; screen:\n%s", h.UI.Snapshot())
 	}
 
-	// #56: the login proceeds past the storage gate to the browser step instead
-	// of being refused. Before the fix (opt-in fallback off by default), keyless
-	// activation immediately reported the "OS keychain unavailable" error.
+	// #56: the login proceeds past the provider handshake to the browser step.
 	h.UI.WaitFor("Opened your browser")
-	if s := h.UI.Snapshot(); strings.Contains(s, "keychain unavailable") || strings.Contains(s, "OS keychain") {
-		t.Fatalf("login was refused for lack of a keychain; automatic fallback did not engage:\n%s", s)
+	if s := h.UI.Snapshot(); strings.Contains(strings.ToLower(s), "keychain") || strings.Contains(s, "auth.json") {
+		t.Fatalf("login surfaced a forbidden legacy credential backend:\n%s", s)
 	}
-	h.UI.Shot("oauth-plaintext-fallback")
+	h.UI.Shot("oauth-daz-secrets")
 
 	// #53: decisive liveness proof — the TUI still responds. Switch back to chat
 	// and run a full turn against the mock. If the loop were deadlocked this

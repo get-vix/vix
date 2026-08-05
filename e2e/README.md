@@ -46,8 +46,9 @@ Output lands in `e2e/out/`:
 - **Host isolation:** the container is the boundary. Each test gets its own
   `HOME`, workdir, socket, `vixd`, `vix` (in a tmux session), and mock server;
   nothing touches your machine. `--network none` guarantees no real provider is
-  ever contacted (a fake API key + `ANTHROPIC_BASE_URL` point at the in-process
-  mock).
+  ever contacted. A real daz-secrets conformance provider supplies test-only
+  credentials, and a per-test trusted TLS certificate routes the provider
+  registry at the in-process mock.
 - **TUI driver — tmux:** the harness drives the real `vix` TUI inside a
   per-test, isolated **tmux** server/session (`send-keys` for input,
   `capture-pane` for the rendered screen). tmux is a complete, faithful terminal
@@ -136,13 +137,10 @@ runs):
 - `sandbox.mode` — a real sandbox backend is enforced for bash.
 - `sandbox.deny_list` — a protected file's contents never reach the model.
 
-Wire dialects: Anthropic **Messages** and OpenAI **Responses** run live (routed
-at the mock via `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL`); both SSE renderers are
-confirmed against the real SDKs. **Chat Completions** is implemented (renderer +
-extractor, unit-tested) but its scenario currently **skips**: routing an
-`http://` loopback mock through a cloud provider trips vix's providers-config
-HTTPS validation. It needs a TLS mock (or a local-provider credential path) to
-run live — see `harness.WireOptions`. Bedrock is intentionally out of scope.
+Wire dialects: Anthropic **Messages**, OpenAI **Responses**, and generic **Chat
+Completions** run live through the production adapters against the per-test TLS
+mock. This verifies all three SSE renderers without weakening provider URL
+validation or contacting the network. Bedrock is intentionally out of scope.
 
 The wire codecs (SSE renderers + per-wire request extractors) have unit tests
 that run with a plain `go test ./harness` — no container needed.
@@ -165,7 +163,8 @@ Scenarios in the suite, by area (subcategory IDs match `harness.Meta`):
   multi-delta streaming (`TextChunks`), thinking/reasoning blocks (`Thinking`),
   usage override (`WithUsage`), typed provider errors (`HTTPError`), daemon
   restart (`Daemon.Restart`), slash commands (`UI.Slash`), file/env seeding
-  (`WithWorkdirFile`, `WithHomeFile`, `{{MOCK_URL}}`, `WithoutDefaultCreds`), and
+  (`WithWorkdirFile`, `WithHomeFile`, `{{MOCK_URL}}`), a real daz-secrets
+  provider process seeded only with non-production test values, and
   local-provider discovery endpoints on the mock.
 - **Files & search** — `files.write`, `files.read` (+offset/limit),
   `files.read_minified`, `files.edit` (+non-unique), `files.edit_minified`,
@@ -174,14 +173,13 @@ Scenarios in the suite, by area (subcategory IDs match `harness.Meta`):
   `sandbox.deny_paths`, `sandbox.deny_urls`, `sandbox.search_filter`,
   `sandbox.home_subpath`, `sandbox.bash_tokens`.
 - **Skills** — `skills.implicit`, `skills.explicit`, `skills.override`.
-- **Wires** — `wires.write` (Messages + Responses matrix),
+- **Wires** — `wires.write` (Messages + Responses + Chat Completions matrix),
   `wires.streaming_continuation` (#34).
 - **Session & context** — `session.persistence` (#22),
   `context.auto_compact` (#19), `context.manual` (`/clear`).
-- **Auth & credentials** — `models.oauth_plaintext_fallback` (#53, #56): without
-  a usable OS keychain, activating an OAuth "Create token" does not freeze the
-  TUI and is not refused — the token falls back to the plaintext `auth.json`
-  automatically and the flow proceeds (skips where a keychain is present).
+- **Auth & credentials** — `models.oauth_daz_secrets` (#53, #56): activating an
+  OAuth "Create token" through the real daz-secrets process does not freeze the
+  TUI and never probes an OS credential store or plaintext token file.
 - **Streaming & resilience** — `stream.chunks`, `stream.thinking`,
   `stream.retry` (retryable status matrix), `stream.error` (fail-fast matrix).
 - **Validation** — `tools.validation` (#21).

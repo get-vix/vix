@@ -391,7 +391,7 @@ func (g *graph) drawCorners(path []gridCoord) *drawing {
 
 func (g *graph) drawArrowLabel(e *edge) *drawing {
 	d := copyCanvas(g.drawing)
-	lenLabel := len(e.text)
+	lenLabel := displayWidth(e.text)
 	if lenLabel == 0 {
 		return d
 	}
@@ -424,7 +424,7 @@ func (d *drawing) drawTextOnLine(line []drawingCoord, label string) {
 	}
 	middleX := minX + (maxX-minX)/2
 	middleY := minY + (maxY-minY)/2
-	startX := middleX - len(label)/2
+	startX := middleX - displayWidth(label)/2
 	if startX < 0 {
 		startX = 0
 	}

@@ -1,0 +1,15 @@
+.git
+.gitmodules
+apps/vix-mac/.build
+bin/*
+!bin/vix-linux-amd64
+!bin/vix-linux-arm64
+!bin/vixd-linux-amd64
+!bin/vixd-linux-arm64
+e2e/bin/*
+!e2e/bin/e2e.test
+!e2e/bin/report
+!e2e/bin/daz-secrets
+!e2e/bin/vix-e2e-secrets--ok
+e2e/out
+perf/results

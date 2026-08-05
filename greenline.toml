@@ -13,10 +13,10 @@ check = "./run check"
 deploy = "./run deploy"
 
 # Optional health-only probe. Empty = re-run `deploy` as the health probe.
-health = ""
+health = "./run health"
 
 # Informational: the auto/service name this repo deploys.
-service = "vix"
+service = "vix-cli"
 
 # Persistent worktree base for this repo (gate lives at <base>/gate).
 worktree_base = "/Volumes/Gumby/worktrees/greenline/vix"

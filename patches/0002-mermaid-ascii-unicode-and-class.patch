@@ -1,0 +1,329 @@
+diff --git a/vendor/github.com/pgavlin/mermaid-ascii/pkg/graph/arrow.go b/vendor/github.com/pgavlin/mermaid-ascii/pkg/graph/arrow.go
+index 23848d9..ed77088 100644
+--- a/vendor/github.com/pgavlin/mermaid-ascii/pkg/graph/arrow.go
++++ b/vendor/github.com/pgavlin/mermaid-ascii/pkg/graph/arrow.go
+@@ -391,7 +391,7 @@ func (g *graph) drawCorners(path []gridCoord) *drawing {
+ 
+ func (g *graph) drawArrowLabel(e *edge) *drawing {
+ 	d := copyCanvas(g.drawing)
+-	lenLabel := len(e.text)
++	lenLabel := displayWidth(e.text)
+ 	if lenLabel == 0 {
+ 		return d
+ 	}
+@@ -424,7 +424,7 @@ func (d *drawing) drawTextOnLine(line []drawingCoord, label string) {
+ 	}
+ 	middleX := minX + (maxX-minX)/2
+ 	middleY := minY + (maxY-minY)/2
+-	startX := middleX - len(label)/2
++	startX := middleX - displayWidth(label)/2
+ 	if startX < 0 {
+ 		startX = 0
+ 	}
+diff --git a/vendor/github.com/pgavlin/mermaid-ascii/pkg/graph/draw.go b/vendor/github.com/pgavlin/mermaid-ascii/pkg/graph/draw.go
+index a66038a..1eac8c0 100644
+--- a/vendor/github.com/pgavlin/mermaid-ascii/pkg/graph/draw.go
++++ b/vendor/github.com/pgavlin/mermaid-ascii/pkg/graph/draw.go
+@@ -51,10 +51,11 @@ func (g *graph) drawEdge(e *edge) (*drawing, *drawing, *drawing, *drawing, *draw
+ 
+ func (d *drawing) drawText(start drawingCoord, text string) {
+ 	// Increase dimensions if necessary.
+-	d.increaseSize(start.x+len(text), start.y)
+-	log.Debug("Drawing '", text, "' from ", start, " to ", drawingCoord{x: start.x + len(text), y: start.y})
+-	for x := 0; x < len(text); x++ {
+-		(*d)[x+start.x][start.y] = string(text[x])
++	cells := displayCells(text)
++	d.increaseSize(start.x+len(cells), start.y)
++	log.Debug("Drawing '", text, "' from ", start, " to ", drawingCoord{x: start.x + len(cells), y: start.y})
++	for x, cell := range cells {
++		(*d)[x+start.x][start.y] = cell
+ 	}
+ }
+ 
+@@ -208,9 +209,10 @@ func drawNodeText(d *drawing, n *node, g graph, w, h int) {
+ 	startY := h/2 - (numLines-1)/2
+ 	for i, line := range lines {
+ 		textY := startY + i
+-		textX := w/2 - CeilDiv(len(line), 2) + 1
+-		for x := 0; x < len(line); x++ {
+-			(*d)[textX+x][textY] = wrapTextInColor(string(line[x]), n.styleClass.styles["color"], g.styleType)
++		cells := displayCells(line)
++		textX := w/2 - CeilDiv(len(cells), 2) + 1
++		for x, cell := range cells {
++			(*d)[textX+x][textY] = wrapTextInColor(cell, n.styleClass.styles["color"], g.styleType)
+ 		}
+ 	}
+ }
+@@ -684,13 +686,13 @@ func drawSubgraphLabel(sg *subgraph, g graph) (*drawing, drawingCoord) {
+ 
+ 	// Draw label centered at top
+ 	labelY := from.y + 1
+-	labelX := from.x + width/2 - len(sg.name)/2
++	labelX := from.x + width/2 - displayWidth(sg.name)/2
+ 	if labelX < from.x+1 {
+ 		labelX = from.x + 1
+ 	}
+-	for i, char := range sg.name {
++	for i, cell := range displayCells(sg.name) {
+ 		if labelX+i < to.x {
+-			labelDrawing[labelX+i][labelY] = string(char)
++			labelDrawing[labelX+i][labelY] = cell
+ 		}
+ 	}
+ 
+diff --git a/vendor/github.com/pgavlin/mermaid-ascii/pkg/graph/mapping_edge.go b/vendor/github.com/pgavlin/mermaid-ascii/pkg/graph/mapping_edge.go
+index e02bda9..3502fae 100644
+--- a/vendor/github.com/pgavlin/mermaid-ascii/pkg/graph/mapping_edge.go
++++ b/vendor/github.com/pgavlin/mermaid-ascii/pkg/graph/mapping_edge.go
+@@ -69,7 +69,7 @@ func (g *graph) determinePath(e *edge) {
+ 
+ func (g *graph) determineLabelLine(e *edge) {
+ 	// What line on the path should the label be placed?
+-	lenLabel := len(e.text)
++	lenLabel := displayWidth(e.text)
+ 	if lenLabel == 0 {
+ 		return
+ 	}
+diff --git a/vendor/github.com/pgavlin/mermaid-ascii/pkg/graph/mapping_node.go b/vendor/github.com/pgavlin/mermaid-ascii/pkg/graph/mapping_node.go
+index bd10115..083ab2d 100644
+--- a/vendor/github.com/pgavlin/mermaid-ascii/pkg/graph/mapping_node.go
++++ b/vendor/github.com/pgavlin/mermaid-ascii/pkg/graph/mapping_node.go
+@@ -3,9 +3,40 @@ package graph
+ import (
+ 	"strings"
+ 
++	"github.com/rivo/uniseg"
+ 	log "github.com/sirupsen/logrus"
+ )
+ 
++// displayWidth returns the number of terminal cells occupied by text.
++func displayWidth(text string) int {
++	return uniseg.StringWidth(text)
++}
++
++// displayCells splits text into grapheme clusters and represents a wide
++// cluster with an empty continuation cell. This keeps the drawing's logical
++// grid width equal to its rendered terminal width without splitting UTF-8.
++func displayCells(text string) []string {
++	var cells []string
++	graphemes := uniseg.NewGraphemes(text)
++	for graphemes.Next() {
++		cluster := graphemes.Str()
++		width := graphemes.Width()
++		if width <= 0 {
++			if len(cells) == 0 {
++				cells = append(cells, cluster)
++			} else {
++				cells[len(cells)-1] += cluster
++			}
++			continue
++		}
++		cells = append(cells, cluster)
++		for i := 1; i < width; i++ {
++			cells = append(cells, "")
++		}
++	}
++	return cells
++}
++
+ // nameLines splits a node's display name into lines (split on newline).
+ func (n *node) nameLines() []string {
+ 	return strings.Split(n.name, "\n")
+@@ -15,8 +46,8 @@ func (n *node) nameLines() []string {
+ func (n *node) nameWidth() int {
+ 	w := 0
+ 	for _, line := range n.nameLines() {
+-		if len(line) > w {
+-			w = len(line)
++		if width := displayWidth(line); width > w {
++			w = width
+ 		}
+ 	}
+ 	return w
+@@ -64,32 +95,27 @@ func wordWrap(text string, maxWidth int) string {
+ 	lines := strings.Split(text, "\n")
+ 	var result []string
+ 	for _, line := range lines {
+-		if len(line) <= maxWidth {
++		if displayWidth(line) <= maxWidth {
+ 			result = append(result, line)
+ 			continue
+ 		}
+-		// Wrap this line
+-		for len(line) > maxWidth {
+-			// Find last space within maxWidth
+-			breakAt := -1
+-			for i := maxWidth; i >= 0; i-- {
+-				if i < len(line) && line[i] == ' ' {
++		clusters := displayCells(line)
++		for len(clusters) > maxWidth {
++			breakAt := maxWidth
++			for i := maxWidth - 1; i > 0; i-- {
++				if clusters[i] == " " {
+ 					breakAt = i
+ 					break
+ 				}
+ 			}
+-			if breakAt <= 0 {
+-				// No space found, break at maxWidth
+-				breakAt = maxWidth
+-				result = append(result, line[:breakAt])
+-				line = line[breakAt:]
+-			} else {
+-				result = append(result, line[:breakAt])
+-				line = line[breakAt+1:] // skip the space
++			result = append(result, strings.Join(clusters[:breakAt], ""))
++			clusters = clusters[breakAt:]
++			if len(clusters) > 0 && clusters[0] == " " {
++				clusters = clusters[1:]
+ 			}
+ 		}
+-		if len(line) > 0 {
+-			result = append(result, line)
++		if len(clusters) > 0 {
++			result = append(result, strings.Join(clusters, ""))
+ 		}
+ 	}
+ 	return strings.Join(result, "\n")
+@@ -114,8 +140,8 @@ func longestWord(text string) int {
+ 	max := 0
+ 	for _, line := range strings.Split(text, "\n") {
+ 		for _, word := range strings.Fields(line) {
+-			if len(word) > max {
+-				max = len(word)
++			if width := displayWidth(word); width > max {
++				max = width
+ 			}
+ 		}
+ 	}
+@@ -178,7 +204,7 @@ func (g *graph) constrainToTargetWidth() {
+ 			minX, maxX = maxX, minX
+ 		}
+ 		middleX := minX + (maxX-minX)/2
+-		labelMin := len(e.text) + 2
++		labelMin := displayWidth(e.text) + 2
+ 		if labelMin > edgeLabelMins[middleX] {
+ 			edgeLabelMins[middleX] = labelMin
+ 		}
+@@ -212,9 +238,9 @@ func (g *graph) constrainToTargetWidth() {
+ 
+ 	// Compute total shrinkable width from content columns
+ 	type contentColInfo struct {
+-		col         int
++		col          int
+ 		currentWidth int
+-		minWidth    int // minimum based on longest word + shape extras
++		minWidth     int // minimum based on longest word + shape extras
+ 	}
+ 	var contentCols []contentColInfo
+ 	totalShrinkable := 0
+@@ -243,9 +269,9 @@ func (g *graph) constrainToTargetWidth() {
+ 			continue // can't shrink this column
+ 		}
+ 		contentCols = append(contentCols, contentColInfo{
+-			col:         col,
++			col:          col,
+ 			currentWidth: currentW,
+-			minWidth:    minW,
++			minWidth:     minW,
+ 		})
+ 		totalShrinkable += currentW - minW
+ 	}
+diff --git a/vendor/github.com/pgavlin/mermaid-ascii/pkg/graph/parse.go b/vendor/github.com/pgavlin/mermaid-ascii/pkg/graph/parse.go
+index ae65d8d..6f377ea 100644
+--- a/vendor/github.com/pgavlin/mermaid-ascii/pkg/graph/parse.go
++++ b/vendor/github.com/pgavlin/mermaid-ascii/pkg/graph/parse.go
+@@ -33,20 +33,20 @@ type Properties struct {
+ type nodeShape int
+ 
+ const (
+-	shapeRect      nodeShape = iota // A[text] or bare A - rectangle (default)
+-	shapeRounded                    // A(text) - rounded rectangle
+-	shapeStadium                    // A([text]) - stadium-shaped (rounded sides)
+-	shapeSubroutine                 // A[[text]] - subroutine (double vertical borders)
+-	shapeCylinder                   // A[(text)] - cylinder (curved top/bottom)
+-	shapeCircle                     // A((text)) - circle/double circle
+-	shapeDiamond                    // A{text} - diamond/rhombus
+-	shapeHexagon                    // A{{text}} - hexagon
+-	shapeFlag                       // A>text] - asymmetric/flag shape
++	shapeRect       nodeShape = iota // A[text] or bare A - rectangle (default)
++	shapeRounded                     // A(text) - rounded rectangle
++	shapeStadium                     // A([text]) - stadium-shaped (rounded sides)
++	shapeSubroutine                  // A[[text]] - subroutine (double vertical borders)
++	shapeCylinder                    // A[(text)] - cylinder (curved top/bottom)
++	shapeCircle                      // A((text)) - circle/double circle
++	shapeDiamond                     // A{text} - diamond/rhombus
++	shapeHexagon                     // A{{text}} - hexagon
++	shapeFlag                        // A>text] - asymmetric/flag shape
+ )
+ 
+ type textNode struct {
+-	id         string    // unique identifier used as map key (e.g. "A" from "A[text]")
+-	name       string    // display label (e.g. "text" from "A[text]", or "A" for bare nodes)
++	id         string // unique identifier used as map key (e.g. "A" from "A[text]")
++	name       string // display label (e.g. "text" from "A[text]", or "A" for bare nodes)
+ 	styleClass string
+ 	shape      nodeShape
+ }
+@@ -636,6 +636,51 @@ func (p *graphParser) parseStyleDirective() {
+ 	}
+ }
+ 
++// parseClassDirective parses: class nodeId[,nodeId...] className[;]
++//
++// Mermaid's class statement assigns an existing style class to one or more
++// nodes. Treating the leading "class" token as an ordinary node creates a
++// visible phantom node, so this directive must be consumed explicitly.
++func (p *graphParser) parseClassDirective() {
++	p.s.Next() // consume "class"
++	p.s.SkipWhitespace()
++
++	var nodeIDs []string
++	for {
++		nodeID, ok := p.parseNodeID()
++		if !ok {
++			break
++		}
++		nodeIDs = append(nodeIDs, nodeID)
++		p.s.SkipWhitespace()
++		if p.s.Peek().Kind != parser.TokenComma {
++			break
++		}
++		p.s.Next()
++		p.s.SkipWhitespace()
++	}
++
++	p.s.SkipWhitespace()
++	className := ""
++	if p.s.Peek().Kind == parser.TokenIdent {
++		className = p.s.Next().Text
++	}
++	parser.SkipToEndOfLine(p.s)
++
++	if className == "" {
++		return
++	}
++	for _, nodeID := range nodeIDs {
++		if info, exists := p.props.nodeInfo[nodeID]; exists {
++			info.styleClass = className
++			p.props.nodeInfo[nodeID] = info
++			continue
++		}
++		node := textNode{id: nodeID, name: nodeID, styleClass: className, shape: shapeRect}
++		addNode(node, p.props.data, p.props.nodeInfo)
++	}
++}
++
+ // parseLinkStyle parses: linkStyle N styles... (parsed but not applied)
+ func (p *graphParser) parseLinkStyle() {
+ 	p.s.Next() // consume "linkStyle"
+@@ -695,6 +740,9 @@ func (p *graphParser) parseStatement() {
+ 		case "classdef":
+ 			p.parseClassDef()
+ 			return
++		case "class":
++			p.parseClassDirective()
++			return
+ 		case "style":
+ 			p.parseStyleDirective()
+ 			return

@@ -9,7 +9,7 @@ import (
 type AuthKind int
 
 const (
-	// APIKeyAuth is a static API key resolved from env / keychain / .env.
+	// APIKeyAuth is a static API key resolved from daz-secrets.
 	APIKeyAuth AuthKind = iota
 	// OAuthMintKey is an interactive OAuth login that yields a normal API key,
 	// stored and resolved exactly like an APIKeyAuth key.
@@ -42,8 +42,8 @@ const (
 // struct is the in-memory projection credential resolution consumes.
 type AuthMethod struct {
 	Kind        AuthKind
-	EnvVar      string                               // APIKeyAuth: env var name ("" to skip env lookup)
-	Keyring     string                               // keychain "user" field for this method
+	EnvVar      string                               // legacy schema name used to derive a provider account
+	Keyring     string                               // legacy schema field naming the provider account
 	LoginID     string                               // OAuth*: internal/auth provider id
 	BaseURL     string                               // optional endpoint override implied by this method
 	HeaderStyle HeaderStyle                          // wire auth header style
@@ -52,15 +52,15 @@ type AuthMethod struct {
 	// RequiresBaseURL marks a method whose endpoint is supplied by the user and
 	// stored alongside the key (e.g. MiMo Token Plan).
 	RequiresBaseURL bool
-	// BaseURLEnv, when set, names an env var that overrides the stored
-	// user-supplied base URL for a RequiresBaseURL method.
+	// BaseURLEnv is retained for schema compatibility and names the provider
+	// account used for a user-supplied base URL.
 	BaseURLEnv string
 }
 
 // ID returns a stable identity for this method within its provider, used as the
 // default-method marker value when a provider exposes more than one method of
-// the same kind. It prefers the explicit Label, falling back to the keyring
-// user, the OAuth login id, and finally the kind name.
+// the same kind. It prefers the explicit Label, falling back to the provider
+// account, the OAuth login id, and finally the kind name.
 func (m AuthMethod) ID() string {
 	switch {
 	case m.Label != "":
@@ -74,7 +74,7 @@ func (m AuthMethod) ID() string {
 	}
 }
 
-// authKindName is the fallback identity for a method with no label/keyring/login.
+// authKindName is the fallback identity for a method with no label/account/login.
 func authKindName(k AuthKind) string {
 	switch k {
 	case OAuthMintKey, OAuthToken:

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/posthog/posthog-go"
-	"github.com/zalando/go-keyring"
 )
 
 // wireClient installs c as the active telemetry client (as if Init had
@@ -40,8 +39,6 @@ func newProdClient(t *testing.T, endpoint string) posthog.Client {
 // asserts each returns effectively instantly, i.e. the telemetry path never
 // blocks the app. Regression guard for issue #47.
 func TestTelemetry_TrackDoesNotBlockWhenBlackholed(t *testing.T) {
-	keyring.MockInit()
-
 	// A listener that accepts connections but never responds: this is a
 	// network blackhole. Any HTTP request against it hangs until timeout.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -95,8 +92,6 @@ func TestTelemetry_TrackDoesNotBlockWhenBlackholed(t *testing.T) {
 // port. Track and Close must still never block the app. Regression guard for
 // issue #47.
 func TestTelemetry_TrackDoesNotBlockWhenRefused(t *testing.T) {
-	keyring.MockInit()
-
 	// Bind then immediately close to obtain a port nothing listens on.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -141,8 +136,6 @@ func TestTelemetry_TrackDoesNotBlockWhenRefused(t *testing.T) {
 // default of 10. This is the fix for the "shit-ton of posthog endpoints"
 // reported in issue #47.
 func TestTelemetry_BoundedRetriesWhenBlocked(t *testing.T) {
-	keyring.MockInit()
-
 	var attempts atomic.Int64
 	// 503 is retryable, so an unhardened client would keep re-uploading.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
