@@ -532,6 +532,9 @@ before writing code or tests.
 - The canonical checkout is pristine — never edit it by hand.
 - All work happens in worktrees branched from last-green.
 - Every merge goes through the serialized gate: full `check` + real `deploy`.
+- Parallel shell test shards must record every child PID and aggregate every
+  exit status. A bare `wait` reports only the final child and can hide an
+  earlier shard failure.
 
 **Your workflow:**
 1. `greenline worktree <name>` — get a worktree at `/Volumes/Gumby/worktrees/greenline/vix/<name>` on branch `gl/<name>`.
