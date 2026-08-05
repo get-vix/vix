@@ -518,7 +518,7 @@ Resolution lives in `LoadProjectConfig` (`internal/daemon/workflow.go`): `~` exp
 Coverage:
 - `read_file` / `write_file` / `edit_file` / `delete_file` (and the minified variants): refused before execution when the target path is denied.
 - `web_fetch`: refused when the `url` parameter matches a URL deny entry.
-- `bash`: refused when any path-like token (a token that contains `/`) in the command resolves inside a denied path, or when any token containing `://` resolves to a denied URL. Bare words without `/` are not treated as paths, so prose like `echo 'no secrets here'` is allowed. Variable expansion, heredocs, and reassembly across variables are **not** analyzed (best-effort v1).
+- `bash`: refused when any path-like token (a token that contains `/`) in the command resolves inside a denied path, when a bare token exactly names an existing denied regular file, or when any token containing `://` resolves to a denied URL. Bare prose remains allowed because directory names without `/` are not interpreted as paths. Variable expansion, heredocs, and reassembly across variables are **not** analyzed (best-effort v1).
 - `grep` / `glob_files`: matches inside a denied path are silently filtered from the output.
 
 <!-- >>> greenline >>> -->
