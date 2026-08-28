@@ -68,6 +68,10 @@ func (s *eventStreamDecoder) Next() bool {
 
 		// Dispatch event on an empty line
 		if len(txt) == 0 {
+			// Skip empty events (e.g. from standalone comment lines like ": keep-alive").
+			if event == "" && data.Len() == 0 {
+				continue
+			}
 			s.evt = Event{
 				Type: event,
 				Data: data.Bytes(),
