@@ -416,6 +416,54 @@ func TestChatCompletions_IdleTimeout(t *testing.T) {
 	}
 }
 
+// TestChatCompletions_StreamKeepaliveComments verifies that SSE keepalive
+// comments (lines starting with :) sent by some APIs are silently ignored
+// and don't break JSON parsing. This is a regression test for the bug where
+// ": keep-alive" comments caused "unexpected end of JSON input" errors.
+func TestChatCompletions_StreamKeepaliveComments(t *testing.T) {
+	srv, _ := recordingServer(t, func(w http.ResponseWriter, r *http.Request) {
+		sseHeader(w)
+		// Send a keepalive comment before real data.
+		fmt.Fprintf(w, ": keep-alive\n\n")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		// Real data chunk.
+		sseSend(w, "", chatChunk(`{"id":"x","object":"chat.completion.chunk","created":1,"model":"x","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"},"finish_reason":null}]}`))
+		// Another keepalive between chunks.
+		fmt.Fprintf(w, ": heartbeat\n\n")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		// Final chunk.
+		sseSend(w, "", chatChunk(`{"id":"x","object":"chat.completion.chunk","created":1,"model":"x","choices":[{"index":0,"delta":{"content":" world"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":0}}}`))
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	})
+
+	client := newChatTestClient(t, srv.URL, "anthropic/claude", "", 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	msg, _, err := client.StreamMessage(ctx, nil, []MessageParam{NewUserMessage(NewTextBlock("hi"))}, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("StreamMessage: %v (keepalive comments should be ignored)", err)
+	}
+
+	if msg.Content == nil || len(msg.Content) == 0 {
+		t.Fatal("expected non-empty content")
+	}
+	text := fmt.Sprint(msg.Content[0])
+	if !strings.Contains(text, "hello") || !strings.Contains(text, "world") {
+		t.Errorf("content = %q, want to contain 'hello world'", text)
+	}
+	if msg.Usage.InputTokens != 10 {
+		t.Errorf("InputTokens = %d, want 10", msg.Usage.InputTokens)
+	}
+}
+
 // --- helpers ---
 
 // chatChunk returns the data: line content for one Chat Completions SSE
