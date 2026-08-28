@@ -73,8 +73,11 @@ func TestDenyListBlocksSecret(t *testing.T) {
 	h.UI.Shot("after-deny")
 
 	for i, r := range h.Mock.Requests() {
-		if strings.Contains(string(r.Body()), secret) {
-			t.Fatalf("deny_list breach: secret leaked to the model in request %d", i)
+		body := string(r.Body())
+		if at := strings.Index(body, secret); at >= 0 {
+			start := max(0, at-240)
+			end := min(len(body), at+len(secret)+240)
+			t.Fatalf("deny_list breach: secret leaked to the model in request %d near %q", i, body[start:end])
 		}
 	}
 }

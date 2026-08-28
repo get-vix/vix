@@ -38,11 +38,13 @@ func TestBuildDaemonPathIncludesUserToolDirs(t *testing.T) {
 	}
 }
 
-func TestDaemonEnvUpsertsPATHAndAPIKey(t *testing.T) {
+func TestDaemonEnvUpsertsPATHAndScrubsSecrets(t *testing.T) {
 	t.Setenv("PATH", "/old/bin")
 	t.Setenv("ANTHROPIC_API_KEY", "old")
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "old-token")
+	t.Setenv("DATABASE_PASSWORD", "old-password")
 
-	env := daemonEnv("new")
+	env := daemonEnv()
 
 	pathValues := valuesForEnvKey(env, "PATH")
 	if len(pathValues) != 1 {
@@ -52,9 +54,10 @@ func TestDaemonEnvUpsertsPATHAndAPIKey(t *testing.T) {
 		t.Fatalf("PATH = %q, want it to preserve existing entries", pathValues[0])
 	}
 
-	apiKeyValues := valuesForEnvKey(env, "ANTHROPIC_API_KEY")
-	if len(apiKeyValues) != 1 || apiKeyValues[0] != "new" {
-		t.Fatalf("ANTHROPIC_API_KEY entries = %#v, want [new]", apiKeyValues)
+	for _, key := range []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "DATABASE_PASSWORD"} {
+		if values := valuesForEnvKey(env, key); len(values) != 0 {
+			t.Fatalf("%s leaked into daemon environment", key)
+		}
 	}
 }
 

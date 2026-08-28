@@ -21,7 +21,6 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/mattn/go-isatty"
 
-	"github.com/get-vix/vix/internal/auth"
 	"github.com/get-vix/vix/internal/config"
 	"github.com/get-vix/vix/internal/daemon"
 	"github.com/get-vix/vix/internal/daemon/brain"
@@ -80,7 +79,6 @@ func main() {
 	disableDirAccess := flag.Bool("disable-automatic-directory-access", false, "Restrict tool calls to paths within the working directory (by default, all paths are accessible)")
 	vfsFlag := flag.Bool("vfs", false, "Run a VFS command (e.g. vix --vfs read_file <path>)")
 	socketPath := flag.String("socket-path", "", "Unix socket path for the vix↔vixd connection. Defaults to /tmp/vixd.sock. Must match the running vixd.")
-	authTokenPath := flag.String("auth-token-path", "", "Path to a file holding the shared-secret token to authenticate every socket message. Must match the daemon's -auth-token-path. Empty disables auth on this client; the daemon must also be unauthenticated for that to work.")
 	pprofPort := flag.Int("pprof-port", 0, "Port for the pprof HTTP server (GET /debug/pprof/*). 0 disables it. Env: VIX_PPROF_PORT.")
 	flag.Parse()
 
@@ -183,11 +181,8 @@ func main() {
 	// sure the user has at least one usable key configured, failing fast in
 	// headless mode when none is set. In interactive mode a missing credential
 	// for the selected model is surfaced as an error in the UI by the daemon.
-	// Users must set their provider's env var (ANTHROPIC_API_KEY /
-	// CLAUDE_CODE_OAUTH_TOKEN / OPENAI_API_KEY / OPENROUTER_API_KEY /
-	// MINIMAX_API_KEY / MIMO_API_KEY) themselves.
 	var apiKey string
-	apiKey, _ = config.ResolveProviderKey("anthropic") // includes CLAUDE_CODE_OAUTH_TOKEN fallback
+	apiKey, _ = config.ResolveProviderKey("anthropic")
 	hasNonAnthropicKey := func() bool {
 		for _, p := range []string{"bedrock", "openai", "openrouter", "minimax", "mimo"} {
 			if k, _ := config.ResolveProviderKey(p); k != "" {
@@ -197,7 +192,7 @@ func main() {
 		return false
 	}
 	if apiKey == "" && !hasNonAnthropicKey() && *prompt != "" {
-		fmt.Fprintf(os.Stderr, "Error: no API key found. Set ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN, OPENAI_API_KEY, OPENROUTER_API_KEY, MINIMAX_API_KEY, or MIMO_API_KEY.\n")
+		fmt.Fprintln(os.Stderr, "Error: no provider credential found. Add one in the Models tab or with daz-secrets.")
 		os.Exit(1)
 	}
 
@@ -231,11 +226,6 @@ func main() {
 	if *prompt != "" {
 		appMode = "headless"
 	}
-	// OAuth logins persist their token to the OS keychain, or to the plaintext,
-	// home-global auth.json (shared with API-key credentials) when the OS
-	// keychain is unusable (headless Linux/WSL/containers). The UI and logs
-	// surface that tokens then live unencrypted on disk.
-	auth.SetAuthFilePath(config.NewVixPaths("", config.HomeVixDir(), "").AuthFile())
 	telemetry.Init(telemetry.Config{Version: Version, Mode: appMode, Enabled: config.TelemetryEnabled()})
 	defer telemetry.Shutdown()
 	// Top-level crash handler: capture the panic as a PostHog exception and
@@ -275,24 +265,7 @@ func main() {
 	// arrives, instead of flashing the welcome screen.
 	var initialAttached bool
 
-	// Load the socket auth token (if -auth-token-path was given) once,
-	// before any daemon RPC. Same file the spawned vixd will read on the
-	// other side, so client and daemon arrive at identical bytes. We
-	// fail-fast on a misconfigured path: silently dropping auth would
-	// defeat the purpose of pointing at it.
-	authToken := ""
-	if *authTokenPath != "" {
-		raw, err := os.ReadFile(*authTokenPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: cannot read --auth-token-path %q: %v\n", *authTokenPath, err)
-			os.Exit(1)
-		}
-		authToken = strings.TrimSpace(string(raw))
-		if authToken == "" {
-			fmt.Fprintf(os.Stderr, "Error: --auth-token-path %q is empty after trimming whitespace\n", *authTokenPath)
-			os.Exit(1)
-		}
-	}
+	authToken := socketAuthToken()
 
 	if !*testMode {
 		daemon.SetClientVersion(Version)
@@ -509,7 +482,6 @@ func runDaemonCommand(args []string) int {
 Flags:
   -socket-path string      Unix socket path (env VIX_SOCKET_PATH, default /tmp/vixd.sock)
   -log-dir string          Directory for vixd log files (start only)
-  -auth-token-path string  Shared-secret token file, must match the daemon's
 `)
 	}
 	if len(args) == 0 {
@@ -521,7 +493,6 @@ Flags:
 	fs := flag.NewFlagSet("vix daemon "+sub, flag.ExitOnError)
 	logDir := fs.String("log-dir", "", "Directory for vixd log files (vixd.log, vix-thinking.log, vix-bash-history.log). Defaults to the system temp dir.")
 	socketPath := fs.String("socket-path", "", "Unix socket path for the vix↔vixd connection. Env: VIX_SOCKET_PATH. Default: /tmp/vixd.sock.")
-	authTokenPath := fs.String("auth-token-path", "", "Path to a file holding the shared-secret token. Must match the daemon's -auth-token-path.")
 	fs.Parse(args[1:])
 
 	sock := *socketPath
@@ -533,19 +504,7 @@ Flags:
 		}
 	}
 
-	authToken := ""
-	if *authTokenPath != "" {
-		raw, err := os.ReadFile(*authTokenPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: cannot read --auth-token-path %q: %v\n", *authTokenPath, err)
-			return 1
-		}
-		authToken = strings.TrimSpace(string(raw))
-		if authToken == "" {
-			fmt.Fprintf(os.Stderr, "Error: --auth-token-path %q is empty after trimming whitespace\n", *authTokenPath)
-			return 1
-		}
-	}
+	authToken := socketAuthToken()
 
 	client := daemon.NewClient(sock)
 	client.SetAuthToken(authToken)
@@ -570,8 +529,7 @@ Flags:
 			}
 			resolvedLogDir = abs
 		}
-		apiKey, _ := config.ResolveProviderKey("anthropic")
-		if _, err := startDaemon(apiKey, resolvedLogDir, sock, *authTokenPath); err != nil {
+		if _, err := startDaemon(resolvedLogDir, sock); err != nil {
 			fmt.Fprintf(os.Stderr, "Error starting vixd: %v\n", err)
 			return 1
 		}
@@ -658,7 +616,6 @@ Flags:
   -json string             Inline JSON spec
   -file string             Read the JSON spec from this file ("-" = stdin)
   -socket-path string      Unix socket path (env VIX_SOCKET_PATH, default /tmp/vixd.sock)
-  -auth-token-path string  Shared-secret token file, must match the daemon's
 `)
 	}
 	if len(args) == 0 || args[0] != "create" {
@@ -670,7 +627,6 @@ Flags:
 	jsonFlag := fs.String("json", "", "Inline JSON thread spec.")
 	fileFlag := fs.String("file", "", `Read the JSON thread spec from this file ("-" for stdin).`)
 	socketPath := fs.String("socket-path", "", "Unix socket path for the vix↔vixd connection. Env: VIX_SOCKET_PATH. Default: /tmp/vixd.sock.")
-	authTokenPath := fs.String("auth-token-path", "", "Path to a file holding the shared-secret token. Must match the daemon's -auth-token-path.")
 	fs.Parse(args[1:])
 
 	// Resolve the spec from exactly one source: --json, --file, else stdin.
@@ -711,22 +667,8 @@ Flags:
 		}
 	}
 
-	authToken := ""
-	if *authTokenPath != "" {
-		raw, err := os.ReadFile(*authTokenPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: cannot read --auth-token-path %q: %v\n", *authTokenPath, err)
-			return 1
-		}
-		authToken = strings.TrimSpace(string(raw))
-		if authToken == "" {
-			fmt.Fprintf(os.Stderr, "Error: --auth-token-path %q is empty after trimming whitespace\n", *authTokenPath)
-			return 1
-		}
-	}
-
 	client := daemon.NewClient(sock)
-	client.SetAuthToken(authToken)
+	client.SetAuthToken(socketAuthToken())
 	if !client.Ping() {
 		fmt.Fprintf(os.Stderr, "Error: vixd is not running — start it with `vix daemon start`\n")
 		return 1
@@ -742,10 +684,10 @@ Flags:
 }
 
 // dialDaemon resolves the socket path (flag, else VIX_SOCKET_PATH, else the
-// default) and an optional auth token, returning a pinged client ready for a
+// default) and the provider-backed auth token, returning a pinged client ready for a
 // one-shot RPC. On failure it prints the reason to stderr and returns
 // (nil, exitCode).
-func dialDaemon(socketPath, authTokenPath string) (*daemon.Client, int) {
+func dialDaemon(socketPath string) (*daemon.Client, int) {
 	sock := socketPath
 	if sock == "" {
 		if v := os.Getenv("VIX_SOCKET_PATH"); v != "" {
@@ -755,22 +697,8 @@ func dialDaemon(socketPath, authTokenPath string) (*daemon.Client, int) {
 		}
 	}
 
-	authToken := ""
-	if authTokenPath != "" {
-		raw, err := os.ReadFile(authTokenPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: cannot read --auth-token-path %q: %v\n", authTokenPath, err)
-			return nil, 1
-		}
-		authToken = strings.TrimSpace(string(raw))
-		if authToken == "" {
-			fmt.Fprintf(os.Stderr, "Error: --auth-token-path %q is empty after trimming whitespace\n", authTokenPath)
-			return nil, 1
-		}
-	}
-
 	client := daemon.NewClient(sock)
-	client.SetAuthToken(authToken)
+	client.SetAuthToken(socketAuthToken())
 	if !client.Ping() {
 		fmt.Fprintf(os.Stderr, "Error: vixd is not running — start it with `vix daemon start`\n")
 		return nil, 1
@@ -794,7 +722,6 @@ func runJobCommand(args []string) int {
 
 Flags:
   -socket-path string      Unix socket path (env VIX_SOCKET_PATH, default /tmp/vixd.sock)
-  -auth-token-path string  Shared-secret token file, must match the daemon's
 `)
 	}
 	if len(args) == 0 || args[0] != "run" {
@@ -804,7 +731,6 @@ Flags:
 
 	fs := flag.NewFlagSet("vix job run", flag.ExitOnError)
 	socketPath := fs.String("socket-path", "", "Unix socket path for the vix↔vixd connection. Env: VIX_SOCKET_PATH. Default: /tmp/vixd.sock.")
-	authTokenPath := fs.String("auth-token-path", "", "Path to a file holding the shared-secret token. Must match the daemon's -auth-token-path.")
 	fs.Parse(args[1:])
 	if fs.NArg() < 1 {
 		fmt.Fprintf(os.Stderr, "Error: missing job id\n\n")
@@ -813,7 +739,7 @@ Flags:
 	}
 	id := fs.Arg(0)
 
-	client, code := dialDaemon(*socketPath, *authTokenPath)
+	client, code := dialDaemon(*socketPath)
 	if client == nil {
 		return code
 	}
@@ -842,7 +768,6 @@ func runHookCommand(args []string) int {
 
 Flags:
   -socket-path string      Unix socket path (env VIX_SOCKET_PATH, default /tmp/vixd.sock)
-  -auth-token-path string  Shared-secret token file, must match the daemon's
 `)
 	}
 	if len(args) == 0 || args[0] != "trigger" {
@@ -852,7 +777,6 @@ Flags:
 
 	fs := flag.NewFlagSet("vix hook trigger", flag.ExitOnError)
 	socketPath := fs.String("socket-path", "", "Unix socket path for the vix↔vixd connection. Env: VIX_SOCKET_PATH. Default: /tmp/vixd.sock.")
-	authTokenPath := fs.String("auth-token-path", "", "Path to a file holding the shared-secret token. Must match the daemon's -auth-token-path.")
 	fs.Parse(args[1:])
 	if fs.NArg() < 1 {
 		fmt.Fprintf(os.Stderr, "Error: missing hook id\n\n")
@@ -861,7 +785,7 @@ Flags:
 	}
 	id := fs.Arg(0)
 
-	client, code := dialDaemon(*socketPath, *authTokenPath)
+	client, code := dialDaemon(*socketPath)
 	if client == nil {
 		return code
 	}
@@ -894,7 +818,6 @@ func runMcpCommand(args []string) int {
 
 Flags:
   -socket-path string      Unix socket path (env VIX_SOCKET_PATH, default /tmp/vixd.sock)
-  -auth-token-path string  Shared-secret token file, must match the daemon's
 `)
 	}
 	if len(args) == 0 || (args[0] != "auth" && args[0] != "logout") {
@@ -905,7 +828,6 @@ Flags:
 
 	fs := flag.NewFlagSet("vix mcp "+action, flag.ExitOnError)
 	socketPath := fs.String("socket-path", "", "Unix socket path for the vix↔vixd connection. Env: VIX_SOCKET_PATH. Default: /tmp/vixd.sock.")
-	authTokenPath := fs.String("auth-token-path", "", "Path to a file holding the shared-secret token. Must match the daemon's -auth-token-path.")
 	fs.Parse(args[1:])
 	if fs.NArg() < 1 {
 		fmt.Fprintf(os.Stderr, "Error: missing MCP server name\n\n")
@@ -914,7 +836,7 @@ Flags:
 	}
 	name := fs.Arg(0)
 
-	client, code := dialDaemon(*socketPath, *authTokenPath)
+	client, code := dialDaemon(*socketPath)
 	if client == nil {
 		return code
 	}
@@ -1185,12 +1107,26 @@ func isDir(path string) bool {
 	return err == nil && info.IsDir()
 }
 
-func daemonEnv(apiKey string) []string {
-	env := upsertEnv(os.Environ(), "PATH", daemonSearchPath())
-	if apiKey != "" {
-		env = upsertEnv(env, "ANTHROPIC_API_KEY", apiKey)
+func daemonEnv() []string {
+	env := make([]string, 0, len(os.Environ()))
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		upper := strings.ToUpper(key)
+		if strings.Contains(upper, "API_KEY") || strings.Contains(upper, "PASSWORD") ||
+			strings.Contains(upper, "SECRET") || strings.HasSuffix(upper, "_TOKEN") ||
+			strings.Contains(upper, "OAUTH_TOKEN") {
+			continue
+		}
+		env = append(env, entry)
 	}
-	return env
+	return upsertEnv(env, "PATH", daemonSearchPath())
+}
+
+// socketAuthToken returns the optional shared daemon token from the configured
+// provider. A missing item preserves the trusted-single-user socket mode.
+func socketAuthToken() string {
+	value, _ := config.ResolveStoredSecret("daemon-auth-token")
+	return value
 }
 
 func upsertEnv(env []string, key, value string) []string {
@@ -1222,7 +1158,6 @@ func systemdEscapeQuotedEnv(s string) string {
 }
 
 // startDaemon spawns the daemon process, detached, for `vix daemon start`.
-// If apiKey is non-empty, it is injected into the subprocess environment.
 // The daemon's stdout and stderr are redirected to <logDir>/vixd.log so
 // that logs, panics, and crash traces are recoverable after the fact.
 // If logDir is empty, os.TempDir() is used (the legacy /tmp default).
@@ -1230,10 +1165,7 @@ func systemdEscapeQuotedEnv(s string) string {
 // --log-dir so the daemon's own log files land in the same directory.
 // socketPath is always forwarded to vixd so client and daemon agree on
 // the socket location.
-// authTokenPath, when non-empty, is forwarded so the daemon enforces
-// shared-secret auth on every incoming socket message. The same path is
-// read by the client (vix CLI) so both sides see the same token.
-func startDaemon(apiKey, logDir, socketPath, authTokenPath string) (*exec.Cmd, error) {
+func startDaemon(logDir, socketPath string) (*exec.Cmd, error) {
 	daemonPath, err := findDaemon()
 	if err != nil {
 		return nil, err
@@ -1245,9 +1177,6 @@ func startDaemon(apiKey, logDir, socketPath, authTokenPath string) (*exec.Cmd, e
 	if socketPath != "" {
 		args = append(args, "--socket-path", socketPath)
 	}
-	if authTokenPath != "" {
-		args = append(args, "--auth-token-path", authTokenPath)
-	}
 	cmd := exec.Command(daemonPath, args...)
 	// Detach the daemon from this client: start it in a new thread (setsid) so
 	// it is not in the client's process group and is unaffected by terminal
@@ -1255,7 +1184,7 @@ func startDaemon(apiKey, logDir, socketPath, authTokenPath string) (*exec.Cmd, e
 	// group). The daemon is a shared, long-lived process that runs until
 	// signalled or stopped via `vix daemon stop`.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	cmd.Env = daemonEnv(apiKey)
+	cmd.Env = daemonEnv()
 	logFileDir := logDir
 	if logFileDir == "" {
 		logFileDir = os.TempDir()

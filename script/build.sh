@@ -106,26 +106,9 @@ fi
 
 mkdir -p "$OUT_DIR"
 
-# ── PostHog analytics key (embedded at build time) ────────────────────────────
-# Nothing loads .env at runtime, so the key must be baked into the binary via
-# -ldflags -X. Read it exclusively from .env. Without it, analytics is inert
-# (telemetry.Init bails when the embedded key is empty). Release builds (a
-# --version was passed) MUST have the key — bail loudly. Dev builds (version=dev)
-# are allowed to ship without analytics.
-VIX_POSTHOG_API_KEY=""
-if [[ -f "$ROOT_DIR/.env" ]]; then
-  VIX_POSTHOG_API_KEY="$(grep '^VIX_POSTHOG_API_KEY=' "$ROOT_DIR/.env" | head -n1 | cut -d= -f2-)"
-fi
-TELEMETRY_PKG="github.com/get-vix/vix/internal/telemetry"
+# Telemetry reads its project key from daz-secrets at runtime. Build arguments,
+# environment variables, binaries, and logs never carry the credential.
 KEY_LDFLAG=""
-if [[ -n "$VIX_POSTHOG_API_KEY" ]]; then
-  KEY_LDFLAG="-X ${TELEMETRY_PKG}.embeddedAPIKey=${VIX_POSTHOG_API_KEY}"
-elif [[ "$VERSION" != "dev" ]]; then
-  echo "${C_RED}✗${C_RESET} VIX_POSTHOG_API_KEY not found in $ROOT_DIR/.env — refusing to build release ${VERSION} without analytics." >&2
-  exit 1
-else
-  echo "${C_YELLOW}warning:${C_RESET} VIX_POSTHOG_API_KEY not in .env — dev build will emit no analytics." >&2
-fi
 export KEY_LDFLAG
 
 echo "${C_BLUE}==>${C_RESET} ${C_BOLD}Building vix${C_RESET} (darwin-arm64 + linux-amd64 + linux-arm64), version ${C_BOLD}${VERSION}${C_RESET}, commit ${C_BOLD}${CURRENT_COMMIT:0:12}${C_RESET}"
@@ -232,9 +215,12 @@ else
 fi
 
 # ── Collect results ──────────────────────────────────────────────────────────
-wait "$darwin_pid"; darwin_rc=$?
-wait "$amd64_pid";  amd64_rc=$?
-wait "$arm64_pid";  arm64_rc=$?
+darwin_rc=0
+amd64_rc=0
+arm64_rc=0
+wait "$darwin_pid" || darwin_rc=$?
+wait "$amd64_pid" || amd64_rc=$?
+wait "$arm64_pid" || arm64_rc=$?
 
 report() {
   local rc="$1" elapsed="$2" label="$3" logfile="$4"

@@ -1,0 +1,22 @@
+# greenline gate configuration — committed to the repo.
+# See docs/greenline.md and DOCTRINE.md for the workflow and invariants.
+contract_version = 1
+main_branch = "main"
+
+# Verdict command. cwd = the worktree being gated. Must build + lint + run the
+# FULL test suite against a TEST datastore, and exit nonzero on any failure.
+# Must be safe to run concurrently from multiple worktrees.
+check = "./run check"
+
+# Deploy command. cwd = the canonical checkout. Must rebuild/restart prod,
+# health-check, exit nonzero on unhealthy, and be idempotent (safe to re-run).
+deploy = "./run deploy"
+
+# Optional health-only probe. Empty = re-run `deploy` as the health probe.
+health = "./run health"
+
+# Informational: the auto/service name this repo deploys.
+service = "vix-cli"
+
+# Persistent worktree base for this repo (gate lives at <base>/gate).
+worktree_base = "/Volumes/Gumby/worktrees/greenline/vix"

@@ -28,6 +28,16 @@ var commentModes = []commentMode{
 	{"without_comments", false, "without_comments"},
 }
 
+// sourceFixturePath returns the checked-in source fixture for an extension.
+// The repository-wide tmp.go ignore rule prevents testdata/tmp.go from being
+// tracked, so Go uses a checked-in source fixture with a non-Go suffix.
+func sourceFixturePath(ext string) string {
+	if ext == "go" {
+		return filepath.Join("testdata", "source.go.txt")
+	}
+	return filepath.Join("testdata", "tmp."+ext)
+}
+
 // --- Golden file tests (minification) ---
 
 // TestMinifyGoldenFiles verifies that minifying each tmp.<ext> fixture produces
@@ -37,7 +47,7 @@ func TestMinifyGoldenFiles(t *testing.T) {
 		t.Run(mode.name, func(t *testing.T) {
 			for _, ext := range extensions {
 				t.Run(ext, func(t *testing.T) {
-					content, err := os.ReadFile("testdata/tmp." + ext)
+					content, err := os.ReadFile(sourceFixturePath(ext))
 					if err != nil {
 						t.Fatalf("failed to read tmp.%s: %v", ext, err)
 					}

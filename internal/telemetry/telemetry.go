@@ -4,21 +4,19 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"log"
-	"os"
 	"runtime"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/posthog/posthog-go"
-	"github.com/zalando/go-keyring"
+
+	"github.com/get-vix/vix/internal/secretstore"
 )
 
 const (
-	posthogHost    = "https://us.i.posthog.com"
-	keyringService = "vix"
-	keyringUser    = "device-id"
+	posthogHost     = "https://us.i.posthog.com"
+	deviceIDAccount = "device-id"
 
 	// sessionIdleTimeout mirrors PostHog's own session convention: after this
 	// much inactivity the next event starts a fresh session. This also keeps us
@@ -34,13 +32,6 @@ type Config struct {
 	Mode    string // "tui", "headless", "daemon"
 	Enabled bool   // false disables all telemetry (from settings.json feature flag)
 }
-
-// embeddedAPIKey is the PostHog project key injected at build time via
-// -ldflags "-X .../telemetry.embeddedAPIKey=<key>" (see script/build.sh, which
-// reads VIX_POSTHOG_API_KEY from the environment or .env). It is empty in plain
-// `go build` / dev builds, which keeps telemetry inert there. There is no
-// runtime env var or .env fallback — the key lives only in the binary.
-var embeddedAPIKey string
 
 var (
 	client    posthog.Client
@@ -72,17 +63,13 @@ func Init(cfg Config) {
 		version = cfg.Version
 		mode = cfg.Mode
 
-		// Check opt-out: env var or settings.json feature flag
+		// The settings feature flag is the sole non-secret opt-out.
 		if !cfg.Enabled {
 			return
 		}
-		if isOptedOut() {
-			return
-		}
 
-		// The analytics key is embedded at build time (see script/build.sh).
-		// It is empty in plain dev builds, which keeps telemetry inert there.
-		if embeddedAPIKey == "" {
+		analyticsKey, ok, err := secretstore.Default().Get("posthog-api-key")
+		if err != nil || !ok || analyticsKey == "" {
 			return
 		}
 
@@ -104,7 +91,7 @@ func Init(cfg Config) {
 		lastEventTime = now
 		sessionMu.Unlock()
 
-		c, err := posthog.NewWithConfig(embeddedAPIKey, posthogClientConfig(posthogHost))
+		c, err := posthog.NewWithConfig(analyticsKey, posthogClientConfig(posthogHost))
 		if err != nil {
 			logDebug("[telemetry] failed to create PostHog client: %v", err)
 			return
@@ -283,22 +270,28 @@ func logDebug(format string, args ...any) {
 	}
 }
 
-// isOptedOut checks whether the user has disabled telemetry.
-func isOptedOut() bool {
-	v := strings.ToLower(os.Getenv("VIX_TELEMETRY"))
-	return v == "off" || v == "false" || v == "0"
-}
-
-// GetOrCreateDeviceID loads the device ID from the system keychain,
+// GetOrCreateDeviceID loads the device ID from the configured secret provider,
 // or generates and stores a new one if none exists.
 func GetOrCreateDeviceID() (string, error) {
-	id, err := keyring.Get(keyringService, keyringUser)
-	if err == nil && id != "" {
+	return getOrCreateDeviceID(secretstore.Default())
+}
+
+type deviceIDStore interface {
+	Get(string) (string, bool, error)
+	Set(string, string) error
+}
+
+func getOrCreateDeviceID(store deviceIDStore) (string, error) {
+	id, ok, err := store.Get(deviceIDAccount)
+	if err != nil {
+		return "", fmt.Errorf("load device ID: %w", err)
+	}
+	if ok && id != "" {
 		return id, nil
 	}
 
 	id = uuid.New().String()
-	if err := keyring.Set(keyringService, keyringUser, id); err != nil {
+	if err := store.Set(deviceIDAccount, id); err != nil {
 		return "", fmt.Errorf("failed to store device ID: %w", err)
 	}
 	return id, nil

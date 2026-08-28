@@ -53,7 +53,7 @@ func TestProjectSpanBoundarySnapping(t *testing.T) {
 func TestProjectSpanMapInvariant(t *testing.T) {
 	for _, ext := range extensions {
 		t.Run(ext, func(t *testing.T) {
-			content, err := os.ReadFile("testdata/tmp." + ext)
+			content, err := os.ReadFile(sourceFixturePath(ext))
 			if err != nil {
 				t.Fatalf("read fixture: %v", err)
 			}
@@ -222,7 +222,7 @@ func TestVfsEditRoundTripFixtures(t *testing.T) {
 	const sentinel = "Zq9RtX0"
 	for _, ext := range extensions {
 		t.Run(ext, func(t *testing.T) {
-			content, err := os.ReadFile("testdata/tmp." + ext)
+			content, err := os.ReadFile(sourceFixturePath(ext))
 			if err != nil {
 				t.Fatalf("read fixture: %v", err)
 			}

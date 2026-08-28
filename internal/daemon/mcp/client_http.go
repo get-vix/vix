@@ -7,11 +7,11 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/get-vix/vix/internal/secretstore"
 	"golang.org/x/oauth2"
 )
 
@@ -40,13 +40,18 @@ type httpClient struct {
 }
 
 // newHTTPClient creates an httpClient, runs the initialize handshake, and
-// fetches the tool list. Headers whose values match "${VAR}" are replaced with
-// the corresponding environment variable. When oauth is non-nil, an
+// fetches the tool list. Header values may use ${secret:account}; the legacy
+// ${VAR} form maps VAR to a lowercase, hyphenated daz-secrets account. When
+// oauth is non-nil, an
 // Authorization: Bearer header is injected (and refreshed) on every request.
 func newHTTPClient(name, rawURL string, headers map[string]string, oauth bearerSource) (*httpClient, error) {
 	resolved := make(map[string]string, len(headers))
 	for k, v := range headers {
-		resolved[k] = expandEnvValue(v)
+		value, err := expandSecretValue(v)
+		if err != nil {
+			return nil, fmt.Errorf("mcp [%s]: header %q: %w", name, k, err)
+		}
+		resolved[k] = value
 	}
 
 	c := &httpClient{
@@ -68,15 +73,32 @@ func newHTTPClient(name, rawURL string, headers map[string]string, oauth bearerS
 	return c, nil
 }
 
-// expandEnvValue replaces "${VAR}" patterns with their environment values.
-func expandEnvValue(v string) string {
-	if strings.HasPrefix(v, "${") && strings.HasSuffix(v, "}") {
-		varName := v[2 : len(v)-1]
-		if val := os.Getenv(varName); val != "" {
-			return val
-		}
+func secretAccount(value string) (string, bool) {
+	if !strings.HasPrefix(value, "${") || !strings.HasSuffix(value, "}") {
+		return "", false
 	}
-	return v
+	name := value[2 : len(value)-1]
+	if strings.HasPrefix(name, "secret:") {
+		name = strings.TrimPrefix(name, "secret:")
+	} else {
+		name = strings.ToLower(strings.ReplaceAll(name, "_", "-"))
+	}
+	return name, name != ""
+}
+
+func expandSecretValue(value string) (string, error) {
+	account, ok := secretAccount(value)
+	if !ok {
+		return value, nil
+	}
+	secret, found, err := secretstore.Default().Get(account)
+	if err != nil {
+		return "", fmt.Errorf("secret provider unavailable: %w", err)
+	}
+	if !found || secret == "" {
+		return "", fmt.Errorf("secret account %q is not configured", account)
+	}
+	return secret, nil
 }
 
 func (c *httpClient) initialize() error {

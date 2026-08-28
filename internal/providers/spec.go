@@ -1,7 +1,7 @@
 // Package providers is the single, data-driven source of truth for vix's LLM
 // providers and models. Everything that differs between providers that is pure
 // data — model prefixes, base URLs, auth header styles, request headers/query
-// params, credential env vars, OAuth endpoints, and the curated model
+// params, credential account names, OAuth endpoints, and the curated model
 // catalogue — lives in an embedded providers.json (optionally overlaid by
 // ~/.vix and ./.vix copies). Behavior (SSE parsing, request shaping, OAuth
 // mechanics) stays compiled and is selected from JSON via closed enums:
@@ -65,7 +65,7 @@ const (
 
 // Credential method kinds (mirror config.AuthKind without importing config).
 const (
-	// CredAPIKey is a static API key from env / keychain / .env.
+	// CredAPIKey is a static API key from the configured secret provider.
 	CredAPIKey = "api_key"
 	// CredOAuthMintKey is an OAuth login that mints a normal (non-refreshing) API key.
 	CredOAuthMintKey = "oauth_mint_key"
@@ -124,8 +124,9 @@ type ProviderSpec struct {
 func (p ProviderSpec) Prefix() string { return p.ModelPrefix + "/" }
 
 // InferenceSpec holds the data needed to build a wire client. String values may
-// contain ${env:VAR} / ${env:VAR:-default} interpolation, resolved when the
-// inference layer constructs a client (see Resolve).
+// contain legacy ${env:VAR} / ${env:VAR:-default} interpolation. VAR is mapped
+// to a lowercase, hyphenated account in the configured secret provider when
+// the inference layer constructs a client (see Resolve).
 type InferenceSpec struct {
 	BaseURL     string            `json:"base_url"`
 	AuthScheme  string            `json:"auth_scheme"`  // bearer | x-api-key
@@ -155,8 +156,8 @@ type CredentialMethod struct {
 	// rather than baked into the provider spec. The UI prompts for it and it is
 	// stored alongside the key.
 	RequiresBaseURL bool `json:"requires_base_url"`
-	// BaseURLEnv, when set, is an environment variable that overrides the stored
-	// user-supplied base URL for a RequiresBaseURL method.
+	// BaseURLEnv is retained for schema compatibility and names the provider
+	// account used for a user-supplied base URL.
 	BaseURLEnv string `json:"base_url_env"`
 }
 

@@ -220,9 +220,9 @@ func handleSignedURL(s *Server) http.HandlerFunc {
 		// signed_url mode: exchange the agent ID for a temporary signed URL
 		// using the server-side API key. Switch auth_mode back to "public" in
 		// settings to bypass this and connect directly without an API key.
-		apiKey, _ := config.ResolveEnvVar("ELEVENLABS_API_KEY")
+		apiKey, _ := config.ResolveStoredSecret("elevenlabs-api-key")
 		if apiKey == "" {
-			http.Error(w, `{"error":"ELEVENLABS_API_KEY not configured"}`, http.StatusInternalServerError)
+			http.Error(w, `{"error":"ElevenLabs API key not configured"}`, http.StatusInternalServerError)
 			return
 		}
 

@@ -3,8 +3,39 @@ package graph
 import (
 	"strings"
 
+	"github.com/rivo/uniseg"
 	log "github.com/sirupsen/logrus"
 )
+
+// displayWidth returns the number of terminal cells occupied by text.
+func displayWidth(text string) int {
+	return uniseg.StringWidth(text)
+}
+
+// displayCells splits text into grapheme clusters and represents a wide
+// cluster with an empty continuation cell. This keeps the drawing's logical
+// grid width equal to its rendered terminal width without splitting UTF-8.
+func displayCells(text string) []string {
+	var cells []string
+	graphemes := uniseg.NewGraphemes(text)
+	for graphemes.Next() {
+		cluster := graphemes.Str()
+		width := graphemes.Width()
+		if width <= 0 {
+			if len(cells) == 0 {
+				cells = append(cells, cluster)
+			} else {
+				cells[len(cells)-1] += cluster
+			}
+			continue
+		}
+		cells = append(cells, cluster)
+		for i := 1; i < width; i++ {
+			cells = append(cells, "")
+		}
+	}
+	return cells
+}
 
 // nameLines splits a node's display name into lines (split on newline).
 func (n *node) nameLines() []string {
@@ -15,8 +46,8 @@ func (n *node) nameLines() []string {
 func (n *node) nameWidth() int {
 	w := 0
 	for _, line := range n.nameLines() {
-		if len(line) > w {
-			w = len(line)
+		if width := displayWidth(line); width > w {
+			w = width
 		}
 	}
 	return w
@@ -64,32 +95,27 @@ func wordWrap(text string, maxWidth int) string {
 	lines := strings.Split(text, "\n")
 	var result []string
 	for _, line := range lines {
-		if len(line) <= maxWidth {
+		if displayWidth(line) <= maxWidth {
 			result = append(result, line)
 			continue
 		}
-		// Wrap this line
-		for len(line) > maxWidth {
-			// Find last space within maxWidth
-			breakAt := -1
-			for i := maxWidth; i >= 0; i-- {
-				if i < len(line) && line[i] == ' ' {
+		clusters := displayCells(line)
+		for len(clusters) > maxWidth {
+			breakAt := maxWidth
+			for i := maxWidth - 1; i > 0; i-- {
+				if clusters[i] == " " {
 					breakAt = i
 					break
 				}
 			}
-			if breakAt <= 0 {
-				// No space found, break at maxWidth
-				breakAt = maxWidth
-				result = append(result, line[:breakAt])
-				line = line[breakAt:]
-			} else {
-				result = append(result, line[:breakAt])
-				line = line[breakAt+1:] // skip the space
+			result = append(result, strings.Join(clusters[:breakAt], ""))
+			clusters = clusters[breakAt:]
+			if len(clusters) > 0 && clusters[0] == " " {
+				clusters = clusters[1:]
 			}
 		}
-		if len(line) > 0 {
-			result = append(result, line)
+		if len(clusters) > 0 {
+			result = append(result, strings.Join(clusters, ""))
 		}
 	}
 	return strings.Join(result, "\n")
@@ -114,8 +140,8 @@ func longestWord(text string) int {
 	max := 0
 	for _, line := range strings.Split(text, "\n") {
 		for _, word := range strings.Fields(line) {
-			if len(word) > max {
-				max = len(word)
+			if width := displayWidth(word); width > max {
+				max = width
 			}
 		}
 	}
@@ -178,7 +204,7 @@ func (g *graph) constrainToTargetWidth() {
 			minX, maxX = maxX, minX
 		}
 		middleX := minX + (maxX-minX)/2
-		labelMin := len(e.text) + 2
+		labelMin := displayWidth(e.text) + 2
 		if labelMin > edgeLabelMins[middleX] {
 			edgeLabelMins[middleX] = labelMin
 		}
@@ -212,9 +238,9 @@ func (g *graph) constrainToTargetWidth() {
 
 	// Compute total shrinkable width from content columns
 	type contentColInfo struct {
-		col         int
+		col          int
 		currentWidth int
-		minWidth    int // minimum based on longest word + shape extras
+		minWidth     int // minimum based on longest word + shape extras
 	}
 	var contentCols []contentColInfo
 	totalShrinkable := 0
@@ -243,9 +269,9 @@ func (g *graph) constrainToTargetWidth() {
 			continue // can't shrink this column
 		}
 		contentCols = append(contentCols, contentColInfo{
-			col:         col,
+			col:          col,
 			currentWidth: currentW,
-			minWidth:    minW,
+			minWidth:     minW,
 		})
 		totalShrinkable += currentW - minW
 	}

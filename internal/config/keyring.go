@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -13,12 +11,8 @@ import (
 	"github.com/get-vix/vix/internal/auth"
 )
 
-const (
-	keyringService = "vix"
-)
-
 // Auth-default kinds: which credential method a provider prefers when more than
-// one is available. Stored as a small non-secret marker in the OS keychain
+// one is available. Stored as a small non-secret marker in the secret provider
 // (see ProviderAuthDefault) so the preference lives alongside the credentials
 // it governs and is honored by credential resolution everywhere.
 const (
@@ -30,10 +24,8 @@ const (
 type KeySource string
 
 const (
-	KeySourceEnv        KeySource = "env"
-	KeySourceOAuthToken KeySource = "oauth-token"
-	KeySourceKeychain   KeySource = "keychain"
-	KeySourceEnvFile    KeySource = "dotenv"
+	KeySourceOAuthToken     KeySource = "oauth-token"
+	KeySourceSecretProvider KeySource = "secret-provider"
 	// KeySourceLocal marks a keyless local provider (NoneAuth): the credential
 	// is a fixed placeholder the server ignores.
 	KeySourceLocal KeySource = "local"
@@ -68,19 +60,10 @@ func (c Credential) RequestOptions() []option.RequestOption {
 	return opts
 }
 
-// ResolveEnvVar checks the environment and .env files for a variable.
-// Returns the value and true if found, or empty string and false.
-func ResolveEnvVar(name string) (string, bool) {
-	if v := os.Getenv(name); v != "" {
-		return v, true
-	}
-	if v := loadKeyFromEnvFile(loadExeEnvFilePath(), name); v != "" {
-		return v, true
-	}
-	if v := loadKeyFromEnvFile(".env", name); v != "" {
-		return v, true
-	}
-	return "", false
+// ResolveStoredSecret reads one account from the configured provider.
+func ResolveStoredSecret(account string) (string, bool) {
+	value, err := defaultStore().Get(account)
+	return value, err == nil && value != ""
 }
 
 // ProviderKey holds a provider name and a display prefix of its stored key.
@@ -89,39 +72,23 @@ type ProviderKey struct {
 	Prefix   string // first 10 chars of the stored key, for display; empty if not stored
 }
 
-// providerKeyringUser returns the keyring "user" field for storing a provider's
-// primary API key, e.g. "anthropic" → "anthropic-api-key". Used by the
-// store/delete/list helpers; credential resolution uses AuthMethod.Keyring.
+// providerKeyringUser returns the legacy schema account for a provider's
+// primary API key, e.g. "anthropic" → "anthropic-api-key".
 func providerKeyringUser(provider string) string {
 	return provider + "-api-key"
 }
 
-// resolveKey searches env var, OS keychain, and .env files for the given variable name
-// and optional keyring user. Returns the value and source, or empty if not found.
+// resolveKey reads the configured provider account. Legacy EnvVar metadata is
+// used only to derive an account name for providers that do not declare one; Vix
+// never reads the process environment or dotenv files for secrets.
 func resolveKey(envVar, keyringUser string) (string, KeySource) {
-	// 1. Environment variable
-	if envVar != "" {
-		if key := os.Getenv(envVar); key != "" {
-			return key, KeySourceEnv
-		}
+	account := keyringUser
+	if account == "" && envVar != "" {
+		account = strings.ToLower(strings.ReplaceAll(envVar, "_", "-"))
 	}
-
-	// 2. Stored credential (OS keychain, or auth.json fallback)
-	if keyringUser != "" {
-		if key, err := defaultStore().Get(keyringUser); err == nil && key != "" {
-			return key, KeySourceKeychain
-		}
-	}
-
-	// 3. .env next to executable
-	if envVar != "" {
-		if key := loadKeyFromEnvFile(loadExeEnvFilePath(), envVar); key != "" {
-			return key, KeySourceEnvFile
-		}
-
-		// 4. .env in CWD
-		if key := loadKeyFromEnvFile(".env", envVar); key != "" {
-			return key, KeySourceEnvFile
+	if account != "" {
+		if key, err := defaultStore().Get(account); err == nil && key != "" {
+			return key, KeySourceSecretProvider
 		}
 	}
 
@@ -130,8 +97,8 @@ func resolveKey(envVar, keyringUser string) (string, KeySource) {
 
 // ResolveProviderCredential resolves a Credential for the given provider by
 // walking its AuthMethods (see providers.go) in priority order and returning
-// the first that yields a value. API-key methods are resolved env → keychain →
-// .env (env-first); OAuth methods are resolved from the keychain-backed auth
+// the first that yields a value. API-key methods are resolved from daz-secrets;
+// OAuth methods are resolved from the same provider-backed auth
 // subsystem (without refreshing). Returns a KeySourceNone credential when
 // nothing is found.
 func ResolveProviderCredential(provider string) Credential {
@@ -174,7 +141,7 @@ func resolveProviderCredential(ctx context.Context, provider string, refresh boo
 // isOAuthMethod reports whether a method obtains its credential via an OAuth
 // login. This includes the interactive OAuth flows (OAuthMintKey/OAuthToken)
 // and bearer-style API-key methods, which carry an OAuth token shipped through
-// env/keychain (e.g. CLAUDE_CODE_OAUTH_TOKEN).
+// the configured provider (legacy schemas may still name an EnvVar).
 func isOAuthMethod(m AuthMethod) bool {
 	if m.Kind == OAuthMintKey || m.Kind == OAuthToken {
 		return true
@@ -230,7 +197,7 @@ func reorderAuthMethods(methods []AuthMethod, pref string) []AuthMethod {
 // buildCredential assembles a Credential from a resolved value and its auth
 // method (header style, endpoint override, and any derived extra headers). For a
 // method whose endpoint is supplied by the user (RequiresBaseURL), the stored
-// or env-provided base URL overrides the method's static BaseURL.
+// base URL overrides the method's static BaseURL.
 func buildCredential(value string, src KeySource, m AuthMethod) Credential {
 	baseURL := m.BaseURL
 	if m.RequiresBaseURL {
@@ -245,15 +212,9 @@ func buildCredential(value string, src KeySource, m AuthMethod) Credential {
 	return cred
 }
 
-// resolveMethodBaseURL returns the user-supplied endpoint for a method: the
-// BaseURLEnv environment variable first, then the keychain entry stored next to
-// the key. Returns "" when neither is set.
+// resolveMethodBaseURL returns the user-supplied endpoint stored next to the
+// method credential. Returns "" when it is unset.
 func resolveMethodBaseURL(m AuthMethod) string {
-	if m.BaseURLEnv != "" {
-		if v := os.Getenv(m.BaseURLEnv); v != "" {
-			return v
-		}
-	}
 	if m.Keyring != "" {
 		if v, err := defaultStore().Get(methodBaseURLKeyringUser(m.Keyring)); err == nil && v != "" {
 			return v
@@ -292,8 +253,7 @@ func ResolveProviderKey(provider string) (key string, source KeySource) {
 	return cred.Value, cred.Source
 }
 
-// StoreProviderKey writes the API key for the given provider to the credential
-// store (OS keychain, or the auth.json fallback when no keyring is available).
+// StoreProviderKey writes the API key for the given provider to daz-secrets.
 func StoreProviderKey(provider, key string) error {
 	return defaultStore().Set(providerKeyringUser(provider), key)
 }
@@ -310,7 +270,7 @@ func DeleteProviderKey(provider string) error {
 	return err
 }
 
-// methodBaseURLKeyringUser returns the keyring "user" field for the endpoint
+// methodBaseURLKeyringUser returns the legacy schema account for the endpoint
 // stored alongside a method's key, e.g. "mimo-tokenplan-api-key" →
 // "mimo-tokenplan-api-key-base-url".
 func methodBaseURLKeyringUser(keyringUser string) string {
@@ -335,7 +295,7 @@ func StoreProviderMethodKey(provider, methodID, key, baseURL string) error {
 		return fmt.Errorf("provider %q: unknown credential method %q", provider, methodID)
 	}
 	if m.Keyring == "" {
-		return fmt.Errorf("provider %q method %q: not keychain-storable", provider, methodID)
+		return fmt.Errorf("provider %q method %q: no secret-provider account", provider, methodID)
 	}
 	if err := defaultStore().Set(m.Keyring, key); err != nil {
 		return err
@@ -356,7 +316,7 @@ func DeleteProviderMethodKey(provider, methodID string) error {
 		return fmt.Errorf("provider %q: unknown credential method %q", provider, methodID)
 	}
 	if m.Keyring == "" {
-		return fmt.Errorf("provider %q method %q: not keychain-storable", provider, methodID)
+		return fmt.Errorf("provider %q method %q: no secret-provider account", provider, methodID)
 	}
 	err := defaultStore().Delete(m.Keyring)
 	if errors.Is(err, ErrCredNotFound) {
@@ -373,7 +333,7 @@ func DeleteProviderMethodKey(provider, methodID string) error {
 	return err
 }
 
-// providerAuthDefaultUser returns the keyring "user" field for a provider's
+// providerAuthDefaultUser returns the secret-provider account for a provider's
 // default-method marker, e.g. "anthropic" → "anthropic-auth-default".
 func providerAuthDefaultUser(provider string) string {
 	return provider + "-auth-default"
@@ -412,7 +372,7 @@ type MethodStatus struct {
 	ID              string `json:"id"`                 // AuthMethod.ID() — stable identity for the default marker
 	Label           string `json:"label"`              // display label ("API Key", "Token Plan", "OAuth")
 	OAuth           bool   `json:"oauth"`              // render as a token method rather than an API key
-	Stored          bool   `json:"stored"`             // a credential is available (keychain key or stored OAuth login)
+	Stored          bool   `json:"stored"`             // a provider credential or OAuth login is available
 	Prefix          string `json:"prefix,omitempty"`   // first 10 chars of a stored API key, for display
 	RequiresBaseURL bool   `json:"requires_base_url"`  // method carries a user-supplied endpoint
 	BaseURL         string `json:"base_url,omitempty"` // the stored/env endpoint, for display
@@ -421,7 +381,7 @@ type MethodStatus struct {
 
 // ProviderAuthStatus summarizes a provider's user-manageable credential methods
 // and which one is the effective default. It is the single read the UI needs to
-// render the authentication panel without touching the keychain or auth
+// render the authentication panel without touching the provider or auth
 // subsystem directly.
 type ProviderAuthStatus struct {
 	Methods []MethodStatus `json:"methods"`
@@ -472,10 +432,7 @@ func methodLabel(m AuthMethod) string {
 }
 
 // methodStored reports whether a credential is available for a method and, for
-// API-key methods, the first 10 chars of the resolved key for display. API-key
-// availability follows the same env → keychain → .env order as resolution (see
-// resolveKey), so a provider configured purely via its env_var counts as
-// available even without a keychain entry.
+// API-key methods, the first 10 chars of the provider-backed key for display.
 func methodStored(m AuthMethod) (stored bool, prefix string) {
 	if isOAuthMethod(m) {
 		if m.LoginID == "" {
@@ -575,32 +532,4 @@ func ListStoredProviderKeys() []ProviderKey {
 		result = append(result, pk)
 	}
 	return result
-}
-
-// loadExeEnvFilePath returns the path to the .env file next to the executable.
-func loadExeEnvFilePath() string {
-	exe, err := os.Executable()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(filepath.Dir(exe), "..", "..", ".env")
-}
-
-// loadKeyFromEnvFile reads a .env file and extracts the value of the given variable name.
-func loadKeyFromEnvFile(path, varName string) string {
-	if path == "" {
-		return ""
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	prefix := varName + "="
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimPrefix(strings.TrimSpace(line), "export ")
-		if strings.HasPrefix(line, prefix) {
-			return strings.TrimSpace(strings.SplitN(line, "=", 2)[1])
-		}
-	}
-	return ""
 }

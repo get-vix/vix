@@ -356,21 +356,29 @@ func bashReferencesDeniedURL(command string, denyURLs []string) (bool, string, s
 }
 
 // bashReferencesDeniedPath scans command for path-like tokens that resolve
-// inside a deny_list entry. Best-effort: a token only counts as a path when
-// it contains a path separator ('/'). Bare words like `secrets` are NOT
-// treated as paths — prose such as `echo 'I have no secrets'` must not
-// trigger a block. Variable expansion, heredocs, and reassembly across
-// variables are explicitly out of scope for v1.
+// inside a deny_list entry. Tokens containing a path separator are checked as
+// paths. A bare token is checked only against an exact deny entry that exists
+// as a regular file; this catches `cat secret.txt` without treating a denied
+// directory name in ordinary prose as a path. Variable expansion, heredocs,
+// and reassembly across variables are explicitly out of scope for v1.
 func bashReferencesDeniedPath(command, cwd string, denyList []string) (bool, string, string) {
 	if command == "" || len(denyList) == 0 {
 		return false, "", ""
 	}
 	for _, tok := range splitBashTokens(command) {
-		if !strings.ContainsRune(tok, '/') {
+		if strings.ContainsRune(tok, '/') {
+			if denied, entry := isPathDenied(tok, cwd, denyList); denied {
+				return true, entry, tok
+			}
 			continue
 		}
-		if denied, entry := isPathDenied(tok, cwd, denyList); denied {
-			return true, entry, tok
+		realToken := normalizeForDeny(cwd, tok)
+		for _, entry := range denyList {
+			realEntry := normalizeForDeny(cwd, entry)
+			info, err := os.Stat(realEntry)
+			if err == nil && info.Mode().IsRegular() && realToken == realEntry {
+				return true, entry, tok
+			}
 		}
 	}
 	return false, "", ""

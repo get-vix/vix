@@ -49,7 +49,7 @@ Create `~/.vix/providers.json`:
         "auth_scheme": "bearer"
       },
       "credential_methods": [
-        { "kind": "api_key", "env_var": "MY_PROVIDER_API_KEY" }
+        { "kind": "api_key", "keyring": "my-provider-api-key" }
       ],
       "models": []
     }
@@ -58,10 +58,11 @@ Create `~/.vix/providers.json`:
 }
 ```
 
-Then set your API key:
+Then store your API key through daz-secrets under service `vix`:
 
 ```bash
-export MY_PROVIDER_API_KEY=sk-...
+python3 -c 'import getpass,sys; sys.stdout.write(getpass.getpass("Provider key: "))' \
+  | daz-secrets set vix my-provider-api-key
 ```
 
 Restart `vixd` and your provider will appear in the model picker. If `"local": true` is set,
@@ -132,11 +133,11 @@ Controls what default reasoning effort is used when you don't specify one explic
 
 | Field | Type | Description |
 |---|---|---|
-| `base_url` | `string` | The API root URL. Supports `${env:VAR}` and `${env:VAR:-default}` interpolation. See [Env var interpolation](#environment-variable-interpolation). |
+| `base_url` | `string` | The API root URL. Legacy `${env:VAR}` syntax maps `VAR` to a lowercase, hyphenated daz-secrets account under service `vix`; `:-default` supplies a public default. |
 | `auth_scheme` | `string` | How the resolved credential is attached to every request. `"bearer"` → `Authorization: Bearer <value>`. `"x-api-key"` → `x-api-key: <value>` (Anthropic default). |
 | `auth_header` | `string` | Raw header name for non-standard auth schemes. Rarely needed — leave empty unless the provider docs say otherwise. |
-| `headers` | `object` | Static `"key": "value"` headers added to every request. Values support `${env:VAR}` interpolation; entries whose value resolves to an empty string are dropped. |
-| `query_params` | `object` | Static `"key": "value"` query parameters appended to every request URL. Values support `${env:VAR}` interpolation; entries whose value resolves to an empty string are dropped. |
+| `headers` | `object` | Static `"key": "value"` headers added to every request. Legacy `${env:VAR}` references resolve through daz-secrets; missing values are dropped. |
+| `query_params` | `object` | Static `"key": "value"` query parameters appended to every request URL. Legacy `${env:VAR}` references resolve through daz-secrets; missing values are dropped. |
 | `json_set` | `object` | Arbitrary `"key": value` fields injected into every request body. Values are **not** interpolated (they are non-string JSON). |
 | `effort_style` | `string` | For `chat_completions` wire format only. `"reasoning_effort"` sends the standard OpenAI `reasoning_effort` knob. `"reasoning_split"` sends `reasoning_split: true`. Leave empty for no reasoning field. |
 
@@ -150,19 +151,19 @@ value.
 #### `kind: "api_key"` — static API key (most common)
 
 ```json
-{ "kind": "api_key", "env_var": "MY_API_KEY", "keyring": "my-api-key" }
+{ "kind": "api_key", "keyring": "my-api-key" }
 ```
 
 | Field | Description |
 |---|---|
-| `env_var` | Environment variable name to read. Checked first. At least one of `env_var` or `keyring` **must** be set for `api_key` methods. |
-| `keyring` | OS keyring / `.env` file key name. Checked if `env_var` is unset or empty. At least one of `env_var` or `keyring` **must** be set for `api_key` methods. |
+| `env_var` | Legacy schema alias. Vix does not read the environment; when `keyring` is empty this name is lowercased and `_` becomes `-` to derive the daz-secrets account. |
+| `keyring` | Stable daz-secrets account under service `vix`. The field name is retained for schema compatibility. At least one of `env_var` or `keyring` must name an account. |
 | `label` | Human-readable name shown in the credential panel (useful when a provider has multiple keys of the same kind). Duplicate labels within the same provider are rejected. |
 | `header_style` | `"bearer"` to force `Authorization: Bearer` regardless of the `auth_scheme` on the inference block. |
 | `extra_headers_producer` | Built-in function that derives extra headers from the credential value. `"anthropic_oauth"` or `"codex_oauth"`. Leave empty for normal API keys. |
 | `base_url` | Endpoint override implied by this credential method (e.g. OAuth uses a different base URL than API key). Must be HTTPS for remote providers. |
-| `requires_base_url` | `true` if the user must supply the base URL at credential-entry time (e.g. region-specific endpoints). The TUI will prompt for it. **Requires `keyring` to also be set** (used to store the endpoint). |
-| `base_url_env` | Env var that overrides the stored user-supplied base URL for a `requires_base_url` method. |
+| `requires_base_url` | `true` if the user must supply the base URL at credential-entry time (e.g. region-specific endpoints). The TUI will prompt for it. **Requires `keyring` to also be set** (used as the account prefix). |
+| `base_url_env` | Legacy schema name for the daz-secrets account holding the endpoint. |
 
 #### `kind: "none"` — no credential needed
 
@@ -177,7 +178,7 @@ For local servers that run without authentication (Ollama without an API key, ll
 > That way the provider works both with and without a key:
 > ```json
 > "credential_methods": [
->   { "kind": "api_key", "env_var": "MY_API_KEY" },
+>   { "kind": "api_key", "keyring": "my-api-key" },
 >   { "kind": "none" }
 > ]
 > ```
@@ -287,14 +288,10 @@ API on `http://localhost:13305/v1`. It ships as a **built-in** `lemonade` provid
 is needed: start Lemonade Server, and any served model shows up under the `lemonade/` prefix in
 the Models tab (F3), discovered live from `/v1/models`.
 
-Only override the base URL if your server listens elsewhere (a different port, or a Lemonade box
-on your LAN):
+Only override the base URL if your server listens elsewhere by patching the built-in provider's
+`inference.base_url` in `~/.vix/providers.json`.
 
-```bash
-export LEMONADE_BASE_URL="http://my-lemonade-host:13305/v1"
-```
-
-An API key is optional (`LEMONADE_API_KEY`) and only needed if your server requires one. Being a
+An API key in daz-secrets account `vix/lemonade-api-key` is optional and only needed if your server requires one. Being a
 local provider, Lemonade may use plain HTTP on loopback or your LAN.
 
 ---
@@ -315,7 +312,7 @@ local provider, Lemonade may use plain HTTP on loopback or your LAN.
         "auth_scheme": "bearer"
       },
       "credential_methods": [
-        { "kind": "api_key", "env_var": "MY_CLOUD_API_KEY" }
+        { "kind": "api_key", "keyring": "my-cloud-api-key" }
       ],
       "models": [
         { "spec": "my-cloud/fast",  "display_name": "Fast",  "context_window": 128000 },
@@ -346,7 +343,7 @@ local provider, Lemonade may use plain HTTP on loopback or your LAN.
         "auth_scheme": "bearer"
       },
       "credential_methods": [
-        { "kind": "api_key", "env_var": "MY_LOCAL_API_KEY" },
+        { "kind": "api_key", "keyring": "my-local-api-key" },
         { "kind": "none" }
       ],
       "models": []
@@ -356,7 +353,7 @@ local provider, Lemonade may use plain HTTP on loopback or your LAN.
 }
 ```
 
-`credential_methods` tries the env var first, then falls back to `none` — so the provider works
+`credential_methods` tries the daz-secrets account first, then falls back to `none` — so the provider works
 whether or not your server requires a key.
 
 ---
@@ -392,21 +389,20 @@ Some providers require non-standard body fields:
 
 ---
 
-## Environment variable interpolation
+## Provider-backed interpolation
 
-The following `inference` string fields support `${env:...}` substitution:
+For schema compatibility, the following `inference` string fields support `${env:...}` syntax:
 `base_url`, and individual values inside `headers` and `query_params`.
 
 > **Not interpolated:** `json_set` values (they are arbitrary JSON, not strings).
 
 | Syntax | Behaviour |
 |---|---|
-| `${env:MY_VAR}` | Substituted with `$MY_VAR`. Empty string if the variable is unset. |
-| `${env:MY_VAR:-https://fallback.example.com/v1}` | Substituted with `$MY_VAR`, falling back to the default when unset or empty. |
+| `${env:MY_VAR}` | Reads daz-secrets account `vix/my-var`. Empty string if the account is absent. |
+| `${env:MY_VAR:-https://fallback.example.com/v1}` | Reads `vix/my-var`, falling back to the public default when absent or empty. |
 
 Headers and query params whose value resolves to an empty string are **dropped** from the
-request (e.g. an optional group-ID header won't be sent as a blank header when the env var
-is absent).
+request (e.g. an optional group-ID header won't be sent as a blank header when the provider account is absent).
 
 Example:
 
@@ -537,7 +533,6 @@ fields you supply win, the rest are inherited from the embedded spec.
 - The probe times out after 1.5 seconds; a slow server may appear offline even if it's running.
 
 **API key is not picked up**
-- The env var is resolved at inference time, not at startup — make sure it's set in the
-  environment where `vixd` runs (not just the shell running `vix`).
-- If `keyring` is specified, vix also checks the `.env` file at the project root.
-
+- Confirm the daz-secrets provider handshake succeeds and the account named by `keyring`
+  exists under service `vix`.
+- Vix deliberately ignores credential environment variables and dotenv files.

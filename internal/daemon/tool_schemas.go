@@ -403,7 +403,7 @@ func buildToolSchemas(def, max time.Duration) []anthropic.ToolUnionParam {
 		}},
 		{OfTool: &anthropic.ToolParam{
 			Name:        "web_search",
-			Description: anthropic.String("Search the web using Brave Search API. Returns a numbered list of results with titles, URLs, and descriptions. Requires BRAVE_SEARCH_API_KEY environment variable."),
+			Description: anthropic.String("Search the web using Brave Search API. Returns a numbered list of results with titles, URLs, and descriptions. Requires the vix/brave-search-api-key daz-secrets item."),
 			InputSchema: anthropic.ToolInputSchemaParam{
 				Properties: map[string]any{
 					"query": map[string]any{"type": "string", "description": "The search query."},

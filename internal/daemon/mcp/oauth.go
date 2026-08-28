@@ -21,8 +21,8 @@ import (
 // authorization flow (`vix mcp auth <server>` or the F4 tab).
 var ErrNeedsAuth = errors.New("mcp: server requires authentication")
 
-// TokenStore persists OAuth tokens per MCP server. Implementations are backed by
-// the vix credential store (OS keyring, with a 0600 auth.json fallback). Load
+// TokenStore persists OAuth tokens per MCP server through the vix daz-secrets
+// provider. Load
 // returns (nil, nil) when no token is stored.
 type TokenStore interface {
 	Load(server string) (*oauth2.Token, error)
@@ -125,9 +125,13 @@ func resolveOAuthConfig(ctx context.Context, cfg ServerConfig, redirectURL strin
 			scopes = d.Scopes
 		}
 	}
+	clientSecret, err := expandSecretValue(cfg.OAuth.ClientSecret)
+	if err != nil {
+		return nil, fmt.Errorf("resolve OAuth client secret: %w", err)
+	}
 	return &oauth2.Config{
 		ClientID:     cfg.OAuth.ClientID,
-		ClientSecret: expandEnvValue(cfg.OAuth.ClientSecret),
+		ClientSecret: clientSecret,
 		Endpoint:     ep,
 		Scopes:       scopes,
 		RedirectURL:  redirectURL,

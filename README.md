@@ -80,7 +80,17 @@ All benchmarks are fully reproducible and include the full LLM transcripts and p
 curl -fsSL https://getvix.dev/install.sh | bash
 ```
 
-You will need to define `ANTHROPIC_API_KEY` in your environment variables.
+Vix reads every API key and OAuth token through
+[daz-secrets](https://github.com/darrenoakey/daz-secrets). Configure a provider,
+then add a key from Vix's Models tab (`F3`) or with the stdin-only CLI:
+
+```bash
+python3 -c 'import getpass,sys; sys.stdout.write(getpass.getpass("Anthropic key: "))' \
+  | daz-secrets set vix anthropic-api-key
+```
+
+Vix does not read secrets from environment variables or dotenv files and does
+not call the OS credential store directly.
 
 ```bash
 brew tap get-vix/vix

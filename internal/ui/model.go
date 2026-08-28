@@ -2190,7 +2190,7 @@ func (m *Model) enterModelsTab() {
 }
 
 // credClient returns a connection-level daemon client for credential RPCs.
-// Credentials are daemon-owned: the TUI never touches the keychain/auth.json
+// Credentials are daemon-owned: the TUI never touches the secret provider
 // directly, it asks the daemon to store/read them (config_dir-agnostic, since
 // credentials are user-global).
 func (m *Model) credClient() *daemon.Client {
@@ -2654,11 +2654,11 @@ func (m Model) activateAuthButton() (tea.Model, tea.Cmd) {
 		m.clampModelsAuth()
 	case "set_token":
 		if ProviderSupportsLogin(provider) {
-			if !auth.KeychainAvailable() {
-				m.modelsLoginStatus = "Starting " + provider + " login… (token will be stored in plaintext auth.json)"
-			} else {
-				m.modelsLoginStatus = "Starting " + provider + " login…"
+			if !auth.SecretProviderAvailable() {
+				m.modelsLoginStatus = "Secret provider unavailable; login cannot be stored"
+				return m, nil
 			}
+			m.modelsLoginStatus = "Starting " + provider + " login…"
 			return m, startProviderLogin(provider)
 		}
 	case "del_token":

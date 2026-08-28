@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/get-vix/vix/internal/config"
@@ -140,16 +141,14 @@ func NewFromModel(spec string, plugins PluginSource, effort string, maxTokens in
 }
 
 // buildMessages constructs the Anthropic Messages adapter (the default) or the
-// AWS Bedrock adapter when the provider is bedrock. The Anthropic SDK owns its
-// base URL + path (/v1/messages); injecting the spec base_url would double the
-// path, so we let the SDK default stand and honor only an explicit cfg.BaseURL
-// override (credential endpoint or test server). Bedrock builds its endpoint
-// URL dynamically from region + model at runtime.
+// AWS Bedrock adapter when the provider is bedrock. Registry base URLs use the
+// conventional /v1 API prefix, while the Anthropic SDK appends /v1/messages
+// itself, so its registry URL is normalized to the host root before use.
 func buildMessages(p providers.ProviderSpec, inf providers.InferenceSpec, cfg Config) (Client, error) {
+	if cfg.BaseURL == "" {
+		cfg.BaseURL = strings.TrimSuffix(strings.TrimRight(inf.BaseURL, "/"), "/v1")
+	}
 	if p.ID == "bedrock" {
-		if cfg.BaseURL == "" {
-			cfg.BaseURL = inf.BaseURL
-		}
 		return NewBedrock(cfg)
 	}
 	return NewAnthropic(cfg)
@@ -157,8 +156,10 @@ func buildMessages(p providers.ProviderSpec, inf providers.InferenceSpec, cfg Co
 
 // buildResponses constructs the OpenAI Responses adapter (also used by the
 // ChatGPT/Codex backend, whose endpoint arrives via cred.BaseURL → cfg.BaseURL).
-// Like Messages, the SDK owns its base path (/responses).
-func buildResponses(_ providers.ProviderSpec, _ providers.InferenceSpec, cfg Config) (Client, error) {
+func buildResponses(_ providers.ProviderSpec, inf providers.InferenceSpec, cfg Config) (Client, error) {
+	if cfg.BaseURL == "" {
+		cfg.BaseURL = inf.BaseURL
+	}
 	return NewOpenAI(cfg)
 }
 

@@ -166,8 +166,8 @@ in the daemon's `state → *mcp.AuthFlow` registry (`registerMCPAuthFlow` /
 (`mcp.Authorize`); pin its port with `redirect_port` and register
 `http://127.0.0.1:<port>/callback` instead.
 
-Tokens are stored through the vix credential store (OS keyring, `0600`
-`auth.json` fallback) under key `mcp-oauth-<server>` (`mcp_oauth.go`,
+Tokens are stored through the configured daz-secrets provider under account
+`mcp-oauth-<server>` and service `vix` (`mcp_oauth.go`,
 `mcpTokenStore`), refreshed automatically, and injected as `Authorization:
 Bearer`; a `401` triggers one refresh+retry (`client_http.go`). Consider
 deny-listing the credential file. The interactive flow is a one-time step —
@@ -433,7 +433,7 @@ The daemon nudges the model if it finishes a turn with pending/in-progress todos
 ## Environment
 
 - **Go 1.26+** required
-- **ANTHROPIC_API_KEY** environment variable or `.env` file for LLM access
+- A configured [daz-secrets](https://github.com/darrenoakey/daz-secrets) provider and at least one provider credential under service `vix`
 - **LSP servers** (optional): gopls, pylsp, typescript-language-server for code intelligence
 - **LSP config**: `.vix/settings.json` in project root
 
@@ -518,5 +518,37 @@ Resolution lives in `LoadProjectConfig` (`internal/daemon/workflow.go`): `~` exp
 Coverage:
 - `read_file` / `write_file` / `edit_file` / `delete_file` (and the minified variants): refused before execution when the target path is denied.
 - `web_fetch`: refused when the `url` parameter matches a URL deny entry.
-- `bash`: refused when any path-like token (a token that contains `/`) in the command resolves inside a denied path, or when any token containing `://` resolves to a denied URL. Bare words without `/` are not treated as paths, so prose like `echo 'no secrets here'` is allowed. Variable expansion, heredocs, and reassembly across variables are **not** analyzed (best-effort v1).
+- `bash`: refused when any path-like token (a token that contains `/`) in the command resolves inside a denied path, when a bare token exactly names an existing denied regular file, or when any token containing `://` resolves to a denied URL. Bare prose remains allowed because directory names without `/` are not interpreted as paths. Variable expansion, heredocs, and reassembly across variables are **not** analyzed (best-effort v1).
 - `grep` / `glob_files`: matches inside a denied path are silently filtered from the output.
+
+<!-- >>> greenline >>> -->
+## Greenline gate — how merges work here
+
+This repo is gated by **greenline**. Read `docs/greenline.md` and `docs/DOCTRINE.md`
+before writing code or tests.
+
+**Invariants (never violate):**
+- `main` == what prod runs == green, always.
+- The canonical checkout is pristine — never edit it by hand.
+- All work happens in worktrees branched from last-green.
+- Every merge goes through the serialized gate: full `check` + real `deploy`.
+- Parallel shell test shards must record every child PID and aggregate every
+  exit status. A bare `wait` reports only the final child and can hide an
+  earlier shard failure.
+
+**Your workflow:**
+1. `greenline worktree <name>` — get a worktree at `/Volumes/Gumby/worktrees/greenline/vix/<name>` on branch `gl/<name>`.
+2. Do your work there. Co-design tests + code per docs/DOCTRINE.md (parallel-safe, namespaced, no global-state assertions, OS-assigned ports; never mock other services — make real calls fast with a content-addressed record/replay cache).
+3. Commit in your worktree. Then `greenline submit` (from that worktree).
+4. The gate squash-merges, runs `./run check`, fast-forwards `main`, runs `./run deploy`, and publishes. It rolls back prod automatically if deploy fails.
+5. On success: `greenline done` to remove your worktree + branch.
+
+**Never** commit or push on `main` — hooks hard-lock it (reference-transaction
+cannot be bypassed with `--no-verify`; pre-commit/pre-push refuse too). Never edit the
+canonical checkout. If the gate reports a conflict, rebase your worktree on
+`main` and resubmit. If commits somehow reached `main` outside the
+gate (legacy workflow, hotfix), run `greenline adopt` to gate them in place —
+greenline never discards commits on `main`.
+
+Diagnose with `greenline status` and `greenline doctor` (`--fix` to reconcile).
+<!-- <<< greenline <<< -->

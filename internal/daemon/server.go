@@ -79,9 +79,9 @@ type Server struct {
 	vixBin string
 
 	// Shared-secret token validated on every incoming socket message. Loaded
-	// once at daemon start from the file passed via vixd's -auth-token-path
-	// flag and stored in memory only — never logged, never copied into a
-	// subprocess environment. When empty (the default — flag unset, or
+	// once at daemon start from daz-secrets account vix/daemon-auth-token and
+	// stored in memory only — never logged or copied into a subprocess
+	// environment. When empty (the account is absent, or
 	// in-process test embedding), the validation is skipped, so the daemon
 	// behaves exactly as it did before the auth feature existed. Set the
 	// flag (and have the client load the same file) only when the daemon
@@ -360,8 +360,8 @@ func (s *Server) GetHandler(command string) HandlerFunc {
 }
 
 // authOK reports whether the supplied token authenticates the caller.
-// Empty s.authToken disables the check entirely — that's the legacy mode
-// (vixd run without -auth-token-path) and in-process test embeddings.
+// Empty s.authToken disables the check entirely — that's the mode when the
+// daz-secrets account is absent and for in-process test embeddings.
 // Comparison is constant-time so a network attacker can't time-leak the
 // token byte-by-byte; the AF_UNIX socket itself isn't exposed to the
 // network, but the constant-time path is cheap and removes one less thing

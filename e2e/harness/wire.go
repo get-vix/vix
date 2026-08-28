@@ -6,18 +6,18 @@ import "testing"
 var AllWires = []Wire{WireMessages, WireResponses, WireChatCompletions}
 
 // wireModel maps a wire to a model spec that routes a thread through it. The
-// matching provider's base URL is pointed at the mock by daemonEnv:
-//   - messages       → anthropic (daemon default; no spec needed)
-//   - responses      → openai (OPENAI_BASE_URL → mock)
-//   - chat_completions → minimax (MINIMAX_BASE_URL → mock)
+// matching provider's base URL is pointed at the TLS mock by providers.json:
+//   - messages         → anthropic (daemon default; no spec needed)
+//   - responses        → openai
+//   - chat_completions → minimax
 func wireModel(w Wire) string {
 	switch w {
 	case WireResponses:
 		return "openai/gpt-4o"
+	case WireChatCompletions:
+		return "minimax/MiniMax-M2.7"
 	default:
-		// messages: anthropic default. chat_completions: see WireOptions/Start —
-		// it currently skips (routing an http loopback through a cloud provider
-		// trips the providers HTTPS validation).
+		// Messages use the default Anthropic model.
 		return ""
 	}
 }
