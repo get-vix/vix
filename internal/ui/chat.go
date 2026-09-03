@@ -72,6 +72,7 @@ type ChatMessage struct {
 	TurnElapsed  time.Duration // elapsed duration passed to renderTurnInfo
 	TurnCost     float64       // cost value passed to renderTurnInfo
 	TurnNum      int           // 1-based turn number passed to renderTurnInfo
+	TurnReceived time.Time     // when the answer was received, passed to renderTurnInfo
 }
 
 // renderUserMessage creates a rendered user message stamped with the current
@@ -128,7 +129,7 @@ func renderUserMessageAt(text string, width int, ts time.Time, attachments ...pr
 		if testRenderMode {
 			shown = frozenClock
 		}
-		tsLine := userTimestampStyle.Render("Sent at " + shown.Format("3:04 PM"))
+		tsLine := userTimestampStyle.Render("Sent at " + formatSentAt(shown, renderNow()))
 		sb.WriteString(fmt.Sprintf("%s  %s\n", bar, tsLine))
 	}
 	rendered := sb.String() + "\n"
@@ -139,6 +140,29 @@ func renderUserMessageAt(text string, width int, ts time.Time, attachments ...pr
 		Rendered:    rendered,
 		Attachments: attachments,
 	}
+}
+
+// formatSentAt renders a user message's send time: always the clock time, plus
+// the date when sent is not on the same calendar day as ref (today). The year
+// is included only when it differs from ref's year.
+func formatSentAt(sent, ref time.Time) string {
+	clock := sent.Format("3:04 PM")
+	if sameDay(sent, ref) {
+		return clock
+	}
+	dateLayout := "Jan 2"
+	if sent.Year() != ref.Year() {
+		dateLayout = "Jan 2, 2006"
+	}
+	return clock + " · " + sent.Format(dateLayout)
+}
+
+// sameDay reports whether a and b fall on the same calendar day in their
+// respective locations.
+func sameDay(a, b time.Time) bool {
+	ay, am, ad := a.Date()
+	by, bm, bd := b.Date()
+	return ay == by && am == bm && ad == bd
 }
 
 // wrapLine splits a single line into multiple lines that fit within maxWidth columns.
@@ -1569,7 +1593,7 @@ func (msg ChatMessage) rerender(md *MarkdownRenderer, s Styles, width int) ChatM
 		return renderToolResultWithContext(msg.ToolName, msg.Text, msg.IsError, msg.ShowToolName, msg.Detail, s, md, width-4)
 	case MsgSystem:
 		if msg.TurnModel != "" {
-			return renderTurnInfo(msg.TurnModel, msg.TurnElapsed, msg.TurnCost, msg.TurnNum, width, s)
+			return renderTurnInfo(msg.TurnModel, msg.TurnElapsed, msg.TurnCost, msg.TurnNum, msg.TurnReceived, width, s)
 		}
 		return msg
 	default:
@@ -1782,11 +1806,13 @@ func countTurnSeparators(messages []ChatMessage) int {
 }
 
 // renderTurnInfo renders a turn-end separator line. The left zone keeps the
-// model, elapsed time, and cost; the right zone shows the turn number and the
-// actions available from this point. Dashes fill the gap between them. The
-// right zone degrades gracefully (and is dropped entirely) on narrow widths.
-// width is the total content width (mdRenderer.width + 4). turnNum is 1-based.
-func renderTurnInfo(model string, elapsed time.Duration, cost float64, turnNum int, width int, s Styles) ChatMessage {
+// model, elapsed time, cost, and the date+time the answer was received; the
+// right zone shows the turn number and the actions available from this point.
+// Dashes fill the gap between them. The right zone degrades gracefully (and is
+// dropped entirely) on narrow widths. width is the total content width
+// (mdRenderer.width + 4). turnNum is 1-based. A zero received time omits the
+// date+time segment (e.g. a legacy replayed turn with no persisted timestamp).
+func renderTurnInfo(model string, elapsed time.Duration, cost float64, turnNum int, received time.Time, width int, s Styles) ChatMessage {
 	dimStyle := lipgloss.NewStyle().Foreground(s.ColorDimGray)
 
 	secs := int(elapsed.Seconds())
@@ -1794,6 +1820,13 @@ func renderTurnInfo(model string, elapsed time.Duration, cost float64, turnNum i
 		secs = 0
 	}
 	info := fmt.Sprintf("◇ %s · %ds · $%.2f ", formatModelName(model), secs, cost)
+	if !received.IsZero() {
+		shown := received
+		if testRenderMode {
+			shown = frozenClock
+		}
+		info = fmt.Sprintf("◇ %s · %ds · $%.2f · %s ", formatModelName(model), secs, cost, shown.Format("Jan 2, 2006 · 3:04 PM"))
+	}
 	infoRendered := dimStyle.Render(info)
 
 	// Content is inside a bordered viewport: width - 2 (border) - 2 (padding) - 2 (indent)
@@ -1844,12 +1877,13 @@ func renderTurnInfo(model string, elapsed time.Duration, cost float64, turnNum i
 
 	rendered := "  " + infoRendered + dashes + rightRendered + "\n"
 	return ChatMessage{
-		Type:        MsgSystem,
-		Text:        info,
-		Rendered:    rendered,
-		TurnModel:   model,
-		TurnElapsed: elapsed,
-		TurnCost:    cost,
-		TurnNum:     turnNum,
+		Type:         MsgSystem,
+		Text:         info,
+		Rendered:     rendered,
+		TurnModel:    model,
+		TurnElapsed:  elapsed,
+		TurnCost:     cost,
+		TurnNum:      turnNum,
+		TurnReceived: received,
 	}
 }

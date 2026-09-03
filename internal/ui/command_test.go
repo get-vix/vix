@@ -220,10 +220,11 @@ func TestGotoTurn(t *testing.T) {
 
 func TestRenderTurnInfo_WideShowsActions(t *testing.T) {
 	s := NewStyles(true)
-	msg := renderTurnInfo("anthropic/claude-sonnet-4-6", 59*time.Second, 0.23, 4, 200, s)
+	received := time.Date(2025, 1, 2, 15, 4, 0, 0, time.UTC)
+	msg := renderTurnInfo("anthropic/claude-sonnet-4-6", 59*time.Second, 0.23, 4, received, 200, s)
 	plain := ansiRe.ReplaceAllString(msg.Rendered, "")
 
-	for _, want := range []string{"Turn #4", "From here:", "/fork", "/trim", "/copy", "59s", "$0.23"} {
+	for _, want := range []string{"Turn #4", "From here:", "/fork", "/trim", "/copy", "59s", "$0.23", "Jan 2, 2025", "3:04 PM"} {
 		if !strings.Contains(plain, want) {
 			t.Errorf("wide separator missing %q in %q", want, plain)
 		}
@@ -232,7 +233,8 @@ func TestRenderTurnInfo_WideShowsActions(t *testing.T) {
 
 func TestRenderTurnInfo_NarrowDropsRightZone(t *testing.T) {
 	s := NewStyles(true)
-	msg := renderTurnInfo("anthropic/claude-sonnet-4-6", 59*time.Second, 0.23, 4, 14, s)
+	received := time.Date(2025, 1, 2, 15, 4, 0, 0, time.UTC)
+	msg := renderTurnInfo("anthropic/claude-sonnet-4-6", 59*time.Second, 0.23, 4, received, 14, s)
 	plain := ansiRe.ReplaceAllString(msg.Rendered, "")
 
 	if strings.Contains(plain, "Turn #") {
@@ -242,10 +244,49 @@ func TestRenderTurnInfo_NarrowDropsRightZone(t *testing.T) {
 
 func TestRenderTurnInfo_ZeroTurnNumHasNoRightZone(t *testing.T) {
 	s := NewStyles(true)
-	msg := renderTurnInfo("anthropic/claude-sonnet-4-6", 59*time.Second, 0.23, 0, 200, s)
+	received := time.Date(2025, 1, 2, 15, 4, 0, 0, time.UTC)
+	msg := renderTurnInfo("anthropic/claude-sonnet-4-6", 59*time.Second, 0.23, 0, received, 200, s)
 	plain := ansiRe.ReplaceAllString(msg.Rendered, "")
 
 	if strings.Contains(plain, "Turn #") {
 		t.Errorf("turnNum=0 should produce no right zone, got %q", plain)
+	}
+}
+
+func TestRenderTurnInfo_ShowsReceivedDateTime(t *testing.T) {
+	s := NewStyles(true)
+	received := time.Date(2025, 3, 9, 9, 7, 0, 0, time.UTC)
+	msg := renderTurnInfo("anthropic/claude-sonnet-4-6", 59*time.Second, 0.23, 4, received, 200, s)
+	plain := ansiRe.ReplaceAllString(msg.Rendered, "")
+
+	if !strings.Contains(plain, "Mar 9, 2025 · 9:07 AM") {
+		t.Errorf("separator missing received date+time in %q", plain)
+	}
+	if !msg.TurnReceived.Equal(received) {
+		t.Errorf("TurnReceived = %v, want %v", msg.TurnReceived, received)
+	}
+}
+
+func TestRenderTurnInfo_ZeroReceivedOmitsDateTime(t *testing.T) {
+	s := NewStyles(true)
+	msg := renderTurnInfo("anthropic/claude-sonnet-4-6", 59*time.Second, 0.23, 4, time.Time{}, 200, s)
+	plain := ansiRe.ReplaceAllString(msg.Rendered, "")
+
+	if strings.Contains(plain, " · Jan") || strings.Contains(plain, "AM") || strings.Contains(plain, "PM") {
+		t.Errorf("zero received time should omit the date+time segment, got %q", plain)
+	}
+}
+
+func TestRerenderTurnInfoPreservesReceived(t *testing.T) {
+	received := time.Date(2025, 3, 9, 9, 7, 0, 0, time.UTC)
+	orig := renderTurnInfo("anthropic/claude-sonnet-4-6", 59*time.Second, 0.23, 4, received, 200, NewStyles(true))
+
+	got := orig.rerender(nil, NewStyles(true), 200)
+	if !got.TurnReceived.Equal(received) {
+		t.Errorf("rerender TurnReceived = %v, want %v", got.TurnReceived, received)
+	}
+	plain := ansiRe.ReplaceAllString(got.Rendered, "")
+	if !strings.Contains(plain, "Mar 9, 2025 · 9:07 AM") {
+		t.Errorf("rerender must keep the received date+time; got %q", plain)
 	}
 }

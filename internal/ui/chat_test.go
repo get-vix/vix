@@ -21,6 +21,38 @@ func TestRenderUserMessageAt_ShowsStoredTime(t *testing.T) {
 	}
 }
 
+func TestFormatSentAt(t *testing.T) {
+	ref := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name string
+		sent time.Time
+		want string
+	}{
+		{"same day", time.Date(2025, 6, 15, 15, 4, 0, 0, time.UTC), "3:04 PM"},
+		{"earlier same day", time.Date(2025, 6, 15, 9, 7, 0, 0, time.UTC), "9:07 AM"},
+		{"different day same year", time.Date(2025, 6, 14, 15, 4, 0, 0, time.UTC), "3:04 PM · Jun 14"},
+		{"different year", time.Date(2024, 1, 2, 15, 4, 0, 0, time.UTC), "3:04 PM · Jan 2, 2024"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := formatSentAt(tt.sent, ref); got != tt.want {
+				t.Errorf("formatSentAt = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRenderUserMessageAt_ShowsDateWhenNotToday(t *testing.T) {
+	strip := func(s string) string { return ansiRe.ReplaceAllString(s, "") }
+	// Well in the past so it is never "today" relative to the real clock.
+	ts := time.Date(2020, 3, 9, 15, 4, 0, 0, time.UTC)
+	msg := renderUserMessageAt("old message", 80, ts)
+	out := strip(msg.Rendered)
+	if !strings.Contains(out, "Sent at 3:04 PM · Mar 9, 2020") {
+		t.Errorf("cross-day message should show the date; got:\n%s", out)
+	}
+}
+
 func TestRenderUserMessageAt_OmitsWhenZero(t *testing.T) {
 	strip := func(s string) string { return ansiRe.ReplaceAllString(s, "") }
 	msg := renderUserMessageAt("legacy message", 80, time.Time{})

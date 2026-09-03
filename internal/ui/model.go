@@ -3486,7 +3486,7 @@ func (m *Model) applyEventToThread(idx int, event protocol.ThreadEvent) []tea.Cm
 		turnCacheRead := sess.cacheReadTokens - sess.turnStartCacheReadTokens
 		cost := protocol.CalculateCost(sess.modelName, turnInput, turnOutput, turnCacheCreation, turnCacheRead)
 		turnNum := countTurnSeparators(sess.chatMessages) + 1
-		sess.chatMessages = append(sess.chatMessages, renderTurnInfo(sess.modelName, sess.elapsed, cost, turnNum, m.mdRenderer.width+4, m.styles))
+		sess.chatMessages = append(sess.chatMessages, renderTurnInfo(sess.modelName, sess.elapsed, cost, turnNum, renderNow(), m.mdRenderer.width+4, m.styles))
 		sess.turnStartInputTokens = sess.inputTokens
 		sess.turnStartOutputTokens = sess.outputTokens
 		sess.turnStartCacheCreationTokens = sess.cacheCreationTokens
@@ -4203,7 +4203,7 @@ func (m *Model) buildReplayChatMessages(rep protocol.EventReplay) []ChatMessage 
 		// is forkable/trimmable/duplicable.
 		if msg.Role == "assistant" && !replayMessageHasToolUse(msg) {
 			turnNum++
-			out = append(out, renderTurnInfo(rep.Model, 0, 0, turnNum, m.mdRenderer.width+4, m.styles))
+			out = append(out, renderTurnInfo(rep.Model, 0, 0, turnNum, ts, m.mdRenderer.width+4, m.styles))
 		}
 	}
 	return out
