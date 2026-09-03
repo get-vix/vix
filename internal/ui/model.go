@@ -3587,7 +3587,7 @@ func (m Model) View() tea.View {
 	if m.activeTab == TabKindThreads || m.activeTab == TabKindModels || m.activeTab == TabKindJobs || m.activeTab == TabKindSettings {
 		tabBarWidth = m.width
 	}
-	tabBar := renderTabBar(m.activeTab, tabBarWidth, m.styles, viewportFocused, m.hasAlertThreads(), m.tabAlertBlinkOn, m.threadsTabUnseen, m.updateLatest != "")
+	tabBar := renderTabBar(m.activeTab, tabBarWidth, m.styles, viewportFocused, m.hasBackgroundThreadAlert(), m.tabAlertBlinkOn, m.threadsTabUnseen, m.updateLatest != "")
 	uv.NewStyledString(tabBar).Draw(canvas, image.Rect(0, y, tabBarWidth, y+layout.TabBarHeight))
 	y += layout.TabBarHeight
 
@@ -5172,12 +5172,32 @@ func (m *Model) vixSelectedSummary() (protocol.ThreadSummary, bool) {
 	return protocol.ThreadSummary{}, false
 }
 
-// hasAlertThreads reports whether any thread is waiting for user input.
+// hasAlertThreads reports whether any thread is waiting for user input. It
+// gates the blink loop's lifecycle (start/stop), so it counts every waiting
+// thread — including the one the user is currently viewing.
 func (m *Model) hasAlertThreads() bool {
 	for _, sess := range m.threads {
 		if sess.agentState == StateConfirmPending || sess.agentState == StateUserQuestion {
 			return true
 		}
+	}
+	return false
+}
+
+// hasBackgroundThreadAlert reports whether any thread is waiting for user input
+// that the user is not already looking at. The thread the user is actively
+// viewing (the selected thread on the Workspace tab) already shows its question
+// panel on screen, so it must not drive the Threads-tab blink. This gates the
+// blink's visibility only; the loop lifecycle stays on hasAlertThreads.
+func (m *Model) hasBackgroundThreadAlert() bool {
+	for i, sess := range m.threads {
+		if sess.agentState != StateConfirmPending && sess.agentState != StateUserQuestion {
+			continue
+		}
+		if m.activeTab == TabKindChat && i == m.selectedThread {
+			continue
+		}
+		return true
 	}
 	return false
 }

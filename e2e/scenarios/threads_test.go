@@ -320,6 +320,32 @@ func TestThreadsTabBlinkOnWaitingInput(t *testing.T) {
 	h.UI.Shot("waiting-on-list")
 }
 
+// TestThreadsTabNoBlinkWhileViewingAsker verifies that when the model asks a
+// question in the thread the user is currently viewing (on the Workspace tab),
+// the Threads tab title does NOT blink — the question panel is already on
+// screen, so no alert is needed. This is the counterpart to
+// TestThreadsTabBlinkOnWaitingInput, where the asker is a background thread.
+func TestThreadsTabNoBlinkWhileViewingAsker(t *testing.T) {
+	h := harness.Start(t, threadsMeta("no Threads-tab blink while viewing the thread that's asking"))
+
+	h.UI.WaitStable(500 * time.Millisecond)
+
+	// The single, currently-viewed thread asks a question and stays waiting,
+	// with its panel on screen (we never switch away from the Workspace tab).
+	h.Mock.Enqueue(harness.ToolUse("ask_question_to_user", askQuestion))
+	h.UI.Type("please ask")
+	h.UI.Enter()
+	h.UI.WaitFor("Pick one please?")
+
+	// Sampled across a blink period, the Threads title color stays constant —
+	// exactly one distinct value. (A blink would toggle → ≥2.)
+	seen := distinctFgOf(h, "Threads [F1]", 18, 120*time.Millisecond)
+	if len(seen) != 1 {
+		t.Fatalf("expected the Threads tab title to stay stable (no blink) while viewing the asker, saw %d colors: %v; screen:\n%s", len(seen), seen, h.UI.Snapshot())
+	}
+	h.UI.Shot("tab-no-blink-while-viewing")
+}
+
 // TestThreadsTitle verifies the Title column reflects the conversation: with no
 // auto-title yet (a single turn is below the threshold), it falls back to the
 // first user message.

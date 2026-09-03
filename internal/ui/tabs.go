@@ -1363,10 +1363,13 @@ func renderModelsView(width, height int, s Styles,
 }
 
 // renderTabBar renders the two-tab bar: Threads | Chat.
-// alertActive is true when some thread is waiting for user input; the Threads
-// tab title then blinks (alertBlinkOn is the current blink phase). When no alert
-// is active but unseen is true (a message arrived while the Threads tab was not
-// focused), the Threads title is tinted secondary statically (no blink).
+// alertActive is true when some background thread (one the user isn't currently
+// viewing) is waiting for user input; the Threads tab title then blinks
+// (alertBlinkOn is the current blink phase). A thread the user is already
+// looking at shows its question on screen, so it's excluded and doesn't blink.
+// When no alert is active but unseen is true (a message arrived while the
+// Threads tab was not focused), the Threads title is tinted secondary
+// statically (no blink).
 func renderTabBar(activeTab TabKind, width int, s Styles, viewportFocused bool, alertActive bool, alertBlinkOn bool, unseen bool, updateAvailable bool) string {
 	type tabDef struct {
 		label string
