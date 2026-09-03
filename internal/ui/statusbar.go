@@ -53,6 +53,8 @@ func renderStatusBar(
 			{"r", "rename thread"},
 			{"x", "delete thread"},
 			{"↑↓", "navigate threads"},
+			{"←", "to dir"},
+			{"space", "fold dir"},
 			{"enter", "open / fold dir"},
 		}
 	case TabKindModels:

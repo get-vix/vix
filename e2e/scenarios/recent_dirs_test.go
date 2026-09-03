@@ -20,7 +20,8 @@ func recordJSON(id, cwd, last string) string {
 // directories list: pre-seeded open thread records in two directories surface
 // as a ranked "Recent" list on the draft welcome; focusing the welcome area
 // (Tab) and pressing Down + Enter switches the draft's working directory to the
-// highlighted entry, so a committed write lands there.
+// highlighted entry AND returns focus to the editor, so the user can type and
+// commit immediately (no extra Tab) and the write lands in the chosen dir.
 func TestWelcomeRecentDirectorySelection(t *testing.T) {
 	h := harness.Start(t, harness.Meta{
 		Category:    "thread",
@@ -59,8 +60,9 @@ func TestWelcomeRecentDirectorySelection(t *testing.T) {
 	h.UI.WaitStable(200 * time.Millisecond)
 	h.UI.Shot("dir-selected")
 
-	// Return focus to the editor and commit the draft in the selected directory.
-	h.UI.Key("tab")
+	// Enter already returned focus to the editor, so type and commit directly —
+	// no extra Tab. If focus had stayed on the welcome viewport, these keystrokes
+	// would not reach the input and the draft would never commit.
 	h.Mock.Enqueue(
 		harness.ToolUse("write_file", `{"path":"note.txt","content":"in-dirB"}`),
 		harness.Text("Wrote note.txt in the selected directory."),

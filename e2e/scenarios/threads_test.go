@@ -1302,6 +1302,102 @@ func TestThreadsFoldDirectory(t *testing.T) {
 	h.UI.Shot("fold-expanded")
 }
 
+// TestThreadsFoldWithSpace verifies that Space folds/unfolds a directory the
+// same way Enter does, and that it works even when the cursor is on a thread row
+// (it folds that row's enclosing directory). It reuses the two-directory seed
+// from TestThreadsGroupedByDirectory.
+func TestThreadsFoldWithSpace(t *testing.T) {
+	h := harness.Start(t, threadsMeta("Space folds/unfolds a directory, including from a thread row under it"),
+		harness.WithWorkdirFile("otherproj/keep.txt", "seed"),
+		harness.WithHomeFile(".vix/threads/open/cccccccc-cccc-cccc-cccc-cccccccccccc.json", groupUserCurrentRecord),
+		harness.WithHomeFile(".vix/threads/open/dddddddd-dddd-dddd-dddd-dddddddddddd.json", groupUserOtherRecord),
+	)
+
+	h.UI.WaitStable(500 * time.Millisecond)
+	h.UI.Key("f1")
+	h.UI.WaitFor("User-initiated")
+	if !pollUntil(10*time.Second, func() bool {
+		s := h.UI.Snapshot()
+		return strings.Contains(s, "CURRENT-DIR-THREAD") && strings.Contains(s, "OTHER-DIR-THREAD")
+	}) {
+		t.Fatalf("both directories' threads not listed; screen:\n%s", h.UI.Snapshot())
+	}
+
+	// Selectable rows: 0=cwd header, 1=CURRENT, 2=otherproj header, 3=OTHER.
+	// Land on the OTHER-DIR-THREAD row (a thread row, not a header).
+	h.UI.Key("up")
+	h.UI.Key("up")
+	h.UI.Key("up")
+	h.UI.Key("down")
+	h.UI.Key("down")
+	h.UI.Key("down")
+
+	// Space on the thread row folds its enclosing otherproj directory.
+	h.UI.Key("space")
+	if !pollUntil(8*time.Second, func() bool {
+		s := h.UI.Snapshot()
+		return !strings.Contains(s, "OTHER-DIR-THREAD") &&
+			strings.Contains(s, "otherproj") &&
+			strings.Contains(s, "CURRENT-DIR-THREAD")
+	}) {
+		t.Fatalf("Space on a thread row did not fold its enclosing directory; screen:\n%s", h.UI.Snapshot())
+	}
+	h.UI.Shot("space-collapsed")
+
+	// The cursor re-anchored on the otherproj header, so Space again unfolds it.
+	h.UI.Key("space")
+	if !pollUntil(8*time.Second, func() bool {
+		return strings.Contains(h.UI.Snapshot(), "OTHER-DIR-THREAD")
+	}) {
+		t.Fatalf("Space did not unfold the otherproj block; screen:\n%s", h.UI.Snapshot())
+	}
+	h.UI.Shot("space-expanded")
+}
+
+// TestThreadsLeftArrowSelectsDir verifies that the Left arrow moves the cursor
+// from a thread row up to its enclosing directory header. It proves the move by
+// pressing Enter afterwards: Enter on a header folds the block (whereas Enter on
+// a thread row would open the thread), so the thread row disappearing confirms
+// the cursor landed on the header.
+func TestThreadsLeftArrowSelectsDir(t *testing.T) {
+	h := harness.Start(t, threadsMeta("Left arrow moves the cursor from a thread row to its enclosing directory header"),
+		harness.WithWorkdirFile("otherproj/keep.txt", "seed"),
+		harness.WithHomeFile(".vix/threads/open/cccccccc-cccc-cccc-cccc-cccccccccccc.json", groupUserCurrentRecord),
+		harness.WithHomeFile(".vix/threads/open/dddddddd-dddd-dddd-dddd-dddddddddddd.json", groupUserOtherRecord),
+	)
+
+	h.UI.WaitStable(500 * time.Millisecond)
+	h.UI.Key("f1")
+	h.UI.WaitFor("User-initiated")
+	if !pollUntil(10*time.Second, func() bool {
+		s := h.UI.Snapshot()
+		return strings.Contains(s, "CURRENT-DIR-THREAD") && strings.Contains(s, "OTHER-DIR-THREAD")
+	}) {
+		t.Fatalf("both directories' threads not listed; screen:\n%s", h.UI.Snapshot())
+	}
+
+	// Land on the OTHER-DIR-THREAD row (row 3).
+	h.UI.Key("up")
+	h.UI.Key("up")
+	h.UI.Key("up")
+	h.UI.Key("down")
+	h.UI.Key("down")
+	h.UI.Key("down")
+
+	// Left moves the cursor up to the otherproj header; Enter then folds it.
+	h.UI.Key("left")
+	h.UI.Enter()
+	if !pollUntil(8*time.Second, func() bool {
+		s := h.UI.Snapshot()
+		return !strings.Contains(s, "OTHER-DIR-THREAD") &&
+			strings.Contains(s, "otherproj") &&
+			strings.Contains(s, "CURRENT-DIR-THREAD")
+	}) {
+		t.Fatalf("Left did not move the cursor to the enclosing dir header (Enter did not fold); screen:\n%s", h.UI.Snapshot())
+	}
+	h.UI.Shot("left-then-fold")
+}
+
 // orderCurrentRecord is the launch-cwd thread (auto-restored as a live thread).
 // otherOldRecord and otherNewRecord are two persisted threads in the same
 // sibling directory ({{WORKDIR}}/otherproj), created on 2024-01-01 and

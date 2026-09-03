@@ -36,7 +36,7 @@ func TestLatestWorkDir_MostRecentThenFallback(t *testing.T) {
 }
 
 func draftForNav() *ThreadState {
-	return &ThreadState{focus: FocusChat, phase: phaseDraft}
+	return &ThreadState{focus: FocusChat, phase: phaseDraft, input: newInput()}
 }
 
 func TestWelcomeDirNav_UpDownClampAndEnterApplies(t *testing.T) {
@@ -58,9 +58,33 @@ func TestWelcomeDirNav_UpDownClampAndEnterApplies(t *testing.T) {
 	if !m.welcomeDirNav(sess, "down") || sess.recentDirSelected != 2 {
 		t.Fatalf("down at bottom should clamp to last, got %d", sess.recentDirSelected)
 	}
-	// Enter applies the selected directory to workDir.
+	// Enter applies the selected directory to workDir and snaps focus back
+	// to the editor so the user can start typing.
 	if !m.welcomeDirNav(sess, "enter") || sess.workDir != "/c" {
 		t.Fatalf("enter should apply selected dir, got workDir=%q", sess.workDir)
+	}
+	if sess.focus != FocusEditor {
+		t.Fatalf("enter should return focus to the editor, got focus=%d", sess.focus)
+	}
+	if !sess.input.Focused() {
+		t.Fatal("enter should re-focus the input textarea")
+	}
+}
+
+func TestWelcomeDirNav_NavKeepsChatFocus(t *testing.T) {
+	m := &Model{recentDirs: []protocol.DirUsage{
+		{Path: "/a"}, {Path: "/b"},
+	}}
+	sess := draftForNav()
+	// Arrowing through the list must not snap back to the editor — only
+	// Enter (done choosing) does that.
+	m.welcomeDirNav(sess, "down")
+	if sess.focus != FocusChat {
+		t.Fatalf("down should keep chat focus, got focus=%d", sess.focus)
+	}
+	m.welcomeDirNav(sess, "up")
+	if sess.focus != FocusChat {
+		t.Fatalf("up should keep chat focus, got focus=%d", sess.focus)
 	}
 }
 

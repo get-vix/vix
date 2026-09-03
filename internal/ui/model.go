@@ -441,6 +441,10 @@ func (m *Model) welcomeDirNav(sess *ThreadState, key string) bool {
 		if sess.recentDirSelected >= 0 && sess.recentDirSelected < len(recent) {
 			sess.workDir = recent[sess.recentDirSelected].Path
 		}
+		// Picking a directory is a "done choosing, let me type" signal, so
+		// snap focus back to the editor input (mirrors the Tab handler).
+		sess.focus = FocusEditor
+		sess.input.Focus()
 		return true
 	}
 	return false
@@ -957,15 +961,20 @@ func (m Model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.threadsSelected++
 				}
 				return m, nil
+			case "space", " ":
+				// Fold/unfold the directory that encloses the cursor (a header
+				// row or a thread row under it). Vix rows have no directory.
+				m.foldSelectedDir()
+				return m, nil
+			case "left":
+				// Jump the cursor up to the enclosing directory header.
+				m.selectEnclosingDir()
+				return m, nil
 			case "enter":
 				// A directory header toggles its fold state; the cursor stays put.
 				sel := m.selectableThreadRows()
 				if m.threadsSelected >= 0 && m.threadsSelected < len(sel) && sel[m.threadsSelected].kind == rowDirHeader {
-					dir := sel[m.threadsSelected].dir
-					if m.collapsedDirs == nil {
-						m.collapsedDirs = map[string]bool{}
-					}
-					m.collapsedDirs[dir] = !m.collapsedDirs[dir]
+					m.foldSelectedDir()
 					return m, nil
 				}
 				if sum, ok := m.vixSelectedSummary(); ok {
@@ -4770,6 +4779,14 @@ func (m *Model) userDirBlocks() []userDirBlock {
 		}
 		b := get(pickCWD(s.workDir, m.cwd))
 		b.rows = append(b.rows, rowTarget{liveIdx: i})
+		// Fold the live thread's activity into the block's recency key too.
+		// Otherwise a directory whose threads are all currently open (e.g. a
+		// restored thread that just re-attached on launch) keeps last == zero
+		// and sinks below directories that still have a saved record, so its
+		// group position flips as threads finish attaching.
+		if t := s.createdAt(); t.After(b.last) {
+			b.last = t
+		}
 	}
 	for idx := range m.userThreadRecords {
 		rec := &m.userThreadRecords[idx]
@@ -4955,6 +4972,73 @@ func (m *Model) selectableThreadRows() []threadListRow {
 		}
 	}
 	return out
+}
+
+// foldSelectedDir toggles the fold state of the directory that encloses the
+// highlighted Threads-tab row. It acts when the cursor is on a directory header
+// (that directory) or on a User-initiated thread row (its enclosing directory),
+// and is a no-op on Vix-initiated rows, which have no header. After a fold the
+// cursor lands on the directory header (the thread row it started on may have
+// just been hidden). Reports whether it acted.
+func (m *Model) foldSelectedDir() bool {
+	sel := m.selectableThreadRows()
+	if m.threadsSelected < 0 || m.threadsSelected >= len(sel) {
+		return false
+	}
+	dir, ok := m.enclosingDir(sel, m.threadsSelected)
+	if !ok {
+		return false
+	}
+	if m.collapsedDirs == nil {
+		m.collapsedDirs = map[string]bool{}
+	}
+	m.collapsedDirs[dir] = !m.collapsedDirs[dir]
+	// Re-anchor the cursor on the directory header: after collapsing, the row
+	// the cursor sat on may no longer exist.
+	for i, r := range m.selectableThreadRows() {
+		if r.kind == rowDirHeader && r.dir == dir {
+			m.threadsSelected = i
+			break
+		}
+	}
+	return true
+}
+
+// selectEnclosingDir moves the cursor from a User-initiated thread row up to its
+// enclosing directory header. It is a no-op when the cursor is already on a
+// directory header or on a Vix-initiated row. Reports whether it moved.
+func (m *Model) selectEnclosingDir() bool {
+	sel := m.selectableThreadRows()
+	if m.threadsSelected < 0 || m.threadsSelected >= len(sel) {
+		return false
+	}
+	if sel[m.threadsSelected].kind != rowUserThread {
+		return false
+	}
+	for i := m.threadsSelected - 1; i >= 0; i-- {
+		if sel[i].kind == rowDirHeader {
+			m.threadsSelected = i
+			return true
+		}
+	}
+	return false
+}
+
+// enclosingDir returns the directory path of the row at idx: the directory
+// itself for a header, or the nearest preceding header for a User-initiated
+// thread row. Reports false for Vix-initiated rows.
+func (m *Model) enclosingDir(sel []threadListRow, idx int) (string, bool) {
+	switch sel[idx].kind {
+	case rowDirHeader:
+		return sel[idx].dir, true
+	case rowUserThread:
+		for i := idx - 1; i >= 0; i-- {
+			if sel[i].kind == rowDirHeader {
+				return sel[i].dir, true
+			}
+		}
+	}
+	return "", false
 }
 
 // visibleThreadIndices returns the indices of all live threads in Threads-tab

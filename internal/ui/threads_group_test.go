@@ -130,6 +130,36 @@ func TestUserDirBlocksOrdersByCreatedAt(t *testing.T) {
 	}
 }
 
+// TestUserDirBlocksLiveThreadCountsForRecency: a directory whose thread is
+// currently open (live, no saved record) keeps its recency spot instead of
+// sinking to the bottom. This guards the bug where a restored thread that
+// re-attached on launch flipped its group's position (its block's recency key
+// dropped to zero because only saved records fed it).
+func TestUserDirBlocksLiveThreadCountsForRecency(t *testing.T) {
+	liveWork := liveAt("/work", "2026-01-04T00:00:00Z")     // current cwd
+	liveWarren := liveAt("/warren", "2026-01-05T00:00:00Z") // open thread, most recent activity
+	m := &Model{
+		cwd:     "/work",
+		threads: []*ThreadState{liveWork, liveWarren},
+		userThreadRecords: []protocol.ThreadSummary{
+			{ID: "rBeta", CWD: "/beta", Title: "rBeta", StartedAt: "2026-01-03T00:00:00Z", LastRequestAt: "2026-01-03T00:00:00Z"},
+		},
+	}
+
+	blocks := m.userDirBlocks()
+	if len(blocks) != 3 {
+		t.Fatalf("want 3 dir blocks, got %d", len(blocks))
+	}
+	if blocks[0].dir != "/work" {
+		t.Errorf("block[0].dir = %q, want /work (current cwd first)", blocks[0].dir)
+	}
+	// /warren (live activity 01-05) must rank above /beta (record 01-03), even
+	// though /warren has no saved record — its open thread feeds the recency key.
+	if blocks[1].dir != "/warren" || blocks[2].dir != "/beta" {
+		t.Errorf("other-dir order = [%q, %q], want [/warren, /beta]", blocks[1].dir, blocks[2].dir)
+	}
+}
+
 // TestThreadRowTargetsIncludesUserRecords: the flat selection order lists the
 // User-initiated rows (grouped by dir) before the Vix-initiated rows, so the
 // selection index space covers cross-directory user records.
@@ -287,6 +317,134 @@ func TestThreadListRowsFolding(t *testing.T) {
 	last := sel[len(sel)-1]
 	if last.kind != rowVixThread || last.sum.ID != "vixRun" {
 		t.Fatalf("last selectable row = %+v, want the vixRun vix thread", last)
+	}
+}
+
+// twoBlockModel builds a Model with two user directory blocks (/work and
+// /alpha), each holding one persisted thread record, plus one Vix-initiated
+// record. Selectable rows: [0]=/alpha hdr [1]=rAlpha [2]=/work hdr [3]=rWork
+// [4]=vixRun (dir blocks are ordered by most-recent activity).
+func twoBlockModel() *Model {
+	return &Model{
+		cwd:     "/work",
+		threads: []*ThreadState{},
+		userThreadRecords: []protocol.ThreadSummary{
+			userRec("rWork", "/work", "2026-01-01T00:00:00Z"),
+			userRec("rAlpha", "/alpha", "2026-01-02T00:00:00Z"),
+		},
+		vixThreads: []protocol.ThreadSummary{
+			{ID: "vixRun", CWD: "/job", Origin: "vix", StartedAt: "2026-01-05T00:00:00Z"},
+		},
+	}
+}
+
+// dirHeaderIndex returns the selectable-row index of the given directory header.
+func dirHeaderIndex(m *Model, dir string) int {
+	for i, r := range m.selectableThreadRows() {
+		if r.kind == rowDirHeader && r.dir == dir {
+			return i
+		}
+	}
+	return -1
+}
+
+// TestFoldSelectedDirOnHeader: space/enter on a directory header toggles its
+// fold state and leaves the cursor on the header.
+func TestFoldSelectedDirOnHeader(t *testing.T) {
+	m := twoBlockModel()
+	hdr := dirHeaderIndex(m, "/work")
+	m.threadsSelected = hdr
+
+	if !m.foldSelectedDir() || !m.collapsedDirs["/work"] {
+		t.Fatalf("first fold: acted=%v collapsed=%v, want true/true", true, m.collapsedDirs["/work"])
+	}
+	if got := m.selectableThreadRows()[m.threadsSelected]; got.kind != rowDirHeader || got.dir != "/work" {
+		t.Fatalf("cursor after fold = %+v, want /work header", got)
+	}
+	if !m.foldSelectedDir() || m.collapsedDirs["/work"] {
+		t.Fatalf("second fold should unfold /work, collapsed=%v", m.collapsedDirs["/work"])
+	}
+}
+
+// TestFoldSelectedDirFromThreadRow: space on a thread row folds its enclosing
+// directory and re-anchors the cursor on that directory's header.
+func TestFoldSelectedDirFromThreadRow(t *testing.T) {
+	m := twoBlockModel()
+	// Cursor on the rWork thread row (under /work).
+	sel := m.selectableThreadRows()
+	row := -1
+	for i, r := range sel {
+		if r.kind == rowUserThread && r.sum.ID == "rWork" {
+			row = i
+		}
+	}
+	if row < 0 {
+		t.Fatal("could not find rWork thread row")
+	}
+	m.threadsSelected = row
+
+	if !m.foldSelectedDir() || !m.collapsedDirs["/work"] {
+		t.Fatalf("folding from thread row should collapse /work, collapsed=%v", m.collapsedDirs["/work"])
+	}
+	got := m.selectableThreadRows()[m.threadsSelected]
+	if got.kind != rowDirHeader || got.dir != "/work" {
+		t.Fatalf("cursor after fold from thread row = %+v, want /work header", got)
+	}
+}
+
+// TestFoldSelectedDirOnVixRow: space on a Vix-initiated row is a no-op (those
+// rows have no enclosing directory header).
+func TestFoldSelectedDirOnVixRow(t *testing.T) {
+	m := twoBlockModel()
+	sel := m.selectableThreadRows()
+	m.threadsSelected = len(sel) - 1 // the vixRun row
+	if m.selectableThreadRows()[m.threadsSelected].kind != rowVixThread {
+		t.Fatalf("last row = %+v, want vix thread", m.selectableThreadRows()[m.threadsSelected])
+	}
+	before := m.threadsSelected
+	if m.foldSelectedDir() {
+		t.Error("foldSelectedDir on a vix row should report false")
+	}
+	if m.threadsSelected != before || len(m.collapsedDirs) != 0 {
+		t.Errorf("vix-row fold changed state: cursor %d->%d, collapsed=%v", before, m.threadsSelected, m.collapsedDirs)
+	}
+}
+
+// TestSelectEnclosingDirFromThreadRow: left arrow moves the cursor from a
+// thread row to its nearest preceding directory header.
+func TestSelectEnclosingDirFromThreadRow(t *testing.T) {
+	m := twoBlockModel()
+	// rWork lives in the second block; its header is /work.
+	sel := m.selectableThreadRows()
+	for i, r := range sel {
+		if r.kind == rowUserThread && r.sum.ID == "rWork" {
+			m.threadsSelected = i
+		}
+	}
+	if !m.selectEnclosingDir() {
+		t.Fatal("selectEnclosingDir should move from a thread row")
+	}
+	got := m.selectableThreadRows()[m.threadsSelected]
+	if got.kind != rowDirHeader || got.dir != "/work" {
+		t.Fatalf("cursor after left = %+v, want /work header", got)
+	}
+}
+
+// TestSelectEnclosingDirNoOp: left arrow does nothing on a directory header or
+// on a Vix-initiated row.
+func TestSelectEnclosingDirNoOp(t *testing.T) {
+	m := twoBlockModel()
+
+	m.threadsSelected = dirHeaderIndex(m, "/alpha")
+	if m.selectEnclosingDir() {
+		t.Error("selectEnclosingDir on a dir header should report false")
+	}
+
+	sel := m.selectableThreadRows()
+	m.threadsSelected = len(sel) - 1 // vix row
+	before := m.threadsSelected
+	if m.selectEnclosingDir() || m.threadsSelected != before {
+		t.Errorf("selectEnclosingDir on a vix row should be a no-op, cursor %d->%d", before, m.threadsSelected)
 	}
 }
 
