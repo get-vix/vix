@@ -24,6 +24,7 @@ import (
 	"github.com/get-vix/vix/internal/auth"
 	"github.com/get-vix/vix/internal/config"
 	"github.com/get-vix/vix/internal/daemon"
+	"github.com/get-vix/vix/internal/notify"
 	"github.com/get-vix/vix/internal/protocol"
 	"github.com/get-vix/vix/internal/telemetry"
 )
@@ -1155,12 +1156,18 @@ func (m Model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if settingsItem(m.settingsCursor) == settingClosedRetention {
 					m.adjustClosedRetention(-1)
 				}
+				if settingsItem(m.settingsCursor) == settingTurnEndSoundChoice || settingsItem(m.settingsCursor) == settingNeedsYouSoundChoice {
+					m.adjustSound(settingsItem(m.settingsCursor), -1)
+				}
 			case "right", "l":
 				if settingsItem(m.settingsCursor) == settingCompactionThreshold {
 					m.adjustCompactionThreshold(0.05)
 				}
 				if settingsItem(m.settingsCursor) == settingClosedRetention {
 					m.adjustClosedRetention(1)
+				}
+				if settingsItem(m.settingsCursor) == settingTurnEndSoundChoice || settingsItem(m.settingsCursor) == settingNeedsYouSoundChoice {
+					m.adjustSound(settingsItem(m.settingsCursor), 1)
 				}
 			}
 			return m, tea.Batch(cmds...)
@@ -3319,6 +3326,7 @@ func (m *Model) applyEventToThread(idx int, event protocol.ThreadEvent) []tea.Cm
 
 	case "event.confirm_request":
 		sess.agentState = StateConfirmPending
+		m.playNeedsYouSound(idx)
 		data := marshalData(event.Data)
 		var cr protocol.EventConfirmRequest
 		json.Unmarshal(data, &cr)
@@ -3347,6 +3355,7 @@ func (m *Model) applyEventToThread(idx int, event protocol.ThreadEvent) []tea.Cm
 		sess.agentState = StateUserQuestion
 		sess.thinkingAnim.Stop()
 		sess.focus = FocusEditor
+		m.playNeedsYouSound(idx)
 		sess.input.Blur()
 
 	case "event.todo_list_updated":
@@ -3460,6 +3469,7 @@ func (m *Model) applyEventToThread(idx int, event protocol.ThreadEvent) []tea.Cm
 		sess.cancelAckPending = false
 		sess.thinkingAnim.Stop()
 		m.flushThreadBuf(sess)
+		m.playTurnEndSound(idx)
 		if idx != m.selectedThread || m.activeTab != TabKindChat {
 			sess.unreadCount++
 			if m.activeTab != TabKindThreads {
@@ -3807,6 +3817,11 @@ func (m Model) View() tea.View {
 		st := settingsState{
 			cursor:              m.settingsCursor,
 			showThinking:        config.ShowThinking(),
+			turnEndSound:        config.TurnEndSoundEnabled(),
+			turnEndSoundName:    soundDisplayName(config.TurnEndSoundName(), notify.DefaultTurnEndSound),
+			needsYouSound:       config.NeedsYouSoundEnabled(),
+			needsYouSoundName:   soundDisplayName(config.NeedsYouSoundName(), notify.DefaultNeedsYouSound),
+			soundsAvailable:     len(notify.AvailableSounds()) > 0,
 			readAgentsMD:        config.ReadAgentsMD(),
 			readClaudeMD:        config.ReadClaudeMD(),
 			telemetry:           config.TelemetryEnabled(),

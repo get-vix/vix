@@ -483,6 +483,97 @@ func SetClosedThreadRetentionMinutes(v int) error {
 	return os.WriteFile(p, out, 0o644)
 }
 
+// notifSound reads a notification group (e.g. "turn_end" or "needs_you") from
+// the notifications block in ~/.vix/settings.json, returning whether its sound
+// is enabled and the chosen sound name. Missing/unparsable yields (false, "").
+func notifSound(group string) (enabled bool, name string) {
+	p := filepath.Join(HomeVixDir(), "settings.json")
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return false, ""
+	}
+	var cfg struct {
+		Notifications map[string]struct {
+			Sound     *bool  `json:"sound"`
+			SoundName string `json:"sound_name"`
+		} `json:"notifications"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return false, ""
+	}
+	g, ok := cfg.Notifications[group]
+	if !ok {
+		return false, ""
+	}
+	if g.Sound != nil {
+		enabled = *g.Sound
+	}
+	return enabled, g.SoundName
+}
+
+// setNotificationField writes a single key inside notifications.<group> in
+// ~/.vix/settings.json, preserving other keys.
+func setNotificationField(group, key string, v any) error {
+	home := HomeVixDir()
+	if home == "" {
+		return fmt.Errorf("no home directory")
+	}
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		return err
+	}
+	p := filepath.Join(home, "settings.json")
+
+	raw := map[string]any{}
+	if data, err := os.ReadFile(p); err == nil {
+		_ = json.Unmarshal(data, &raw)
+	}
+
+	notifs, _ := raw["notifications"].(map[string]any)
+	if notifs == nil {
+		notifs = map[string]any{}
+	}
+	grp, _ := notifs[group].(map[string]any)
+	if grp == nil {
+		grp = map[string]any{}
+	}
+	grp[key] = v
+	notifs[group] = grp
+	raw["notifications"] = notifs
+
+	out, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(p, out, 0o644)
+}
+
+// TurnEndSoundEnabled reports whether a sound plays when a turn ends. Opt-in:
+// defaults to false when unset.
+func TurnEndSoundEnabled() bool { e, _ := notifSound("turn_end"); return e }
+
+// TurnEndSoundName is the chosen turn-end sound name ("" when unset — callers
+// substitute the default).
+func TurnEndSoundName() string { _, n := notifSound("turn_end"); return n }
+
+// NeedsYouSoundEnabled reports whether a sound plays when the agent needs the
+// user (a question or a permission prompt). Opt-in: defaults to false.
+func NeedsYouSoundEnabled() bool { e, _ := notifSound("needs_you"); return e }
+
+// NeedsYouSoundName is the chosen needs-you sound name ("" when unset).
+func NeedsYouSoundName() string { _, n := notifSound("needs_you"); return n }
+
+// SetTurnEndSoundEnabled writes notifications.turn_end.sound.
+func SetTurnEndSoundEnabled(v bool) error { return setNotificationField("turn_end", "sound", v) }
+
+// SetTurnEndSoundName writes notifications.turn_end.sound_name.
+func SetTurnEndSoundName(v string) error { return setNotificationField("turn_end", "sound_name", v) }
+
+// SetNeedsYouSoundEnabled writes notifications.needs_you.sound.
+func SetNeedsYouSoundEnabled(v bool) error { return setNotificationField("needs_you", "sound", v) }
+
+// SetNeedsYouSoundName writes notifications.needs_you.sound_name.
+func SetNeedsYouSoundName(v string) error { return setNotificationField("needs_you", "sound_name", v) }
+
 // ThemeConfig holds user-configurable brand colors.
 type ThemeConfig struct {
 	Primary    string `json:"primary"`    // hex color like "#BC63FC"

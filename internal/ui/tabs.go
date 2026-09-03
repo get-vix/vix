@@ -10,6 +10,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/get-vix/vix/internal/config"
+	"github.com/get-vix/vix/internal/notify"
 	"github.com/get-vix/vix/internal/protocol"
 	"github.com/get-vix/vix/internal/update"
 )
@@ -598,6 +599,10 @@ const (
 	settingUpdateAction settingsItem = iota
 	settingUpdateCheck
 	settingShowThinking
+	settingTurnEndSound
+	settingTurnEndSoundChoice
+	settingNeedsYouSound
+	settingNeedsYouSoundChoice
 	settingReadAgentsMD
 	settingReadClaudeMD
 	settingTelemetry
@@ -612,6 +617,11 @@ const (
 type settingsState struct {
 	cursor              int
 	showThinking        bool
+	turnEndSound        bool
+	turnEndSoundName    string
+	needsYouSound       bool
+	needsYouSoundName   string
+	soundsAvailable     bool
 	readAgentsMD        bool
 	readClaudeMD        bool
 	telemetry           bool
@@ -647,6 +657,12 @@ func (m *Model) toggleSetting(item settingsItem) {
 			}
 		}
 		_ = config.SetShowThinking(v)
+	case settingTurnEndSound:
+		_ = config.SetTurnEndSoundEnabled(!config.TurnEndSoundEnabled())
+	case settingNeedsYouSound:
+		_ = config.SetNeedsYouSoundEnabled(!config.NeedsYouSoundEnabled())
+	case settingTurnEndSoundChoice, settingNeedsYouSoundChoice:
+		// Sound choice is adjusted with ←/→, not toggled.
 	case settingReadAgentsMD:
 		_ = config.SetReadAgentsMD(!config.ReadAgentsMD())
 	case settingReadClaudeMD:
@@ -791,6 +807,73 @@ func (m *Model) adjustClosedRetention(dir int) {
 	_ = config.SetClosedThreadRetentionMinutes(next)
 }
 
+// soundDisplayName returns the configured sound name, or def when unset.
+func soundDisplayName(configured, def string) string {
+	if configured == "" {
+		return def
+	}
+	return configured
+}
+
+// adjustSound cycles the sound for a notification picker row by dir (±1) through
+// the available sounds, persists the choice, and previews it (stopping any
+// prior preview). No-op when no sounds are available.
+func (m *Model) adjustSound(item settingsItem, dir int) {
+	sounds := notify.AvailableSounds()
+	if len(sounds) == 0 {
+		return
+	}
+	var cur string
+	switch item {
+	case settingTurnEndSoundChoice:
+		cur = soundDisplayName(config.TurnEndSoundName(), notify.DefaultTurnEndSound)
+	case settingNeedsYouSoundChoice:
+		cur = soundDisplayName(config.NeedsYouSoundName(), notify.DefaultNeedsYouSound)
+	default:
+		return
+	}
+	idx := 0
+	for i, s := range sounds {
+		if s.Name == cur {
+			idx = i
+			break
+		}
+	}
+	idx = (idx + dir + len(sounds)) % len(sounds)
+	next := sounds[idx].Name
+	switch item {
+	case settingTurnEndSoundChoice:
+		_ = config.SetTurnEndSoundName(next)
+	case settingNeedsYouSoundChoice:
+		_ = config.SetNeedsYouSoundName(next)
+	}
+	notify.PlayPreview(next)
+}
+
+// watchingThread reports whether the user is currently looking at the given
+// thread's conversation (Workspace/F2 tab showing that exact thread). Used to
+// suppress notification sounds for the conversation the user is already
+// watching.
+func (m *Model) watchingThread(idx int) bool {
+	return idx == m.selectedThread && m.activeTab == TabKindChat
+}
+
+// playTurnEndSound plays the turn-end sound when enabled and the user is not
+// watching the finishing thread's conversation.
+func (m *Model) playTurnEndSound(idx int) {
+	if config.TurnEndSoundEnabled() && !m.watchingThread(idx) {
+		notify.Play(soundDisplayName(config.TurnEndSoundName(), notify.DefaultTurnEndSound))
+	}
+}
+
+// playNeedsYouSound plays the needs-you sound when enabled and the user is not
+// watching the requesting thread's conversation.
+func (m *Model) playNeedsYouSound(idx int) {
+	if config.NeedsYouSoundEnabled() && !m.watchingThread(idx) {
+		notify.Play(soundDisplayName(config.NeedsYouSoundName(), notify.DefaultNeedsYouSound))
+	}
+}
+
 // updateActionLabel returns the text for the selectable Updates action row,
 // reflecting the current upgrade state.
 func updateActionLabel(st settingsState) string {
@@ -854,6 +937,16 @@ func renderSettingsView(width, height int, s Styles, st settingsState) string {
 			box = "[✓]"
 		}
 		row(box + "  " + label)
+	}
+
+	// soundRow renders a ‹ name › sound picker, or "unavailable" when the
+	// platform offers no sounds (not even the bundled ones could load).
+	soundRow := func(label, name string, available bool) {
+		if !available {
+			row(fmt.Sprintf("%s  ‹ unavailable ›", label))
+			return
+		}
+		row(fmt.Sprintf("%s  ‹ %s ›", label, name))
 	}
 
 	sliderRow := func(label string, val float64) {
@@ -925,6 +1018,12 @@ func renderSettingsView(width, height int, s Styles, st settingsState) string {
 
 	section("Display")
 	toggleRow("Show extended thinking", st.showThinking)
+
+	section("Notifications")
+	toggleRow("Play sound when a turn ends", st.turnEndSound)
+	soundRow("Sound", st.turnEndSoundName, st.soundsAvailable)
+	toggleRow("Play sound when the agent needs you", st.needsYouSound)
+	soundRow("Sound", st.needsYouSoundName, st.soundsAvailable)
 
 	section("Context")
 	toggleRow("Read AGENTS.md", st.readAgentsMD)
