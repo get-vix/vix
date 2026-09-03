@@ -35,6 +35,7 @@ var EventTypes = map[string]any{
 	"event.user_question":       EventUserQuestion{},
 	"event.error":               EventError{},
 	"event.replay":              EventReplay{},
+	"event.replay_ready":        EventReplayReady{},
 	"event.title_updated":       EventTitleUpdated{},
 	"event.retry":               EventRetry{},
 	"event.thinking_stall":      EventThinkingStall{},

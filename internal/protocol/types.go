@@ -407,10 +407,12 @@ type ReplayMessage struct {
 	Timestamp string `json:"timestamp,omitempty"`
 }
 
-// EventReplay is emitted once, immediately after event.thread_started, when a
-// client attaches to a persisted thread. It rebuilds the chat viewport and
-// restores the thread's mode/model/todos, plus any restore-time warnings
-// (model changed, workflow missing, etc.).
+// EventReplay is emitted when a client attaches to a persisted thread, to
+// rebuild the chat viewport (messages/todos/plan/title/mode). It is sent as a
+// content-only, read-only replay BEFORE the daemon's initBrain runs (so the
+// transcript renders without waiting on network-bound init); Initializing is
+// then true and the restore-time warnings + resolved model arrive separately
+// via EventReplayReady once init completes.
 type EventReplay struct {
 	Messages       []ReplayMessage `json:"messages"`
 	Todos          []TodoItem      `json:"todos,omitempty"`
@@ -422,6 +424,22 @@ type EventReplay struct {
 	// Warnings are human-readable restore notices rendered into the viewport
 	// (e.g. "Saved with model X; switched to your current default Y.").
 	Warnings []string `json:"warnings,omitempty"`
+	// Initializing marks a content-only replay emitted before initBrain has
+	// finished. The client renders the transcript read-only until the matching
+	// event.replay_ready arrives (which unlocks input and carries the restore
+	// warnings + resolved model). False for a fully-finalized replay.
+	Initializing bool `json:"initializing,omitempty"`
+}
+
+// EventReplayReady finalizes a reopened thread after initBrain completes: it
+// carries the restore warnings and the resolved model/mode, and signals the
+// client to unlock input (drop the read-only state set by the initializing
+// event.replay). Emitted only for attached/restored threads.
+type EventReplayReady struct {
+	Model          string   `json:"model,omitempty"`
+	ThreadMode     string   `json:"thread_mode,omitempty"`
+	ActiveWorkflow string   `json:"active_workflow,omitempty"`
+	Warnings       []string `json:"warnings,omitempty"`
 }
 
 // EventTitleUpdated is emitted on a thread's stream when its display title

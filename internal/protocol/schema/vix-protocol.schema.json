@@ -258,6 +258,9 @@
         "active_workflow": {
           "type": "string"
         },
+        "initializing": {
+          "type": "boolean"
+        },
         "messages": {
           "items": {
             "$ref": "#/$defs/ReplayMessage"
@@ -289,6 +292,26 @@
       "required": [
         "messages"
       ],
+      "type": "object"
+    },
+    "EventReplayReady": {
+      "properties": {
+        "active_workflow": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "thread_mode": {
+          "type": "string"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
       "type": "object"
     },
     "EventRetry": {
@@ -1595,6 +1618,11 @@
     "event.replay": {
       "payload": {
         "$ref": "#/$defs/EventReplay"
+      }
+    },
+    "event.replay_ready": {
+      "payload": {
+        "$ref": "#/$defs/EventReplayReady"
       }
     },
     "event.retry": {

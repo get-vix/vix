@@ -48,7 +48,7 @@ func writeHookSpec(t *testing.T, dir, name, body string) {
 	}
 }
 
-// TestAnnounceStart_SourceClassification pins the regression where emitReplay
+// TestAnnounceStart_SourceClassification pins the regression where finalizeReplay
 // (which clears attachRecord) ran before the ThreadStart source was computed,
 // so every resumed thread fired as "startup" — wrongly tripping startup-gated
 // hooks like the feedback counter. A fresh thread must fire only the "startup"

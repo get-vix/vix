@@ -259,6 +259,7 @@ public struct EventQuestionOption: Codable, Sendable, Equatable {
 public struct EventReplay: Codable, Sendable, Equatable {
     public var activePlan: Plan?
     public var activeWorkflow: String?
+    public var initializing: Bool?
     public var messages: [ReplayMessage]
     public var model: String?
     public var threadMode: String?
@@ -266,9 +267,10 @@ public struct EventReplay: Codable, Sendable, Equatable {
     public var todos: [TodoItem]?
     public var warnings: [String]?
 
-    public init(activePlan: Plan? = nil, activeWorkflow: String? = nil, messages: [ReplayMessage], model: String? = nil, threadMode: String? = nil, title: String? = nil, todos: [TodoItem]? = nil, warnings: [String]? = nil) {
+    public init(activePlan: Plan? = nil, activeWorkflow: String? = nil, initializing: Bool? = nil, messages: [ReplayMessage], model: String? = nil, threadMode: String? = nil, title: String? = nil, todos: [TodoItem]? = nil, warnings: [String]? = nil) {
         self.activePlan = activePlan
         self.activeWorkflow = activeWorkflow
+        self.initializing = initializing
         self.messages = messages
         self.model = model
         self.threadMode = threadMode
@@ -280,11 +282,33 @@ public struct EventReplay: Codable, Sendable, Equatable {
     enum CodingKeys: String, CodingKey {
         case activePlan = "active_plan"
         case activeWorkflow = "active_workflow"
+        case initializing = "initializing"
         case messages = "messages"
         case model = "model"
         case threadMode = "thread_mode"
         case title = "title"
         case todos = "todos"
+        case warnings = "warnings"
+    }
+}
+
+public struct EventReplayReady: Codable, Sendable, Equatable {
+    public var activeWorkflow: String?
+    public var model: String?
+    public var threadMode: String?
+    public var warnings: [String]?
+
+    public init(activeWorkflow: String? = nil, model: String? = nil, threadMode: String? = nil, warnings: [String]? = nil) {
+        self.activeWorkflow = activeWorkflow
+        self.model = model
+        self.threadMode = threadMode
+        self.warnings = warnings
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case activeWorkflow = "active_workflow"
+        case model = "model"
+        case threadMode = "thread_mode"
         case warnings = "warnings"
     }
 }

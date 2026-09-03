@@ -203,6 +203,13 @@ type ThreadState struct {
 	// welcome view before its history arrives.
 	awaitingReplay bool
 
+	// initializing is set while a reopened thread's daemon-side initBrain is
+	// still running: the content-only event.replay has arrived (transcript is
+	// rendered) but event.replay_ready has not, so the conversation is shown
+	// read-only and input is rejected. Cleared by event.replay_ready, or on a
+	// disconnect so a dropped connection can't leave the thread stuck read-only.
+	initializing bool
+
 	// vixSummary is set when this thread was attached from a vix-initiated
 	// record (job run, alert). It carries the record's trigger/status metadata
 	// and keeps the thread rendered inside the Threads tab's "Vix-initiated"

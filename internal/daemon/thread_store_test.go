@@ -501,6 +501,8 @@ func newReplayThread(t *testing.T, rec *threadRecord) *Thread {
 	return s
 }
 
+// captureReplay drives the early, content-only emitReplay and returns the
+// event.replay it emits.
 func captureReplay(t *testing.T, s *Thread) protocol.EventReplay {
 	t.Helper()
 	s.emitReplay()
@@ -520,12 +522,56 @@ func captureReplay(t *testing.T, s *Thread) protocol.EventReplay {
 	}
 }
 
-func TestEmitReplayModelChangedWarning(t *testing.T) {
+// captureReplayReady drives finalizeReplay (the post-initBrain phase) and
+// returns the event.replay_ready it emits.
+func captureReplayReady(t *testing.T, s *Thread) protocol.EventReplayReady {
+	t.Helper()
+	s.finalizeReplay()
+	select {
+	case ev := <-s.eventChan:
+		if ev.Type != "event.replay_ready" {
+			t.Fatalf("event type = %q, want event.replay_ready", ev.Type)
+		}
+		rep, ok := ev.Data.(protocol.EventReplayReady)
+		if !ok {
+			t.Fatalf("event data type = %T, want EventReplayReady", ev.Data)
+		}
+		return rep
+	default:
+		t.Fatal("no event emitted")
+		return protocol.EventReplayReady{}
+	}
+}
+
+// The early emitReplay carries the transcript with Initializing=true, no
+// warnings, the saved rec.Model (so restored turn separators stay forkable),
+// and leaves attachRecord intact for finalizeReplay.
+func TestEmitReplayContentIsInitializing(t *testing.T) {
+	rec := sampleRecord()
+	rec.Model = "anthropic/old-saved" // would warn — but not in the early phase
+	s := newReplayThread(t, &rec)
+
+	rep := captureReplay(t, s)
+	if !rep.Initializing {
+		t.Error("early replay should be marked Initializing")
+	}
+	if len(rep.Warnings) != 0 {
+		t.Errorf("early replay warnings = %v, want none", rep.Warnings)
+	}
+	if rep.Model != "anthropic/old-saved" {
+		t.Errorf("early replay model = %q, want the saved rec.Model so restored turn separators stay forkable", rep.Model)
+	}
+	if s.attachRecord == nil {
+		t.Error("attachRecord must survive the early replay for finalizeReplay")
+	}
+}
+
+func TestFinalizeReplayModelChangedWarning(t *testing.T) {
 	rec := sampleRecord()
 	rec.Model = "anthropic/old-saved"
 	s := newReplayThread(t, &rec) // s.model = anthropic/new-default
 
-	rep := captureReplay(t, s)
+	rep := captureReplayReady(t, s)
 	if len(rep.Warnings) != 1 {
 		t.Fatalf("warnings = %v, want 1 (model change)", rep.Warnings)
 	}
@@ -533,22 +579,22 @@ func TestEmitReplayModelChangedWarning(t *testing.T) {
 		t.Errorf("replay model = %q, want current default", rep.Model)
 	}
 	if s.attachRecord != nil {
-		t.Error("attachRecord should be cleared after replay")
+		t.Error("attachRecord should be cleared after finalizeReplay")
 	}
 }
 
-func TestEmitReplayNoWarningWhenModelSame(t *testing.T) {
+func TestFinalizeReplayNoWarningWhenModelSame(t *testing.T) {
 	rec := sampleRecord()
 	rec.Model = "anthropic/new-default"
 	s := newReplayThread(t, &rec)
 
-	rep := captureReplay(t, s)
+	rep := captureReplayReady(t, s)
 	if len(rep.Warnings) != 0 {
 		t.Errorf("warnings = %v, want none", rep.Warnings)
 	}
 }
 
-func TestEmitReplayWorkflowMissingFallsBackToChat(t *testing.T) {
+func TestFinalizeReplayWorkflowMissingFallsBackToChat(t *testing.T) {
 	rec := sampleRecord()
 	rec.Model = "anthropic/new-default" // avoid model warning
 	rec.ThreadMode = "workflow"
@@ -556,7 +602,7 @@ func TestEmitReplayWorkflowMissingFallsBackToChat(t *testing.T) {
 	s := newReplayThread(t, &rec)
 	// s.workflows is empty -> workflow no longer exists.
 
-	rep := captureReplay(t, s)
+	rep := captureReplayReady(t, s)
 	if rep.ThreadMode != "chat" || rep.ActiveWorkflow != "" {
 		t.Errorf("expected fallback to chat: mode=%q wf=%q", rep.ThreadMode, rep.ActiveWorkflow)
 	}
@@ -568,7 +614,7 @@ func TestEmitReplayWorkflowMissingFallsBackToChat(t *testing.T) {
 	}
 }
 
-func TestEmitReplayWorkflowPresentKept(t *testing.T) {
+func TestFinalizeReplayWorkflowPresentKept(t *testing.T) {
 	rec := sampleRecord()
 	rec.Model = "anthropic/new-default"
 	rec.ThreadMode = "workflow"
@@ -576,7 +622,7 @@ func TestEmitReplayWorkflowPresentKept(t *testing.T) {
 	s := newReplayThread(t, &rec)
 	s.workflows = []*WorkflowDef{{Name: "build"}}
 
-	rep := captureReplay(t, s)
+	rep := captureReplayReady(t, s)
 	if rep.ThreadMode != "workflow" || rep.ActiveWorkflow != "build" {
 		t.Errorf("workflow should be kept: mode=%q wf=%q", rep.ThreadMode, rep.ActiveWorkflow)
 	}

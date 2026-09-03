@@ -200,14 +200,15 @@ func (s *Thread) userPromptSubmitHook(ctx context.Context, text string) (newText
 	return text, "", false
 }
 
-// announceStart rebuilds the resumed client's viewport and fires ThreadStart
-// hooks, classified by source. The resume check must be captured before
-// emitReplay runs, because emitReplay clears attachRecord — reordering these
-// would misclassify every resumed thread as "startup" (and inflate any
+// announceStart finalizes the resumed client's viewport (unlocking input and
+// delivering restore warnings) and fires ThreadStart hooks, classified by
+// source. The resume check must be captured before finalizeReplay runs,
+// because finalizeReplay clears attachRecord — reordering these would
+// misclassify every resumed thread as "startup" (and inflate any
 // startup-gated hook, e.g. the feedback counter).
 func (s *Thread) announceStart() {
 	resumed := s.attachRecord != nil
-	s.emitReplay()
+	s.finalizeReplay()
 	source := "startup"
 	if resumed {
 		source = "resume"

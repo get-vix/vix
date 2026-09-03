@@ -1424,6 +1424,32 @@ func (m Model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Read-only while a reopened thread's daemon-side init is still running:
+		// the transcript is visible and (when focus is on the chat viewport)
+		// scrollable, but every editing/sending key is swallowed until
+		// event.replay_ready unlocks input. Focus toggling (Tab) is handled
+		// above and still works, so the user can move to the chat to scroll.
+		if sess.initializing {
+			if sess.focus == FocusChat {
+				switch msg.String() {
+				case "up", "k":
+					sess.chatScrollOffset += 3
+				case "down", "j":
+					sess.chatScrollOffset -= 3
+				case "pgup", "b":
+					sess.chatScrollOffset += 20
+				case "pgdown", "f":
+					sess.chatScrollOffset -= 20
+				case "home", "g":
+					sess.chatScrollOffset = m.threadMaxScrollOffset(sess)
+				case "end", "G":
+					sess.chatScrollOffset = 0
+				}
+				m.clampScrollOffset(sess)
+			}
+			return m, nil
+		}
+
 		// Shift+Enter / Alt+Enter: newline
 		if msg.String() == "shift+enter" || msg.String() == "alt+enter" || msg.String() == "ctrl+j" {
 			if sess.agentState == StateWaitingForInput || sess.agentState == StatePlanReview ||
@@ -1665,6 +1691,10 @@ func (m Model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// If the connection dropped before the replay arrived, abandon the
 			// restoring placeholder so we don't spin forever.
 			sess.awaitingReplay = false
+			// A drop between the content replay and replay_ready would otherwise
+			// leave the thread stuck read-only; clear it so the reconnect (which
+			// re-attaches and re-runs the replay sequence) can restore state.
+			sess.initializing = false
 			sess.thinkingAnim.Stop()
 			sess.chatMessages = append(sess.chatMessages, renderErrorMessage(fmt.Errorf("daemon connection lost")))
 			if sess.agentState != StatePlanReview {
@@ -1778,6 +1808,7 @@ func (m Model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		sess.reconnecting = false
 		sess.orphaned = true
 		sess.awaitingReplay = false
+		sess.initializing = false
 		sess.client = nil
 		sess.pendingInput = nil
 		sess.pendingPlanAction = nil
@@ -2897,6 +2928,11 @@ func (m Model) handleTrimKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 // handleEnter handles the Enter key in the Chat tab.
 func (m Model) handleEnter(sess *ThreadState) (tea.Model, tea.Cmd) {
+	// Read-only while a reopened thread is still initializing: reject submits
+	// until event.replay_ready unlocks input.
+	if sess.initializing {
+		return m, nil
+	}
 	if sess.agentState == StateConfirmPending {
 		if sess.client != nil {
 			sess.client.SendConfirm(true, false)
@@ -3061,6 +3097,10 @@ func (m *Model) applyEventToThread(idx int, event protocol.ThreadEvent) []tea.Cm
 		var rep protocol.EventReplay
 		json.Unmarshal(data, &rep)
 		m.applyReplay(sess, rep)
+		// A content-only replay (emitted before the daemon finished initBrain)
+		// renders the transcript read-only; input stays locked until the
+		// matching event.replay_ready arrives.
+		sess.initializing = rep.Initializing
 		// The viewport is now rebuilt; drop the restoring placeholder and stop
 		// its spinner.
 		sess.awaitingReplay = false
@@ -3087,6 +3127,23 @@ func (m *Model) applyEventToThread(idx int, event protocol.ThreadEvent) []tea.Cm
 		if sess.vixSummary != nil {
 			sess.vixSummary.Title = tu.Title
 		}
+
+	case "event.replay_ready":
+		// Daemon-side initBrain finished for a reopened thread: apply the
+		// resolved model/mode, render restore warnings, and unlock input
+		// (drop the read-only state set by the initializing event.replay).
+		data := marshalData(event.Data)
+		var rr protocol.EventReplayReady
+		json.Unmarshal(data, &rr)
+		if rr.Model != "" {
+			sess.setModel(rr.Model)
+		}
+		sess.activeWorkflow = rr.ActiveWorkflow
+		for _, w := range rr.Warnings {
+			sess.chatMessages = append(sess.chatMessages, renderSystemMessage(w, m.styles))
+		}
+		sess.chatCache.invalidate()
+		sess.initializing = false
 
 	case "event.init_state":
 		data := marshalData(event.Data)
@@ -3698,6 +3755,10 @@ func (m Model) View() tea.View {
 				modeName = m.currentModeName(sess)
 			}
 			inputSection = renderInputBox(modeName, sess != nil && sess.activeWorkflow != "", "", m.width, false, m.styles.ColorBlurBorder)
+		} else if sess != nil && sess.initializing {
+			// Reopened thread still initializing: show the transcript but make
+			// the input visibly read-only (blurred, no textarea, clear label).
+			inputSection = renderInputBox("Initializing — read only", false, "", m.width, false, m.styles.ColorBlurBorder)
 		} else if sess != nil {
 			inputSection = renderInputBox(m.currentModeName(sess), sess.activeWorkflow != "", sess.input.View(), m.width, sess.focus == FocusEditor, m.styles.ColorBlurBorder)
 		} else {

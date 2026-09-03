@@ -576,7 +576,7 @@ func (s *Thread) persist() {
 // seedFromRecord restores conversation state from a persisted record onto a
 // freshly constructed thread (used by the attach path). It does NOT restore
 // the model — attach deliberately resumes on the current default and warns on
-// mismatch in emitReplay.
+// mismatch in finalizeReplay.
 func (s *Thread) seedFromRecord(rec *threadRecord) {
 	s.messages = append([]llm.MessageParam(nil), rec.Messages...)
 	// Rebuild the read-gate set from history: persistence carries messages but
@@ -625,10 +625,59 @@ func (s *Thread) seedFromRecord(rec *threadRecord) {
 	s.attachRecord = rec
 }
 
-// emitReplay rebuilds the client's chat viewport for an attached thread and
-// applies restore-time validation (model changed, workflow missing). Called
-// from Run() after initBrain, when s.model and s.workflows are resolved.
+// emitReplay rebuilds the client's chat viewport for an attached thread with a
+// content-only replay, emitted BEFORE initBrain runs so the on-disk transcript
+// renders immediately (no network wait). It marks the replay Initializing so
+// the client shows the conversation read-only until finalizeReplay unlocks it.
+//
+// It deliberately does NOT clear s.attachRecord or compute restore warnings —
+// those depend on initBrain (s.model, s.workflows) and are handled by
+// finalizeReplay via event.replay_ready. It DOES carry the saved rec.Model so
+// the client can reconstruct turn separators (which key off a non-empty model)
+// and thus keep the restored transcript forkable/trimmable/duplicable; any
+// model fallback is reconciled later by event.replay_ready.
 func (s *Thread) emitReplay() {
+	rec := s.attachRecord
+	if rec == nil {
+		return
+	}
+
+	s.mu.Lock()
+	msgs := make([]llm.MessageParam, len(s.messages))
+	copy(msgs, s.messages)
+	notices := make([]retryNoticeRecord, len(s.retryNotices))
+	copy(notices, s.retryNotices)
+	failures := make([]failureNoticeRecord, len(s.failureNotices))
+	copy(failures, s.failureNotices)
+	plan := s.activePlan
+	title := s.title
+	mode := s.threadMode
+	workflow := s.activeWorkflow
+	s.mu.Unlock()
+
+	s.todoMu.RLock()
+	todos := make([]protocol.TodoItem, len(s.todoList))
+	copy(todos, s.todoList)
+	s.todoMu.RUnlock()
+
+	s.emit("event.replay", protocol.EventReplay{
+		Messages:       buildReplayMessages(msgs, notices, failures),
+		Todos:          todos,
+		ActivePlan:     plan,
+		Model:          rec.Model,
+		Title:          title,
+		ThreadMode:     mode,
+		ActiveWorkflow: workflow,
+		Initializing:   true,
+	})
+}
+
+// finalizeReplay runs after initBrain, when s.model and s.workflows are
+// resolved. It applies restore-time validation (model changed, workflow
+// missing), clears s.attachRecord, persists any fallback, and emits
+// event.replay_ready so the client unlocks input (drops the read-only state)
+// and renders the warnings. No-op for a non-attached (fresh) thread.
+func (s *Thread) finalizeReplay() {
 	rec := s.attachRecord
 	if rec == nil {
 		return
@@ -669,28 +718,8 @@ func (s *Thread) emitReplay() {
 			st.Name, st.CurrentRef.ID, st.Iteration))
 	}
 
-	s.mu.Lock()
-	msgs := make([]llm.MessageParam, len(s.messages))
-	copy(msgs, s.messages)
-	notices := make([]retryNoticeRecord, len(s.retryNotices))
-	copy(notices, s.retryNotices)
-	failures := make([]failureNoticeRecord, len(s.failureNotices))
-	copy(failures, s.failureNotices)
-	plan := s.activePlan
-	title := s.title
-	s.mu.Unlock()
-
-	s.todoMu.RLock()
-	todos := make([]protocol.TodoItem, len(s.todoList))
-	copy(todos, s.todoList)
-	s.todoMu.RUnlock()
-
-	s.emit("event.replay", protocol.EventReplay{
-		Messages:       buildReplayMessages(msgs, notices, failures),
-		Todos:          todos,
-		ActivePlan:     plan,
+	s.emit("event.replay_ready", protocol.EventReplayReady{
 		Model:          s.model,
-		Title:          title,
 		ThreadMode:     s.threadMode,
 		ActiveWorkflow: s.activeWorkflow,
 		Warnings:       warnings,

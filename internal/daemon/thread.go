@@ -169,7 +169,8 @@ type Thread struct {
 
 	// Persistence/attach state.
 	// attachRecord is non-nil when this thread is resuming a persisted record;
-	// Run() emits event.replay (with restore validation) after initBrain.
+	// Run() emits a content-only event.replay before initBrain, then
+	// finalizeReplay (restore validation) after it.
 	attachRecord *threadRecord
 	// closedByUser is set when a thread.close command is received (the TUI "x"
 	// action), distinguishing an explicit close (move record open->closed) from
@@ -605,11 +606,21 @@ func (s *Thread) Run() {
 		}
 	}()
 
+	// Emit the init-in-progress state, then replay the on-disk conversation
+	// content BEFORE initBrain. initBrain does network-bound work (OAuth token
+	// refresh, MCP server connects) that can stall when offline; emitting the
+	// content-only replay first lets the client render the saved transcript
+	// read-only immediately instead of blocking on the network. finalizeReplay
+	// (in announceStart, after initBrain) then unlocks input and delivers the
+	// restore warnings + resolved model.
+	s.emit("event.init_state", protocol.EventInitState{State: int(protocol.InitInProgress)})
+	s.emitReplay()
+
 	s.initBrain()
 
-	// Rebuild the client's viewport (for resumes) and fire the ThreadStart
-	// hooks, classified as startup vs resume. Must run as one unit: emitReplay
-	// clears attachRecord, so the resume check has to be captured before it.
+	// Rebuild-completion + resume announcement. finalizeReplay must run as one
+	// unit with the resume classification: it clears attachRecord, so the
+	// resume check has to be captured before it.
 	s.announceStart()
 
 	for {
@@ -716,7 +727,20 @@ func (s *Thread) unconfiguredMessage() string {
 // initBrain ensures the brain index exists (running brain.init if needed),
 // then loads memory, custom agents, and workflows.
 func (s *Thread) initBrain() {
-	s.emit("event.init_state", protocol.EventInitState{State: int(protocol.InitInProgress)})
+	// init_state InProgress is emitted by Run() before the early replay, so the
+	// client knows initialization is pending while it renders the read-only
+	// transcript. Do not re-emit it here.
+
+	// Test-only: an artificial delay makes the read-only "initializing" window
+	// (transcript rendered, input locked) observable in e2e. No-op in prod
+	// (VIX_TEST_INITBRAIN_DELAY_MS unset). Respects cancellation.
+	if d := initBrainTestDelay(); d > 0 {
+		select {
+		case <-time.After(d):
+		case <-s.ctx.Done():
+			return
+		}
+	}
 
 	// Load skills and advertise them to the UI up front, before the
 	// potentially slow brain.init below. Skill scanning only reads the
@@ -913,6 +937,22 @@ func (s *Thread) initBrain() {
 			Method:  method,
 		})
 	}
+}
+
+// initBrainTestDelay returns an artificial initBrain delay from
+// VIX_TEST_INITBRAIN_DELAY_MS (milliseconds). It exists only to make the
+// read-only "initializing" window observable in e2e tests; unset/invalid → 0
+// (no delay), so it is inert in production.
+func initBrainTestDelay() time.Duration {
+	v := os.Getenv("VIX_TEST_INITBRAIN_DELAY_MS")
+	if v == "" {
+		return 0
+	}
+	ms, err := strconv.Atoi(v)
+	if err != nil || ms <= 0 {
+		return 0
+	}
+	return time.Duration(ms) * time.Millisecond
 }
 
 // skillInfoList returns the loaded skills as name/description pairs, sorted by
