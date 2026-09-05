@@ -1,7 +1,7 @@
 package llm
 
 import (
-	"github.com/openai/openai-go/option"
+	"github.com/openai/openai-go/v3/option"
 
 	"github.com/get-vix/vix/internal/config"
 )

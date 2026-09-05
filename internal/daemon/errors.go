@@ -12,7 +12,7 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/get-vix/vix/internal/daemon/llm"
-	"github.com/openai/openai-go"
+	"github.com/openai/openai-go/v3"
 )
 
 // rateLimitRetryAfter returns the server-suggested retry delay for a 429 error,

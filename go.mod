@@ -16,7 +16,7 @@ require (
 	github.com/gridlhq-dev/tree-sitter-swift v0.1.0
 	github.com/lucasb-eyer/go-colorful v1.3.0
 	github.com/mattn/go-isatty v0.0.20
-	github.com/openai/openai-go v1.12.0
+	github.com/openai/openai-go/v3 v3.52.0
 	github.com/pgavlin/mermaid-ascii v0.0.0-20260322123205-ab8074a98bef
 	github.com/posthog/posthog-go v1.11.2
 	github.com/rivo/uniseg v0.4.7

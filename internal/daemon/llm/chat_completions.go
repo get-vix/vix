@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/option"
-	"github.com/openai/openai-go/packages/param"
-	"github.com/openai/openai-go/shared"
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
+	"github.com/openai/openai-go/v3/packages/param"
+	"github.com/openai/openai-go/v3/shared"
 
 	"github.com/get-vix/vix/internal/config"
 	"github.com/get-vix/vix/internal/providers"
@@ -289,18 +289,20 @@ func buildChatCompletionMessages(system []SystemBlock, msgs []MessageParam) []op
 			}
 		case RoleAssistant:
 			var text string
-			var toolCalls []openai.ChatCompletionMessageToolCallParam
+			var toolCalls []openai.ChatCompletionMessageToolCallUnionParam
 			for _, b := range m.Content {
 				switch b.Type {
 				case BlockText:
 					text += b.Text
 				case BlockToolUse:
 					args, _ := json.Marshal(normalizeToolInput(b.Input))
-					toolCalls = append(toolCalls, openai.ChatCompletionMessageToolCallParam{
-						ID: b.ID,
-						Function: openai.ChatCompletionMessageToolCallFunctionParam{
-							Name:      b.Name,
-							Arguments: string(args),
+					toolCalls = append(toolCalls, openai.ChatCompletionMessageToolCallUnionParam{
+						OfFunction: &openai.ChatCompletionMessageFunctionToolCallParam{
+							ID: b.ID,
+							Function: openai.ChatCompletionMessageFunctionToolCallFunctionParam{
+								Name:      b.Name,
+								Arguments: string(args),
+							},
 						},
 					})
 				case BlockThinking:
@@ -322,11 +324,11 @@ func buildChatCompletionMessages(system []SystemBlock, msgs []MessageParam) []op
 
 // buildChatCompletionTools translates neutral ToolParams into the
 // openai-go tool definition shape.
-func buildChatCompletionTools(tools []ToolParam) []openai.ChatCompletionToolParam {
+func buildChatCompletionTools(tools []ToolParam) []openai.ChatCompletionToolUnionParam {
 	if len(tools) == 0 {
 		return nil
 	}
-	out := make([]openai.ChatCompletionToolParam, 0, len(tools))
+	out := make([]openai.ChatCompletionToolUnionParam, 0, len(tools))
 	for _, t := range tools {
 		fn := shared.FunctionDefinitionParam{
 			Name:       t.Name,
@@ -335,7 +337,7 @@ func buildChatCompletionTools(tools []ToolParam) []openai.ChatCompletionToolPara
 		if t.Description != "" {
 			fn.Description = param.NewOpt(t.Description)
 		}
-		out = append(out, openai.ChatCompletionToolParam{Function: fn})
+		out = append(out, openai.ChatCompletionFunctionTool(fn))
 	}
 	return out
 }
