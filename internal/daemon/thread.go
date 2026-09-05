@@ -743,13 +743,25 @@ func (s *Thread) initBrain() {
 	}
 
 	// Load skills and advertise them to the UI up front, before the
-	// potentially slow brain.init below. Skill scanning only reads the
-	// .vix/skills/ directories and has no dependency on the brain/LSP, so
+	// potentially slow brain.init below. Skill scanning reads the
+	// .vix/skills/ directories and any custom skills_dir paths from
+	// settings.json, and has no dependency on the brain/LSP, so
 	// emitting event.skills_available here lets the slash menu autocomplete
 	// custom skills immediately instead of waiting for LSP initialization.
 	// Pass layers highest-precedence-first (reverse of the "later wins" order
-	// used for merged config): project before home.
-	skillDirs := s.paths.Skills()
+	// used for merged config): project before home, custom before default.
+	var skillDirs []string
+	for _, d := range s.paths.Layers() {
+		if d == "" {
+			continue
+		}
+		skillDirs = appendUniqueStr(skillDirs, filepath.Join(d, "skills"))
+
+		layerCfg := LoadProjectConfig(filepath.Join(d, "settings.json"))
+		for _, customDir := range layerCfg.SkillsDirs {
+			skillDirs = appendUniqueStr(skillDirs, customDir)
+		}
+	}
 	reversed := make([]string, len(skillDirs))
 	for i, d := range skillDirs {
 		reversed[len(skillDirs)-1-i] = d

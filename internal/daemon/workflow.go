@@ -432,6 +432,8 @@ type configFile struct {
 	Agent              string                `json:"agent,omitempty"`
 	AllowedDirectories []string              `json:"allowed_directories,omitempty"`
 	DenyList           denyListField         `json:"deny_list,omitempty"`
+	SkillsDir          string                `json:"skills_dir,omitempty"`
+	SkillsDirs         []string              `json:"skills_dirs,omitempty"`
 	Features           map[string]bool       `json:"features,omitempty"`
 	ToolTimeouts       *toolTimeoutsFile     `json:"tool_timeouts,omitempty"`
 	BashStepTimeouts   *bashStepTimeoutsFile `json:"bash_step_timeouts,omitempty"`
@@ -478,6 +480,7 @@ type ProjectConfig struct {
 	// the seeding logic in Thread for why both interpretations are unioned.
 	DenyPathsRel     []string
 	DenyURLs         []string
+	SkillsDirs       []string
 	Features         map[string]bool
 	ToolTimeouts     ToolTimeouts
 	BashStepTimeouts BashStepTimeouts
@@ -634,6 +637,28 @@ func LoadProjectConfig(configPaths ...string) ProjectConfig {
 			if !found {
 				result.DenyURLs = append(result.DenyURLs, u)
 			}
+		}
+		// Merge custom skills directories (union from all config files). A
+		// leading `~` is expanded to the user's home directory. Absolute
+		// entries are used verbatim. Relative entries are resolved against
+		// the config file's directory.
+		var rawSkillsDirs []string
+		if cfg.SkillsDir != "" {
+			rawSkillsDirs = append(rawSkillsDirs, cfg.SkillsDir)
+		}
+		rawSkillsDirs = append(rawSkillsDirs, cfg.SkillsDirs...)
+		for _, entry := range rawSkillsDirs {
+			entry = strings.TrimSpace(entry)
+			if entry == "" {
+				continue
+			}
+			expanded := expandTildePath(entry)
+			if filepath.IsAbs(expanded) {
+				result.SkillsDirs = appendUniqueStr(result.SkillsDirs, filepath.Clean(expanded))
+				continue
+			}
+			result.SkillsDirs = appendUniqueStr(result.SkillsDirs,
+				filepath.Clean(filepath.Join(filepath.Dir(configPath), expanded)))
 		}
 		if len(cfg.Features) > 0 {
 			if result.Features == nil {

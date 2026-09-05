@@ -591,6 +591,210 @@ func TestLoadProjectConfig(t *testing.T) {
 	})
 }
 
+// ── LoadProjectConfig: skills_dir / skills_dirs block ──
+
+func TestLoadProjectConfigSkillsDirs(t *testing.T) {
+	writeSettings := func(t *testing.T, path string, cfg configFile) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		data, err := json.Marshal(cfg)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if err := os.WriteFile(path, data, 0644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+
+	t.Run("single skills_dir", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "settings.json")
+		customDir := filepath.Join(dir, "custom-skills")
+
+		writeSettings(t, path, configFile{
+			Version:   CurrentConfigVersion,
+			SkillsDir: customDir,
+		})
+
+		cfg := LoadProjectConfig(path)
+		if len(cfg.SkillsDirs) != 1 || cfg.SkillsDirs[0] != customDir {
+			t.Fatalf("SkillsDirs = %v, want [%q]", cfg.SkillsDirs, customDir)
+		}
+	})
+
+	t.Run("skills_dirs array", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "settings.json")
+		dir1 := filepath.Join(dir, "skills1")
+		dir2 := filepath.Join(dir, "skills2")
+
+		writeSettings(t, path, configFile{
+			Version:    CurrentConfigVersion,
+			SkillsDirs: []string{dir1, dir2},
+		})
+
+		cfg := LoadProjectConfig(path)
+		if len(cfg.SkillsDirs) != 2 || cfg.SkillsDirs[0] != dir1 || cfg.SkillsDirs[1] != dir2 {
+			t.Fatalf("SkillsDirs = %v, want [%q, %q]", cfg.SkillsDirs, dir1, dir2)
+		}
+	})
+
+	t.Run("skills_dir and skills_dirs combined", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "settings.json")
+		primary := filepath.Join(dir, "primary")
+		secondary := filepath.Join(dir, "secondary")
+
+		writeSettings(t, path, configFile{
+			Version:    CurrentConfigVersion,
+			SkillsDir:  primary,
+			SkillsDirs: []string{secondary},
+		})
+
+		cfg := LoadProjectConfig(path)
+		if len(cfg.SkillsDirs) != 2 || cfg.SkillsDirs[0] != primary || cfg.SkillsDirs[1] != secondary {
+			t.Fatalf("SkillsDirs = %v, want [%q, %q]", cfg.SkillsDirs, primary, secondary)
+		}
+	})
+
+	t.Run("relative path resolved against config file dir", func(t *testing.T) {
+		projectDir := t.TempDir()
+		vixDir := filepath.Join(projectDir, ".vix")
+		path := filepath.Join(vixDir, "settings.json")
+
+		writeSettings(t, path, configFile{
+			Version:    CurrentConfigVersion,
+			SkillsDir:  "../project-skills",
+			SkillsDirs: []string{"extra-skills"},
+		})
+
+		cfg := LoadProjectConfig(path)
+		want1 := filepath.Join(projectDir, "project-skills")
+		want2 := filepath.Join(vixDir, "extra-skills")
+		if len(cfg.SkillsDirs) != 2 || cfg.SkillsDirs[0] != want1 || cfg.SkillsDirs[1] != want2 {
+			t.Fatalf("SkillsDirs = %v, want [%q, %q]", cfg.SkillsDirs, want1, want2)
+		}
+	})
+
+	t.Run("tilde expansion", func(t *testing.T) {
+		home, err := os.UserHomeDir()
+		if err != nil || home == "" {
+			t.Skip("user home not resolvable")
+		}
+
+		dir := t.TempDir()
+		path := filepath.Join(dir, "settings.json")
+
+		writeSettings(t, path, configFile{
+			Version:    CurrentConfigVersion,
+			SkillsDir:  "~/my-skills",
+			SkillsDirs: []string{"~"},
+		})
+
+		cfg := LoadProjectConfig(path)
+		want1 := filepath.Join(home, "my-skills")
+		want2 := home
+		if len(cfg.SkillsDirs) != 2 || cfg.SkillsDirs[0] != want1 || cfg.SkillsDirs[1] != want2 {
+			t.Fatalf("SkillsDirs = %v, want [%q, %q]", cfg.SkillsDirs, want1, want2)
+		}
+	})
+
+	t.Run("deduplication", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "settings.json")
+		skillDir := filepath.Join(dir, "shared-skills")
+
+		writeSettings(t, path, configFile{
+			Version:    CurrentConfigVersion,
+			SkillsDir:  skillDir,
+			SkillsDirs: []string{skillDir, skillDir + "/"},
+		})
+
+		cfg := LoadProjectConfig(path)
+		if len(cfg.SkillsDirs) != 1 || cfg.SkillsDirs[0] != skillDir {
+			t.Fatalf("SkillsDirs = %v, want [%q]", cfg.SkillsDirs, skillDir)
+		}
+	})
+
+	t.Run("empty and whitespace strings ignored", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "settings.json")
+		validDir := filepath.Join(dir, "valid")
+
+		writeSettings(t, path, configFile{
+			Version:    CurrentConfigVersion,
+			SkillsDir:  "   ",
+			SkillsDirs: []string{"", "  \t\n", validDir},
+		})
+
+		cfg := LoadProjectConfig(path)
+		if len(cfg.SkillsDirs) != 1 || cfg.SkillsDirs[0] != validDir {
+			t.Fatalf("SkillsDirs = %v, want [%q]", cfg.SkillsDirs, validDir)
+		}
+	})
+
+	t.Run("version gate ignores mismatched version", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "settings.json")
+
+		writeSettings(t, path, configFile{
+			Version:   999,
+			SkillsDir: filepath.Join(dir, "skills"),
+		})
+
+		cfg := LoadProjectConfig(path)
+		if len(cfg.SkillsDirs) != 0 {
+			t.Fatalf("expected empty SkillsDirs for mismatched version, got %v", cfg.SkillsDirs)
+		}
+	})
+
+	t.Run("version gate ignores missing version", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "settings.json")
+
+		writeSettings(t, path, configFile{
+			SkillsDir: filepath.Join(dir, "skills"),
+		})
+
+		cfg := LoadProjectConfig(path)
+		if len(cfg.SkillsDirs) != 0 {
+			t.Fatalf("expected empty SkillsDirs for missing version, got %v", cfg.SkillsDirs)
+		}
+	})
+
+	t.Run("layered configs merge home and project", func(t *testing.T) {
+		tempDir := t.TempDir()
+		homePath := filepath.Join(tempDir, "home", ".vix", "settings.json")
+		projectPath := filepath.Join(tempDir, "project", ".vix", "settings.json")
+
+		globalSkills := filepath.Join(tempDir, "global-skills")
+		projectSkills := filepath.Join(tempDir, "project", "my-skills")
+
+		writeSettings(t, homePath, configFile{
+			Version:   CurrentConfigVersion,
+			SkillsDir: globalSkills,
+		})
+
+		writeSettings(t, projectPath, configFile{
+			Version:   CurrentConfigVersion,
+			SkillsDir: "../my-skills",
+		})
+
+		cfg := LoadProjectConfig(homePath, projectPath)
+		want := []string{globalSkills, projectSkills}
+		if len(cfg.SkillsDirs) != len(want) {
+			t.Fatalf("SkillsDirs length = %d, want %d. Got: %v", len(cfg.SkillsDirs), len(want), cfg.SkillsDirs)
+		}
+		for i, w := range want {
+			if cfg.SkillsDirs[i] != w {
+				t.Errorf("SkillsDirs[%d] = %q, want %q", i, cfg.SkillsDirs[i], w)
+			}
+		}
+	})
+}
+
 // ── LoadProjectConfig: tool_timeouts block ──
 
 func TestLoadProjectConfigToolTimeouts(t *testing.T) {

@@ -111,3 +111,50 @@ func TestSkillProjectOverridesUser(t *testing.T) {
 		t.Fatal("user skill body leaked despite project override")
 	}
 }
+
+// TestSkillCustomDirs proves that custom skill directories configured via
+// skills_dir and skills_dirs in settings.json load skills properly and
+// make them available to the model. skills.custom_dirs
+func TestSkillCustomDirs(t *testing.T) {
+	h := harness.Start(t, harness.Meta{
+		Category: "skills", Subcategory: "skills.custom_dirs",
+		Description: "custom skills_dir and skills_dirs in settings.json load skills from external directories",
+		Wire:        harness.WireMessages,
+	},
+		harness.WithWorkdirFile(".vix/settings.json", `{
+			"version": 1,
+			"skills_dir": "../custom-skills",
+			"skills_dirs": ["../extra-skills"]
+		}`),
+		harness.WithWorkdirFile("custom-skills/alpha/SKILL.md",
+			skillMD("alpha", "Alpha skill from skills_dir.", "ALPHA_CUSTOM_BODY")),
+		harness.WithWorkdirFile("extra-skills/beta/SKILL.md",
+			skillMD("beta", "Beta skill from skills_dirs.", "BETA_CUSTOM_BODY")),
+	)
+
+	h.UI.WaitStable(400 * time.Millisecond)
+
+	h.Mock.Enqueue(
+		harness.ToolUse("skill", `{"name":"alpha"}`),
+		harness.Text("Loaded alpha."),
+	)
+	h.UI.Type("use alpha skill")
+	h.UI.Enter()
+	h.UI.ResolveToolPrompts("Loaded alpha.")
+
+	if !anyToolResultContains(h, "ALPHA_CUSTOM_BODY") {
+		t.Fatalf("skills_dir body did not reach the model; requests=%d", len(h.Mock.Requests()))
+	}
+
+	h.Mock.Enqueue(
+		harness.ToolUse("skill", `{"name":"beta"}`),
+		harness.Text("Loaded beta."),
+	)
+	h.UI.Type("use beta skill")
+	h.UI.Enter()
+	h.UI.ResolveToolPrompts("Loaded beta.")
+
+	if !anyToolResultContains(h, "BETA_CUSTOM_BODY") {
+		t.Fatalf("skills_dirs body did not reach the model; requests=%d", len(h.Mock.Requests()))
+	}
+}
