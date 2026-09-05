@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/openai/openai-go"
+	"github.com/openai/openai-go/v3"
 )
 
 // oaiErrWithBody builds an *openai.Error whose SDK Message is empty (as happens

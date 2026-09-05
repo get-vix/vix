@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/openai/openai-go/responses"
+	"github.com/openai/openai-go/v3/responses"
 
 	"github.com/get-vix/vix/internal/config"
 )
