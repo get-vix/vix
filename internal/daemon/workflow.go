@@ -25,6 +25,7 @@ import (
 	"github.com/get-vix/vix/internal/protocol"
 	"github.com/get-vix/vix/internal/whiteboard"
 	wf "github.com/get-vix/vix/internal/workflow"
+	"github.com/google/uuid"
 )
 
 // ErrMaxTokens is returned when the LLM response was truncated due to the output token limit.
@@ -97,6 +98,11 @@ type AgentRunner struct {
 	// system blocks (CLAUDE.md/AGENTS.md + skills metadata) and the `skill`
 	// tool, so a step that calls Send more than once doesn't duplicate them.
 	contextInjected bool
+
+	// SessionID is injected as x-opencode-session on every outbound LLM
+	// request for routing and prompt caching. Fresh runners get a new UUID;
+	// cloned runners inherit the parent's so requests stay in one session.
+	SessionID string
 
 	// Per-Send() accumulated usage (reset at start of each Send call)
 	LastInputTokens         int64
@@ -872,6 +878,7 @@ func NewAgentRunner(config SubagentConfig, cred config.Credential, parentModel, 
 		MaxTurns:     maxTurns,
 		ToolTimeouts: toolTimeouts,
 		plugins:      plugins,
+		SessionID:    uuid.New().String(),
 	}, nil
 }
 
@@ -902,6 +909,7 @@ func (a *AgentRunner) Clone(cred config.Credential) (*AgentRunner, error) {
 		ToolTimeouts:    a.ToolTimeouts,
 		plugins:         a.plugins,
 		contextInjected: a.contextInjected,
+		SessionID:       a.SessionID,
 	}, nil
 }
 
@@ -920,6 +928,12 @@ func (a *AgentRunner) Send(
 	a.LastCacheCreationTokens = 0
 	a.LastCacheReadTokens = 0
 	a.LastElapsed = 0
+
+	// Stamp the session ID so every outbound LLM request carries
+	// x-opencode-session for routing and prompt caching.
+	if a.SessionID != "" {
+		ctx = llm.WithSessionID(ctx, a.SessionID)
+	}
 
 	a.Messages = append(a.Messages, llm.NewUserMessage(
 		llm.NewTextBlock(userPrompt),

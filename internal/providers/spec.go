@@ -127,13 +127,14 @@ func (p ProviderSpec) Prefix() string { return p.ModelPrefix + "/" }
 // contain ${env:VAR} / ${env:VAR:-default} interpolation, resolved when the
 // inference layer constructs a client (see Resolve).
 type InferenceSpec struct {
-	BaseURL     string            `json:"base_url"`
-	AuthScheme  string            `json:"auth_scheme"`  // bearer | x-api-key
-	AuthHeader  string            `json:"auth_header"`  // for non-standard raw schemes; usually empty
-	Headers     map[string]string `json:"headers"`      // static request headers
-	QueryParams map[string]string `json:"query_params"` // appended to every request
-	JSONSet     map[string]any    `json:"json_set"`     // injected into every request body
-	EffortStyle string            `json:"effort_style"` // chat_completions only
+	BaseURL       string            `json:"base_url"`
+	AuthScheme    string            `json:"auth_scheme"`    // bearer | x-api-key
+	AuthHeader    string            `json:"auth_header"`    // for non-standard raw schemes; usually empty
+	Headers       map[string]string `json:"headers"`        // static request headers
+	QueryParams   map[string]string `json:"query_params"`   // appended to every request
+	JSONSet       map[string]any    `json:"json_set"`       // injected into every request body
+	EffortStyle   string            `json:"effort_style"`   // chat_completions only
+	SessionHeader string            `json:"session_header"` // header key for x-opencode-session (empty = no injection)
 }
 
 // CredentialMethod is one ordered way to obtain a credential for a provider.
@@ -162,8 +163,9 @@ type CredentialMethod struct {
 
 // ModelSpec is one catalogue entry shown in the model picker.
 type ModelSpec struct {
-	Spec        string `json:"spec"` // full prefixed identifier, e.g. "anthropic/claude-opus-4-8"
-	DisplayName string `json:"display_name"`
+	Spec        string     `json:"spec"` // full prefixed identifier, e.g. "anthropic/claude-opus-4-8"
+	DisplayName string     `json:"display_name"`
+	WireFormat  WireFormat `json:"wire_format,omitempty"`
 	// ContextWindow is the input context window in tokens. 0 (omitted) means
 	// unknown: callers render it as "—" and disable auto-compaction.
 	ContextWindow int64 `json:"context_window,omitempty"`

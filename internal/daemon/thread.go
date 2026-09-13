@@ -1772,6 +1772,7 @@ func (s *Thread) streamWithRetry(
 	// which (a) cancels the in-flight StreamMessage via the derived streamCtx
 	// and (b) wakes the backoff select so we don't keep retrying after Escape.
 	retryCtx, retryCancel := context.WithCancel(s.ctx)
+	retryCtx = llm.WithSessionID(retryCtx, s.id)
 	s.cancelStream = retryCancel
 	defer retryCancel()
 
@@ -2324,7 +2325,8 @@ func (s *Thread) summarizeMessages(msgs []llm.MessageParam) (string, error) {
 	// Ensure the conversation ends on a user message: the dropped prefix ends on
 	// an assistant turn, which the API would otherwise treat as a prefill.
 	msgs = append(msgs[:len(msgs):len(msgs)], llm.NewUserMessage(llm.NewTextBlock(compactionRequestPrompt)))
-	msg, _, err := s.llm.StreamMessage(s.ctx, system, msgs, nil, func(string) {}, func(string) {})
+	ctx := llm.WithSessionID(s.ctx, s.id)
+	msg, _, err := s.llm.StreamMessage(ctx, system, msgs, nil, func(string) {}, func(string) {})
 	if err != nil {
 		return "", err
 	}
@@ -2920,6 +2922,7 @@ func (s *Thread) handleWorkflowCommand(name, text string, inline json.RawMessage
 	}
 
 	planCtx, planCancel := context.WithCancel(s.ctx)
+	planCtx = llm.WithSessionID(planCtx, s.id)
 	s.planCancel = planCancel
 	defer func() {
 		planCancel()
@@ -3022,7 +3025,7 @@ func (s *Thread) handleSpawnAgent(ctx context.Context, input map[string]any) (st
 		// the subagent loop and its tool executor to the thread context, not
 		// the per-dispatch ctx, which is cancelled as soon as
 		// threadDispatchToolCalls returns.
-		bgCtx := s.ctx
+		bgCtx := llm.WithSessionID(s.ctx, s.id)
 		bgExecuteTool := func(name string, params map[string]any, cwd string) (*ToolResult, error) {
 			return s.executeToolConfirmed(bgCtx, name, params), nil
 		}
@@ -3056,6 +3059,7 @@ func (s *Thread) handleSpawnAgent(ctx context.Context, input map[string]any) (st
 	def, maxv := s.toolTimeoutBounds()
 	agentID := nextTaskID()
 	s.fireSubagentStart(agentType, agentID, prompt)
+	ctx = llm.WithSessionID(ctx, s.id)
 	result, err := RunSubagent(ctx, config, prompt, cred, parentModel, s.server.plugins, executeTool, s.cwd, s.emitHooks(), def, maxv, s.searchDirsSlice()...)
 	s.fireSubagentStop(agentType, agentID, result)
 
@@ -3086,6 +3090,7 @@ func (s *Thread) RunExploration(ctx context.Context, agentName, prompt string) (
 		return s.executeToolConfirmed(ctx, name, params), nil
 	}
 	def, maxv := s.toolTimeoutBounds()
+	ctx = llm.WithSessionID(ctx, s.id)
 	return RunSubagent(ctx, agentConfig, prompt, cred, s.model, s.server.plugins, executeTool, s.cwd, nil, def, maxv, s.searchDirsSlice()...)
 }
 

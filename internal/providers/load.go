@@ -195,6 +195,9 @@ func mergeInference(a, b InferenceSpec) InferenceSpec {
 	if b.EffortStyle != "" {
 		out.EffortStyle = b.EffortStyle
 	}
+	if b.SessionHeader != "" {
+		out.SessionHeader = b.SessionHeader
+	}
 	out.Headers = mergeStringMap(a.Headers, b.Headers)
 	out.QueryParams = mergeStringMap(a.QueryParams, b.QueryParams)
 	if b.JSONSet != nil {

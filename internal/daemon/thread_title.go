@@ -102,7 +102,8 @@ func (s *Thread) generateTitle(transcript string) {
 
 	promptText := s.loadTitlePrompt(transcript)
 	msgs := []llm.MessageParam{llm.NewUserMessage(llm.NewTextBlock(promptText))}
-	msg, _, err := s.llm.StreamMessage(s.ctx, nil, msgs, nil, func(string) {}, func(string) {})
+	ctx := llm.WithSessionID(s.ctx, s.id)
+	msg, _, err := s.llm.StreamMessage(ctx, nil, msgs, nil, func(string) {}, func(string) {})
 	if err != nil {
 		LogError("title generation for thread %s: %v", s.id, err)
 		return

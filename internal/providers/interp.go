@@ -77,11 +77,12 @@ func resolveEnvExpr(expr string, lookup func(string) string) string {
 // attribution headers, group id) take effect without per-provider Go code.
 func (in InferenceSpec) Resolve() InferenceSpec {
 	out := InferenceSpec{
-		BaseURL:     interpolate(in.BaseURL),
-		AuthScheme:  in.AuthScheme,
-		AuthHeader:  in.AuthHeader,
-		EffortStyle: in.EffortStyle,
-		JSONSet:     in.JSONSet, // values are not interpolated (non-string)
+		BaseURL:       interpolate(in.BaseURL),
+		AuthScheme:    in.AuthScheme,
+		AuthHeader:    in.AuthHeader,
+		EffortStyle:   in.EffortStyle,
+		JSONSet:       in.JSONSet, // values are not interpolated (non-string)
+		SessionHeader: in.SessionHeader,
 	}
 	if len(in.Headers) > 0 {
 		out.Headers = make(map[string]string, len(in.Headers))

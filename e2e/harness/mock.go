@@ -93,9 +93,10 @@ func writeJSONError(w http.ResponseWriter, status int, body any) {
 // RequestView is a wire-agnostic projection of one inbound LLM request, so
 // scenario assertions read the same regardless of provider dialect.
 type RequestView struct {
-	Wire string         // which wire dialect served this request
-	Raw  map[string]any // decoded request body, for arbitrary inspection
-	body []byte
+	Wire    string         // which wire dialect served this request
+	Raw     map[string]any // decoded request body, for arbitrary inspection
+	Headers http.Header    // inbound HTTP headers (captured for session-header etc.)
+	body    []byte
 }
 
 // LastUserText returns the text of the most recent user message (best-effort,
@@ -208,7 +209,7 @@ func (m *Mock) Requests() []RequestView {
 func (m *Mock) handle(wire string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body := readAll(r)
-		view := RequestView{Wire: wire, body: body}
+		view := RequestView{Wire: wire, body: body, Headers: r.Header.Clone()}
 		_ = json.Unmarshal(body, &view.Raw)
 
 		m.mu.Lock()

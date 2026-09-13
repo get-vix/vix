@@ -114,7 +114,10 @@ func NewFromModel(spec string, plugins PluginSource, effort string, maxTokens in
 		pluginCfg = plugins(p.ID, model, cred)
 	}
 
-	inf := p.Inference.Resolve()
+	// Resolve per-model overrides for wire_format and inference fields.
+	res := p.ResolveModel(model)
+	inf := res.Inference.Resolve()
+	pluginCfg.SessionHeader = inf.SessionHeader
 	cfg := Config{
 		Credential: cred,
 		Model:      model,
@@ -128,7 +131,7 @@ func NewFromModel(spec string, plugins PluginSource, effort string, maxTokens in
 		cfg.BaseURL = cred.BaseURL
 	}
 
-	switch p.WireFormat {
+	switch res.WireFormat {
 	case providers.WireMessages:
 		return buildMessages(p, inf, cfg)
 	case providers.WireResponses:
@@ -136,7 +139,7 @@ func NewFromModel(spec string, plugins PluginSource, effort string, maxTokens in
 	case providers.WireChatCompletions:
 		return buildChatCompletions(p, inf, cfg)
 	}
-	return nil, fmt.Errorf("unsupported wire_format %q for provider %s", p.WireFormat, p.ID)
+	return nil, fmt.Errorf("unsupported wire_format %q for provider %s", res.WireFormat, p.ID)
 }
 
 // buildMessages constructs the Anthropic Messages adapter (the default) or the
@@ -158,7 +161,10 @@ func buildMessages(p providers.ProviderSpec, inf providers.InferenceSpec, cfg Co
 // buildResponses constructs the OpenAI Responses adapter (also used by the
 // ChatGPT/Codex backend, whose endpoint arrives via cred.BaseURL → cfg.BaseURL).
 // Like Messages, the SDK owns its base path (/responses).
-func buildResponses(_ providers.ProviderSpec, _ providers.InferenceSpec, cfg Config) (Client, error) {
+func buildResponses(_ providers.ProviderSpec, inf providers.InferenceSpec, cfg Config) (Client, error) {
+	if cfg.BaseURL == "" {
+		cfg.BaseURL = inf.BaseURL
+	}
 	return NewOpenAI(cfg)
 }
 

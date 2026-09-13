@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"context"
 	"crypto/tls"
 	"io"
 	"log"
@@ -33,17 +34,38 @@ func CloseIdleHTTPConnections() {
 	sharedHTTPTransport.CloseIdleConnections()
 }
 
+// sessionIDCtxKey is the context key for the stable session identifier
+// (thread UUID) that is sent as the x-opencode-session header on every
+// outbound LLM request.
+type sessionIDCtxKey struct{}
+
+// WithSessionID returns a new context that carries the given session ID.
+// The HTTP transport stamps this ID as x-opencode-session on every request.
+func WithSessionID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, sessionIDCtxKey{}, id)
+}
+
+// SessionIDFromContext returns the session ID stamped on ctx by
+// WithSessionID, or "" if none.
+func SessionIDFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(sessionIDCtxKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
+
 // NewPluginHTTPClient returns an *http.Client whose Transport applies the
-// plugin's header set/strip rules to every outgoing request, then delegates
-// to the shared transport. The lifecycle-logging transport is composed on
-// the outside (see NewLoggingTransport) so the log ordering is:
+// plugin's header set/strip rules and the session header to every outgoing
+// request, then delegates to the shared transport. The lifecycle-logging
+// transport is composed on the outside (see NewLoggingTransport) so the
+// log ordering is:
 //
 //	request → loggingTransport → headerStripperTransport → sharedHTTPTransport
 //
 // Returns SharedHTTPClient() unchanged when pc has no headers.
 func NewPluginHTTPClient(pc PluginConfig) *http.Client {
 	if len(pc.Headers) == 0 {
-		return &http.Client{Transport: NewLoggingTransport(sharedHTTPTransport)}
+		return &http.Client{Transport: NewLoggingTransport(&headerStripperTransport{base: sharedHTTPTransport, sessionHeader: pc.SessionHeader})}
 	}
 
 	set := make(map[string]string)
@@ -58,19 +80,21 @@ func NewPluginHTTPClient(pc PluginConfig) *http.Client {
 	}
 
 	header := &headerStripperTransport{
-		base:  sharedHTTPTransport,
-		set:   set,
-		strip: strip,
+		base:          sharedHTTPTransport,
+		set:           set,
+		strip:         strip,
+		sessionHeader: pc.SessionHeader,
 	}
 	return &http.Client{Transport: NewLoggingTransport(header)}
 }
 
-// headerStripperTransport applies plugin header mutations to every
-// outgoing request before delegating to base.
+// headerStripperTransport applies plugin header mutations and the
+// session header to every outgoing request before delegating to base.
 type headerStripperTransport struct {
-	base  http.RoundTripper
-	set   map[string]string
-	strip []string
+	base          http.RoundTripper
+	set           map[string]string
+	strip         []string
+	sessionHeader string // header key for x-opencode-session; empty = no injection
 }
 
 func (h *headerStripperTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -79,6 +103,11 @@ func (h *headerStripperTransport) RoundTrip(req *http.Request) (*http.Response, 
 	}
 	for _, k := range h.strip {
 		req.Header.Del(k)
+	}
+	if h.sessionHeader != "" {
+		if sid := SessionIDFromContext(req.Context()); sid != "" {
+			req.Header.Set(h.sessionHeader, sid)
+		}
 	}
 	return h.base.RoundTrip(req)
 }

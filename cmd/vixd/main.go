@@ -159,6 +159,9 @@ func main() {
 
 	cwd, _ := os.Getwd()
 	pluginPaths := config.NewVixPaths("", config.HomeVixDir(), cwd)
+	// Expose the build version to provider headers via env interpolation
+	// (e.g. OpenCode's User-Agent: vix/${env:VIX_VERSION}).
+	os.Setenv("VIX_VERSION", Version)
 	// Load the data-driven provider/model registry: embedded defaults overlaid
 	// by ~/.vix and ./.vix providers.json. On error, log and fall back to the
 	// embedded defaults (providers.Default() lazy-loads them).

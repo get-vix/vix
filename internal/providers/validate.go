@@ -182,6 +182,12 @@ func validateProvider(p ProviderSpec, interp func(string) string) error {
 			}
 		}
 	}
+	// Validate per-model wire_format overrides.
+	for i, m := range p.Models {
+		if m.WireFormat != "" && !validWireFormats[m.WireFormat] {
+			return fmt.Errorf("provider %q model[%d]: unknown wire_format %q", p.ID, i, m.WireFormat)
+		}
+	}
 	return nil
 }
 

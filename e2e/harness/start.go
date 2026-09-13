@@ -400,6 +400,8 @@ func (h *Harness) daemonEnv(cfg *config, extra map[string]string) []string {
 		env["ANTHROPIC_BASE_URL"] = h.Mock.BaseURL()
 		env["OPENAI_API_KEY"] = "test"
 		env["OPENAI_BASE_URL"] = h.Mock.BaseURL()
+		env["OPENCODE_API_KEY"] = "test"
+		env["OPENCODE_BASE_URL"] = h.Mock.BaseURL()
 	} else {
 		// Force credential resolution through non-env sources (.env, apiKeyHelper).
 		delete(env, "ANTHROPIC_API_KEY")

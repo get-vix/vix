@@ -1,9 +1,15 @@
 package llm
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/get-vix/vix/internal/config"
+	"github.com/get-vix/vix/internal/providers"
 )
 
 func TestParseModel(t *testing.T) {
@@ -94,5 +100,81 @@ func TestNewFromModel_LocalProvidersNeedNoCredential(t *testing.T) {
 			t.Errorf("NewFromModel(%q) = (%q, %q), want (%q, %q)",
 				c.spec, client.Provider(), client.Model(), c.provider, c.model)
 		}
+	}
+}
+
+// TestBuildResponses_UsesInferenceBaseURL is the regression for OpenCode
+// responses-wire models (grok-4.6, gpt-5.6-luna, …): when Config.BaseURL is
+// empty, buildResponses must honor inf.BaseURL instead of the OpenAI SDK
+// default (api.openai.com).
+func TestBuildResponses_UsesInferenceBaseURL(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		sseHeader(w)
+		sseSend(w, "response.completed", `{"type":"response.completed","sequence_number":1,"response":{"id":"r","object":"response","created_at":1,"status":"completed","model":"grok-4.6","output":[{"type":"message","id":"m","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2,"input_tokens_details":{"cached_tokens":0},"output_tokens_details":{"reasoning_tokens":0}},"parallel_tool_calls":false,"tool_choice":"auto","tools":[]}}`)
+	}))
+	defer srv.Close()
+
+	client, err := buildResponses(providers.ProviderSpec{ID: "opencode"}, providers.InferenceSpec{
+		BaseURL: srv.URL,
+	}, Config{
+		Credential: config.Credential{Value: "opencode-key"},
+		Model:      "grok-4.6",
+		MaxTokens:  128,
+		StreamIdle: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("buildResponses: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, _, err := client.StreamMessage(ctx, nil, []MessageParam{NewUserMessage(NewTextBlock("hi"))}, nil, nil, nil); err != nil {
+		t.Fatalf("StreamMessage: %v (inf.BaseURL should have routed to the test server)", err)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("expected 1 request to inf.BaseURL, got %d", hits.Load())
+	}
+}
+
+// TestBuildResponses_CredBaseURLWins verifies an explicit Config.BaseURL
+// (credential endpoint override) is not overwritten by inf.BaseURL.
+func TestBuildResponses_CredBaseURLWins(t *testing.T) {
+	var infHits, credHits atomic.Int32
+	infSrv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		infHits.Add(1)
+	}))
+	defer infSrv.Close()
+	credSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		credHits.Add(1)
+		sseHeader(w)
+		sseSend(w, "response.completed", `{"type":"response.completed","sequence_number":1,"response":{"id":"r","object":"response","created_at":1,"status":"completed","model":"o3","output":[{"type":"message","id":"m","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2,"input_tokens_details":{"cached_tokens":0},"output_tokens_details":{"reasoning_tokens":0}},"parallel_tool_calls":false,"tool_choice":"auto","tools":[]}}`)
+	}))
+	defer credSrv.Close()
+
+	client, err := buildResponses(providers.ProviderSpec{ID: "openai"}, providers.InferenceSpec{
+		BaseURL: infSrv.URL,
+	}, Config{
+		Credential: config.Credential{Value: "key"},
+		Model:      "o3",
+		MaxTokens:  128,
+		BaseURL:    credSrv.URL,
+		StreamIdle: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("buildResponses: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, _, err := client.StreamMessage(ctx, nil, []MessageParam{NewUserMessage(NewTextBlock("hi"))}, nil, nil, nil); err != nil {
+		t.Fatalf("StreamMessage: %v", err)
+	}
+	if credHits.Load() != 1 {
+		t.Fatalf("expected 1 request to cred BaseURL, got %d", credHits.Load())
+	}
+	if infHits.Load() != 0 {
+		t.Fatalf("inf.BaseURL should not have been hit, got %d", infHits.Load())
 	}
 }

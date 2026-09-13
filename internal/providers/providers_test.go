@@ -14,7 +14,7 @@ func TestEmbeddedLoadsAndValidates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadEmbedded: %v", err)
 	}
-	wantIDs := []string{"anthropic", "openai", "openrouter", "minimax", "mimo", "deepseek", "bedrock", "ollama", "llamacpp", "lemonade", "orcarouter"}
+	wantIDs := []string{"anthropic", "openai", "openrouter", "minimax", "mimo", "deepseek", "opencode", "bedrock", "ollama", "llamacpp", "lemonade", "orcarouter"}
 	if got := reg.IDs(); len(got) != len(wantIDs) {
 		t.Fatalf("IDs = %v, want %v", got, wantIDs)
 	}
@@ -33,24 +33,26 @@ func TestGoldenProviderData(t *testing.T) {
 		t.Fatalf("loadEmbedded: %v", err)
 	}
 	cases := []struct {
-		id          string
-		prefix      string
-		wire        WireFormat
-		effort      string
-		authScheme  string
-		baseURLEnv  string // expected resolved base url with no env set
-		effortStyle string
+		id            string
+		prefix        string
+		wire          WireFormat
+		effort        string
+		authScheme    string
+		baseURLEnv    string // expected resolved base url with no env set
+		effortStyle   string
+		sessionHeader string // non-empty when provider configures x-opencode-session etc.
 	}{
-		{"anthropic", "anthropic", WireMessages, EffortAdaptive, AuthSchemeXAPIKey, "https://api.anthropic.com/v1", EffortStyleNone},
-		{"openai", "openai", WireResponses, EffortOpenAIReasoning, AuthSchemeBearer, "https://api.openai.com/v1", EffortStyleNone},
-		{"openrouter", "openrouter", WireChatCompletions, EffortOpenAIReasoning, AuthSchemeBearer, "https://openrouter.ai/api/v1", EffortStyleReasoningEffort},
-		{"minimax", "minimax", WireChatCompletions, EffortAdaptive, AuthSchemeBearer, "https://api.minimax.io/v1", EffortStyleReasoningSplit},
-		{"mimo", "mimo", WireChatCompletions, EffortOpenAIReasoning, AuthSchemeBearer, "https://api.xiaomimimo.com/v1", EffortStyleReasoningEffort},
-		{"orcarouter", "orcarouter", WireChatCompletions, EffortOpenAIReasoning, AuthSchemeBearer, "https://api.orcarouter.ai/v1", EffortStyleReasoningEffort},
-		{"bedrock", "bedrock", WireMessages, EffortAdaptive, AuthSchemeBearer, "https://bedrock-runtime.us-east-1.amazonaws.com/", EffortStyleNone},
-		{"ollama", "ollama", WireChatCompletions, "", AuthSchemeBearer, "http://localhost:11434/v1", EffortStyleNone},
-		{"llamacpp", "llamacpp", WireChatCompletions, "", AuthSchemeBearer, "http://localhost:8080/v1", EffortStyleNone},
-		{"lemonade", "lemonade", WireChatCompletions, "", AuthSchemeBearer, "http://localhost:13305/v1", EffortStyleNone},
+		{"anthropic", "anthropic", WireMessages, EffortAdaptive, AuthSchemeXAPIKey, "https://api.anthropic.com/v1", EffortStyleNone, ""},
+		{"openai", "openai", WireResponses, EffortOpenAIReasoning, AuthSchemeBearer, "https://api.openai.com/v1", EffortStyleNone, ""},
+		{"openrouter", "openrouter", WireChatCompletions, EffortOpenAIReasoning, AuthSchemeBearer, "https://openrouter.ai/api/v1", EffortStyleReasoningEffort, ""},
+		{"minimax", "minimax", WireChatCompletions, EffortAdaptive, AuthSchemeBearer, "https://api.minimax.io/v1", EffortStyleReasoningSplit, ""},
+		{"mimo", "mimo", WireChatCompletions, EffortOpenAIReasoning, AuthSchemeBearer, "https://api.xiaomimimo.com/v1", EffortStyleReasoningEffort, ""},
+		{"opencode", "opencode", WireChatCompletions, EffortOpenAIReasoning, AuthSchemeBearer, "https://opencode.ai/zen/go/v1", EffortStyleReasoningEffort, "x-opencode-session"},
+		{"orcarouter", "orcarouter", WireChatCompletions, EffortOpenAIReasoning, AuthSchemeBearer, "https://api.orcarouter.ai/v1", EffortStyleReasoningEffort, ""},
+		{"bedrock", "bedrock", WireMessages, EffortAdaptive, AuthSchemeBearer, "https://bedrock-runtime.us-east-1.amazonaws.com/", EffortStyleNone, ""},
+		{"ollama", "ollama", WireChatCompletions, "", AuthSchemeBearer, "http://localhost:11434/v1", EffortStyleNone, ""},
+		{"llamacpp", "llamacpp", WireChatCompletions, "", AuthSchemeBearer, "http://localhost:8080/v1", EffortStyleNone, ""},
+		{"lemonade", "lemonade", WireChatCompletions, "", AuthSchemeBearer, "http://localhost:13305/v1", EffortStyleNone, ""},
 	}
 	for _, c := range cases {
 		p, ok := reg.Lookup(c.id)
@@ -76,6 +78,9 @@ func TestGoldenProviderData(t *testing.T) {
 		}
 		if res.EffortStyle != c.effortStyle {
 			t.Errorf("%s: effort_style = %q, want %q", c.id, res.EffortStyle, c.effortStyle)
+		}
+		if res.SessionHeader != c.sessionHeader {
+			t.Errorf("%s: session_header = %q, want %q", c.id, res.SessionHeader, c.sessionHeader)
 		}
 	}
 }
@@ -128,6 +133,7 @@ func TestParseModel(t *testing.T) {
 		{"orcarouter/anthropic/claude-sonnet-5", "orcarouter", "anthropic/claude-sonnet-5", false},
 		{"minimax/MiniMax-M2.7", "minimax", "MiniMax-M2.7", false},
 		{"mimo/mimo-v2.5-pro", "mimo", "mimo-v2.5-pro", false},
+		{"opencode/deepseek-v4-pro", "opencode", "deepseek-v4-pro", false},
 		{"bedrock/anthropic.claude-sonnet-4-5-v2:0", "bedrock", "anthropic.claude-sonnet-4-5-v2:0", false},
 		{"", "", "", true},
 		{"claude-sonnet-4-6", "", "", true},
@@ -224,6 +230,85 @@ func TestModelCatalogue(t *testing.T) {
 				t.Errorf("%s: duplicate spec %q", p.ID, m.Spec)
 			}
 			seen[m.Spec] = true
+			if m.WireFormat != "" && !validWireFormats[m.WireFormat] {
+				t.Errorf("%s: spec %q has unknown wire_format %q", p.ID, m.Spec, m.WireFormat)
+			}
+		}
+	}
+}
+
+// TestResolveModel covers per-model wire_format overrides: a declared value
+// wins over the provider default; omitted/unknown models inherit the default;
+// inference is always the provider's (no per-model inference override).
+func TestResolveModel(t *testing.T) {
+	p := ProviderSpec{
+		ID:          "acme",
+		ModelPrefix: "acme",
+		WireFormat:  WireChatCompletions,
+		Inference:   InferenceSpec{BaseURL: "https://api.example/v1", AuthScheme: AuthSchemeBearer},
+		Models: []ModelSpec{
+			{Spec: "acme/default"},
+			{Spec: "acme/gpt", WireFormat: WireResponses},
+			{Spec: "acme/claude", WireFormat: WireMessages},
+		},
+	}
+	cases := []struct {
+		model string
+		want  WireFormat
+	}{
+		{"default", WireChatCompletions},
+		{"gpt", WireResponses},
+		{"claude", WireMessages},
+		{"uncatalogued", WireChatCompletions},
+	}
+	for _, c := range cases {
+		got := p.ResolveModel(c.model)
+		if got.WireFormat != c.want {
+			t.Errorf("ResolveModel(%q).WireFormat = %q, want %q", c.model, got.WireFormat, c.want)
+		}
+		if got.Inference.BaseURL != p.Inference.BaseURL {
+			t.Errorf("ResolveModel(%q).Inference.BaseURL = %q, want provider %q", c.model, got.Inference.BaseURL, p.Inference.BaseURL)
+		}
+	}
+}
+
+// TestOpenCodeWireFormatOverrides pins the per-model wire_format overrides on
+// the shipped OpenCode catalogue. Models without an override inherit the
+// provider default (chat_completions).
+func TestOpenCodeWireFormatOverrides(t *testing.T) {
+	reg, err := loadEmbedded()
+	if err != nil {
+		t.Fatalf("loadEmbedded: %v", err)
+	}
+	p, ok := reg.Lookup("opencode")
+	if !ok {
+		t.Fatal("opencode provider missing")
+	}
+	if p.WireFormat != WireChatCompletions {
+		t.Fatalf("opencode default wire_format = %q, want %q", p.WireFormat, WireChatCompletions)
+	}
+	overrides := map[string]WireFormat{
+		"gpt-5.6-luna":               WireResponses,
+		"grok-4.6":                   WireResponses,
+		"muse-spark-1.2-contributor": WireResponses,
+		"muse-spark-1.3-contributor": WireResponses,
+		"minimax-m2.5":               WireMessages,
+		"minimax-m2.7":               WireMessages,
+		"qwen3.6-plus":               WireMessages,
+		"qwen3.7-max":                WireMessages,
+		"qwen3.7-plus":               WireMessages,
+		"qwen3.8-flash":              WireMessages,
+		"qwen3.8-max":                WireMessages,
+	}
+	defaults := []string{"deepseek-v4-pro", "grok-4.5", "qwen3.5-plus", "minimax-m3"}
+	for model, want := range overrides {
+		if got := p.ResolveModel(model).WireFormat; got != want {
+			t.Errorf("opencode/%s wire_format = %q, want %q", model, got, want)
+		}
+	}
+	for _, model := range defaults {
+		if got := p.ResolveModel(model).WireFormat; got != WireChatCompletions {
+			t.Errorf("opencode/%s wire_format = %q, want provider default %q", model, got, WireChatCompletions)
 		}
 	}
 }
@@ -362,10 +447,12 @@ func TestValidationRejections(t *testing.T) {
 		case "authhost":
 			f.AuthLogins = []AuthLogin{{ID: "x", Flow: FlowOAuthPKCEToken, TokenURL: "https://evil.example/token"}}
 			f.Providers[0].Credential = []CredentialMethod{{Kind: CredOAuthToken, LoginID: "x"}}
+		case "modelwire":
+			f.Providers[0].Models = []ModelSpec{{Spec: "x/fast", WireFormat: "telepathy"}}
 		}
 		return f
 	}
-	for _, name := range []string{"wire", "scheme", "http", "newver", "authhost"} {
+	for _, name := range []string{"wire", "scheme", "http", "newver", "authhost", "modelwire"} {
 		if err := validate(base(name), interpolate); err == nil {
 			t.Errorf("validate(%s): expected error, got nil", name)
 		}
@@ -486,6 +573,42 @@ func TestEmbeddedLoadIgnoresEnv(t *testing.T) {
 		if _, err := loadEmbedded(); err != nil {
 			t.Errorf("LLAMACPP_BASE_URL=%q: loadEmbedded must ignore env, got %v", val, err)
 		}
+	}
+}
+
+// TestMergeInferenceSessionHeader verifies that the overlay merge propagates
+// SessionHeader from the overlay into the base provider.
+func TestMergeInferenceSessionHeader(t *testing.T) {
+	base := InferenceSpec{
+		BaseURL:    "https://api.example/v1",
+		AuthScheme: AuthSchemeBearer,
+	}
+	overlay := InferenceSpec{
+		SessionHeader: "x-opencode-session",
+	}
+	merged := mergeInference(base, overlay)
+	if merged.SessionHeader != "x-opencode-session" {
+		t.Errorf("mergeInference SessionHeader = %q, want %q", merged.SessionHeader, "x-opencode-session")
+	}
+	// Non-overlaid fields must survive.
+	if merged.BaseURL != "https://api.example/v1" {
+		t.Errorf("mergeInference BaseURL = %q, want original", merged.BaseURL)
+	}
+}
+
+// TestMergeInferenceSessionHeaderNotClobbered verifies that an overlay without
+// SessionHeader does not clear an existing one.
+func TestMergeInferenceSessionHeaderNotClobbered(t *testing.T) {
+	base := InferenceSpec{
+		BaseURL:       "https://api.example/v1",
+		SessionHeader: "x-existing",
+	}
+	overlay := InferenceSpec{
+		AuthScheme: AuthSchemeBearer,
+	}
+	merged := mergeInference(base, overlay)
+	if merged.SessionHeader != "x-existing" {
+		t.Errorf("mergeInference should preserve existing SessionHeader, got %q", merged.SessionHeader)
 	}
 }
 

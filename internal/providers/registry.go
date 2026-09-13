@@ -159,3 +159,31 @@ func IsReasoningModel(model string) bool {
 		strings.HasPrefix(m, "gpt-5") ||
 		strings.Contains(m, "-thinking")
 }
+
+// ModelResolution holds the effective wire format and inference spec for a
+// specific model, after applying any per-model overrides.
+type ModelResolution struct {
+	WireFormat WireFormat
+	Inference  InferenceSpec
+}
+
+// ResolveModel returns the effective wire format and inference spec for a bare
+// model name under this provider. If the model declares a wire_format, it
+// overrides the provider default; otherwise the provider default is used.
+// Inference is always the provider's (per-model inference overrides are not
+// supported in schema v1).
+func (p ProviderSpec) ResolveModel(model string) ModelResolution {
+	res := ModelResolution{
+		WireFormat: p.WireFormat,
+		Inference:  p.Inference,
+	}
+	for _, m := range p.Models {
+		if m.Spec == p.Prefix()+model {
+			if m.WireFormat != "" {
+				res.WireFormat = m.WireFormat
+			}
+			break
+		}
+	}
+	return res
+}
