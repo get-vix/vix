@@ -432,6 +432,8 @@ type configFile struct {
 	Agent              string                `json:"agent,omitempty"`
 	AllowedDirectories []string              `json:"allowed_directories,omitempty"`
 	DenyList           denyListField         `json:"deny_list,omitempty"`
+	SkillsDir          string                `json:"skills_dir,omitempty"`
+	SkillsDirs         []string              `json:"skills_dirs,omitempty"`
 	Features           map[string]bool       `json:"features,omitempty"`
 	ToolTimeouts       *toolTimeoutsFile     `json:"tool_timeouts,omitempty"`
 	BashStepTimeouts   *bashStepTimeoutsFile `json:"bash_step_timeouts,omitempty"`
@@ -476,13 +478,20 @@ type ProjectConfig struct {
 	// entries, preserved so the thread can additionally resolve them against
 	// the working directory. See the resolution loop in LoadProjectConfig and
 	// the seeding logic in Thread for why both interpretations are unioned.
-	DenyPathsRel     []string
-	DenyURLs         []string
-	Features         map[string]bool
-	ToolTimeouts     ToolTimeouts
-	BashStepTimeouts BashStepTimeouts
-	Compaction       Compaction
-	MCPServers       []mcp.ServerConfig
+	DenyPathsRel []string
+	DenyURLs     []string
+	SkillsDirs   []string
+	// SkillsDirsProject/User split the merged customs by origin (last config
+	// file = project, earlier files = user) so callers can build
+	// precedence-ordered, correctly-tagged skill dirs with a single
+	// LoadProjectConfig call instead of re-reading each settings.json.
+	SkillsDirsProject []string
+	SkillsDirsUser    []string
+	Features          map[string]bool
+	ToolTimeouts      ToolTimeouts
+	BashStepTimeouts  BashStepTimeouts
+	Compaction        Compaction
+	MCPServers        []mcp.ServerConfig
 }
 
 // HasFeature returns whether the named feature flag is enabled.
@@ -556,7 +565,10 @@ func LoadProjectConfig(configPaths ...string) ProjectConfig {
 		},
 	}
 
-	for _, configPath := range configPaths {
+	for idx, configPath := range configPaths {
+		// Last file wins = project layer; earlier files = user layers.
+		// Single-file callers (tests, override mode) treat that file as project.
+		isProjectLayer := idx == len(configPaths)-1
 		if configPath == "" {
 			continue
 		}
@@ -633,6 +645,36 @@ func LoadProjectConfig(configPaths ...string) ProjectConfig {
 			}
 			if !found {
 				result.DenyURLs = append(result.DenyURLs, u)
+			}
+		}
+		// Merge custom skills directories (union from all config files). A
+		// leading `~` is expanded to the user's home directory. Absolute
+		// entries are used verbatim. Relative entries are resolved against
+		// the config file's directory. Split by origin so callers can build
+		// project-custom -> project-default -> user-custom -> user-default
+		// precedence with a single load.
+		var rawSkillsDirs []string
+		if cfg.SkillsDir != "" {
+			rawSkillsDirs = append(rawSkillsDirs, cfg.SkillsDir)
+		}
+		rawSkillsDirs = append(rawSkillsDirs, cfg.SkillsDirs...)
+		for _, entry := range rawSkillsDirs {
+			entry = strings.TrimSpace(entry)
+			if entry == "" {
+				continue
+			}
+			expanded := expandTildePath(entry)
+			var cleaned string
+			if filepath.IsAbs(expanded) {
+				cleaned = filepath.Clean(expanded)
+			} else {
+				cleaned = filepath.Clean(filepath.Join(filepath.Dir(configPath), expanded))
+			}
+			result.SkillsDirs = appendUniqueStr(result.SkillsDirs, cleaned)
+			if isProjectLayer {
+				result.SkillsDirsProject = appendUniqueStr(result.SkillsDirsProject, cleaned)
+			} else {
+				result.SkillsDirsUser = appendUniqueStr(result.SkillsDirsUser, cleaned)
 			}
 		}
 		if len(cfg.Features) > 0 {

@@ -466,6 +466,18 @@ Two invocation paths, both calling `LoadForTool` under the hood:
 
 `/skills` lists all loaded skills.
 
+### Custom skill directories
+
+In addition to default `.vix/skills/`, custom skill directories can be loaded via `skills_dir` (single path string) or `skills_dirs` (array of path strings) in `settings.json` (both global `~/.vix/settings.json` and project `.vix/settings.json`):
+
+```json
+"skills_dir": "../shared-skills",
+"skills_dirs": ["~/team-skills", "/opt/custom-skills"]
+```
+
+- Paths may be absolute, relative (resolved against the directory of the `settings.json` file), or prefixed with `~` (expanded to `$HOME`).
+- Precedence on name collision: project custom skills -> project default `.vix/skills` -> user custom skills -> user default `~/.vix/skills`.
+
 ### Bundled skills
 
 A few skills ship with vix under `internal/config/defaults/skills/` (embedded via

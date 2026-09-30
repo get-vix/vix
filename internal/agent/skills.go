@@ -49,6 +49,23 @@ func LoadSkills(dirs ...string) *SkillRegistry {
 	return reg
 }
 
+// LoadSkillsLayered loads skills with explicit project/user separation.
+// projectDirs (highest precedence first) are tagged "project", userDirs
+// following are tagged "user". Within each group, earlier entries win on
+// name collision. Use this when more than two skill dirs exist (e.g. custom
+// skills_dir entries) so real project skills aren't mislabeled "user" once a
+// custom dir takes index 0.
+func LoadSkillsLayered(projectDirs, userDirs []string) *SkillRegistry {
+	reg := NewSkillRegistry()
+	for _, dir := range projectDirs {
+		reg.loadFrom(dir, "project")
+	}
+	for _, dir := range userDirs {
+		reg.loadFrom(dir, "user")
+	}
+	return reg
+}
+
 func (r *SkillRegistry) loadFrom(dir, source string) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {

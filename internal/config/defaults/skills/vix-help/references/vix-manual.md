@@ -2998,6 +2998,15 @@ Widen or restrict which paths and URLs the agent may touch. See [Security & acce
 }
 ```
 
+## skills\_dir & skills\_dirs
+
+Load custom skill directories outside `.vix/skills/`. Supports a single path string (`skills_dir`) or an array of paths (`skills_dirs`). Paths can be absolute, relative (resolved against the settings file's directory), or prefixed with `~` (expanded to `$HOME`).
+
+```
+"skills_dir": "../shared-skills",
+"skills_dirs": ["~/team-skills", "/opt/custom-skills"]
+```
+
 ## elevenlabs
 
 Configures the voice agent used by the experimental whiteboard walkthrough (`agent_id`, `auth_mode`). See [Web UI](/docs#web-ui).
