@@ -23,6 +23,10 @@ charm.land/glamour/v2/styles
 ## explicit; go 1.25.0
 charm.land/lipgloss/v2
 charm.land/lipgloss/v2/table
+# github.com/BurntSushi/toml v1.5.0
+## explicit; go 1.18
+github.com/BurntSushi/toml
+github.com/BurntSushi/toml/internal
 # github.com/alecthomas/chroma/v2 v2.14.0
 ## explicit; go 1.19
 github.com/alecthomas/chroma/v2
@@ -96,6 +100,9 @@ github.com/clipperhouse/uax29/v2/graphemes
 # github.com/danieljoos/wincred v1.2.2
 ## explicit; go 1.18
 github.com/danieljoos/wincred
+# github.com/darrenoakey/daz-secrets v0.0.0-20260805162906-ef01d96a2fa8
+## explicit; go 1.24
+github.com/darrenoakey/daz-secrets/pkg/dazsecrets
 # github.com/dlclark/regexp2 v1.11.0
 ## explicit; go 1.13
 github.com/dlclark/regexp2
@@ -110,6 +117,9 @@ github.com/elliotchance/orderedmap/v2
 ## explicit; go 1.23
 github.com/fsnotify/fsnotify
 github.com/fsnotify/fsnotify/internal
+# github.com/fxamacker/cbor/v2 v2.8.0
+## explicit; go 1.20
+github.com/fxamacker/cbor/v2
 # github.com/goccy/go-json v0.10.5
 ## explicit; go 1.19
 github.com/goccy/go-json
@@ -293,6 +303,9 @@ github.com/tree-sitter/tree-sitter-rust/bindings/go
 # github.com/tree-sitter/tree-sitter-typescript v0.23.2
 ## explicit; go 1.22.0
 github.com/tree-sitter/tree-sitter-typescript/bindings/go
+# github.com/x448/float16 v0.8.4
+## explicit; go 1.11
+github.com/x448/float16
 # github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e
 ## explicit; go 1.19
 github.com/xo/terminfo

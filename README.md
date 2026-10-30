@@ -114,6 +114,25 @@ of the embedded defaults: new providers are appended, existing ones are field-pa
 See **[PROVIDERS.md](PROVIDERS.md)** for the full field reference, common recipes, model
 discovery, and OAuth configuration.
 
+### Credential storage
+
+By default Vix stores credentials (API keys and OAuth tokens) in the OS keychain, falling
+back to a `0600` `auth.json` under `~/.vix/` on machines without a keyring. Environment
+variables and `.env` files are always honored first.
+
+If you already manage secrets with [daz-secrets](https://github.com/darrenoakey/daz-secrets),
+you can opt in from `~/.vix/settings.json`:
+
+```json
+{ "features": { "daz_secrets": true } }
+```
+
+While enabled, Vix reads and writes all stored credentials through your configured
+daz-secrets provider (`~/.config/daz-secrets/provider.toml`) instead of the keychain.
+The flag is strictly opt-in — without it nothing changes — and when the provider is
+unreachable Vix fails with an error rather than silently falling back: set provider env
+vars (e.g. `ANTHROPIC_API_KEY`) or unset the flag to return to the default stores.
+
 <div align="center">
 
 ## Why is vix faster and cheaper in plan mode?

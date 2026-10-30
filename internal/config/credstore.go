@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/get-vix/vix/internal/secretstore"
 	"github.com/zalando/go-keyring"
 )
 
@@ -19,8 +20,9 @@ var ErrCredNotFound = errors.New("credential not found")
 // Credential-store backend names, reported by CredentialStore.Backend and
 // surfaced to the UI so it can warn when secrets are kept unencrypted on disk.
 const (
-	BackendKeyring = "keyring"
-	BackendFile    = "file"
+	BackendKeyring    = "keyring"
+	BackendFile       = "file"
+	BackendDazSecrets = "daz-secrets"
 )
 
 // CredentialStore persists secrets keyed by a "user" string under the vix
@@ -36,7 +38,8 @@ type CredentialStore interface {
 	Set(user, secret string) error
 	// Delete removes the secret, returning ErrCredNotFound when absent.
 	Delete(user string) error
-	// Backend names the active store (BackendKeyring | BackendFile).
+	// Backend names the active store (BackendKeyring | BackendFile |
+	// BackendDazSecrets).
 	Backend() string
 }
 
@@ -154,6 +157,37 @@ func (f *fileStore) Delete(user string) error {
 
 func (f *fileStore) Backend() string { return BackendFile }
 
+// dazSecretsStore is the opt-in daz-secrets backend (BackendDazSecrets). It is
+// selected only when the user sets features.daz_secrets in
+// ~/.vix/settings.json; without that flag the keyring/auth.json selection is
+// unchanged. Operations fail closed when the provider is unusable: secrets
+// are never silently redirected to the keyring or a plaintext file.
+type dazSecretsStore struct {
+	store *secretstore.Store
+}
+
+func (d *dazSecretsStore) Get(user string) (string, error) {
+	v, found, err := d.store.Get(user)
+	if err != nil {
+		return "", err
+	}
+	if !found {
+		return "", ErrCredNotFound
+	}
+	return v, nil
+}
+
+func (d *dazSecretsStore) Set(user, secret string) error {
+	return d.store.Set(user, secret)
+}
+
+func (d *dazSecretsStore) Delete(user string) error {
+	_, err := d.store.Delete(user)
+	return err
+}
+
+func (d *dazSecretsStore) Backend() string { return BackendDazSecrets }
+
 // credProbeUser is the sentinel keyring entry used to detect keyring
 // availability. It is written and immediately deleted by keyringUsable.
 const credProbeUser = "__vix_probe__"
@@ -170,6 +204,11 @@ var (
 // HomeVixDir, matching the keyring's global scope.
 func defaultStore() CredentialStore {
 	defaultStoreOnce.Do(func() {
+		if secretstore.Enabled() {
+			log.Printf("[config] credential store: daz-secrets (features.%s)", secretstore.FeatureFlag)
+			defaultStoreInst = &dazSecretsStore{store: secretstore.New()}
+			return
+		}
 		authFile := NewVixPaths("", HomeVixDir(), "").AuthFile()
 		defaultStoreInst = selectStore(keyringUsable(), authFile)
 	})

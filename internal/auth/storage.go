@@ -243,6 +243,9 @@ func DefaultStorage() *Storage {
 // The fallback path comes from SetAuthFilePath, defaulting to a system-temp file
 // when unset. This mirrors the API-key store (internal/config/credstore.go).
 func selectDefaultBackend() Backend {
+	if backend, ok := selectDazSecretsBackend(); ok {
+		return backend
+	}
 	if keyringAvailable() {
 		return keyringBackend{}
 	}
