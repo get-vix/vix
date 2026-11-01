@@ -201,7 +201,7 @@ value.
 | `extra_headers_producer` | Built-in function that derives extra headers from the credential value. `"anthropic_oauth"` or `"codex_oauth"`. Leave empty for normal API keys. |
 | `base_url` | Endpoint override implied by this credential method (e.g. OAuth uses a different base URL than API key). Must be HTTPS for remote providers. |
 | `requires_base_url` | `true` if the user must supply the base URL at credential-entry time (e.g. region-specific endpoints). The TUI will prompt for it. **Requires `keyring` to also be set** (used to store the endpoint). |
-| `base_url_env` | Env var that overrides the stored user-supplied base URL for a `requires_base_url` method. |
+| `base_url_env` | Variable that overrides the method's endpoint (the stored user-supplied base URL for a `requires_base_url` method, else the adapter default). Read from the environment, the `.env` next to the executable and `~/.vix/.env`; a project `.env` in the working directory is only honored when it also supplied the key. |
 
 #### `kind: "none"` — no credential needed
 

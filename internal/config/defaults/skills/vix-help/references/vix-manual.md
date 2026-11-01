@@ -251,7 +251,7 @@ An env var takes priority over the keychain if set.
 
 ## .env file
 
-Vix will pick up a `.env` file in your project directory or next to the `vix` binary:
+Vix will pick up a `.env` file next to the `vix` binary, in `~/.vix/.env`, or in your project directory:
 
 ```
 # .env
@@ -260,6 +260,8 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 Useful for team setups where the key is committed to a secrets manager and written to `.env` at deploy time. Make sure `.env` is in your `.gitignore`.
 
+`ANTHROPIC_BASE_URL` is read from the same places. A project `.env` can only set it when that same file also supplies `ANTHROPIC_API_KEY`; otherwise it is ignored, so a `.env` in a cloned repository cannot send your own key to another server.
+
 ## Key resolution order
 
 | Priority | Source |
@@ -267,7 +269,8 @@ Useful for team setups where the key is committed to a secrets manager and writt
 | 1 | Provider env var (e.g. `ANTHROPIC_API_KEY`) |
 | 2 | OS keychain (incl. stored OAuth tokens) |
 | 3 | `.env` next to the `vix` binary |
-| 4 | `.env` in the current working directory |
+| 4 | `~/.vix/.env` |
+| 5 | `.env` in the current working directory |
 
 ## Removing a saved key
 
@@ -702,7 +705,7 @@ The active model can be set in several places — the most specific wins:
 
 ## Credentials
 
-Credentials are resolved per provider in order: environment variable → OS keychain → `.env` next to the binary → `.env` in the working directory. Add or remove keys from the Models tab (F3). See [API Key Setup](/docs#api-key-setup) for the full reference.
+Credentials are resolved per provider in order: environment variable → OS keychain → `.env` next to the binary → `~/.vix/.env` → `.env` in the working directory. Add or remove keys from the Models tab (F3). See [API Key Setup](/docs#api-key-setup) for the full reference.
 
 ## OAuth logins
 

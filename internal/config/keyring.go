@@ -68,16 +68,17 @@ func (c Credential) RequestOptions() []option.RequestOption {
 	return opts
 }
 
-// ResolveEnvVar checks the environment and .env files for a variable.
+// ResolveEnvVar checks the environment and .env files (next to the
+// executable, ~/.vix/.env, then the project .env in the CWD) for a variable.
 // Returns the value and true if found, or empty string and false.
 func ResolveEnvVar(name string) (string, bool) {
 	if v := os.Getenv(name); v != "" {
 		return v, true
 	}
-	if v := loadKeyFromEnvFile(loadExeEnvFilePath(), name); v != "" {
+	if v, ok := lookupTrustedEnvFiles(name); ok {
 		return v, true
 	}
-	if v := loadKeyFromEnvFile(".env", name); v != "" {
+	if v := loadKeyFromEnvFile(projectEnvFilePath, name); v != "" {
 		return v, true
 	}
 	return "", false
@@ -99,33 +100,41 @@ func providerKeyringUser(provider string) string {
 // resolveKey searches env var, OS keychain, and .env files for the given variable name
 // and optional keyring user. Returns the value and source, or empty if not found.
 func resolveKey(envVar, keyringUser string) (string, KeySource) {
+	key, src, _ := resolveKeyOrigin(envVar, keyringUser)
+	return key, src
+}
+
+// resolveKeyOrigin is resolveKey that also reports whether the key came from
+// the project .env in the CWD. Callers use that to decide whether the same
+// project file may also supply the method's base URL (see resolveMethodBaseURL).
+func resolveKeyOrigin(envVar, keyringUser string) (key string, src KeySource, fromProject bool) {
 	// 1. Environment variable
 	if envVar != "" {
 		if key := os.Getenv(envVar); key != "" {
-			return key, KeySourceEnv
+			return key, KeySourceEnv, false
 		}
 	}
 
 	// 2. Stored credential (OS keychain, or auth.json fallback)
 	if keyringUser != "" {
 		if key, err := defaultStore().Get(keyringUser); err == nil && key != "" {
-			return key, KeySourceKeychain
+			return key, KeySourceKeychain, false
 		}
 	}
 
-	// 3. .env next to executable
 	if envVar != "" {
-		if key := loadKeyFromEnvFile(loadExeEnvFilePath(), envVar); key != "" {
-			return key, KeySourceEnvFile
+		// 3. Trusted .env files: next to the executable, then ~/.vix/.env.
+		if key, ok := lookupTrustedEnvFiles(envVar); ok {
+			return key, KeySourceEnvFile, false
 		}
 
-		// 4. .env in CWD
-		if key := loadKeyFromEnvFile(".env", envVar); key != "" {
-			return key, KeySourceEnvFile
+		// 4. Project .env in CWD
+		if key := loadKeyFromEnvFile(projectEnvFilePath, envVar); key != "" {
+			return key, KeySourceEnvFile, true
 		}
 	}
 
-	return "", KeySourceNone
+	return "", KeySourceNone, false
 }
 
 // ResolveProviderCredential resolves a Credential for the given provider by
@@ -148,24 +157,24 @@ func resolveProviderCredential(ctx context.Context, provider string, refresh boo
 	for _, m := range orderedAuthMethods(provider) {
 		switch m.Kind {
 		case APIKeyAuth:
-			value, src := resolveKey(m.EnvVar, m.Keyring)
+			value, src, fromProject := resolveKeyOrigin(m.EnvVar, m.Keyring)
 			if value == "" {
 				continue
 			}
 			if m.HeaderStyle == BearerHeader {
 				src = KeySourceOAuthToken
 			}
-			return buildCredential(value, src, m)
+			return buildCredential(value, src, m, fromProject)
 		case OAuthMintKey, OAuthToken:
 			value := resolveOAuthValue(ctx, m.LoginID, refresh)
 			if value == "" {
 				continue
 			}
-			return buildCredential(value, KeySourceOAuthToken, m)
+			return buildCredential(value, KeySourceOAuthToken, m, false)
 		case NoneAuth:
 			// Keyless local provider: any non-empty placeholder works — the
 			// server ignores the Authorization header.
-			return buildCredential("local", KeySourceLocal, m)
+			return buildCredential("local", KeySourceLocal, m, false)
 		}
 	}
 	return Credential{Source: KeySourceNone}
@@ -229,12 +238,14 @@ func reorderAuthMethods(methods []AuthMethod, pref string) []AuthMethod {
 
 // buildCredential assembles a Credential from a resolved value and its auth
 // method (header style, endpoint override, and any derived extra headers). For a
-// method whose endpoint is supplied by the user (RequiresBaseURL), the stored
-// or env-provided base URL overrides the method's static BaseURL.
-func buildCredential(value string, src KeySource, m AuthMethod) Credential {
+// method whose endpoint is supplied by the user (RequiresBaseURL) or that
+// declares a BaseURLEnv override, the stored or env-provided base URL overrides
+// the method's static BaseURL. keyFromProject reports whether value came from
+// the project .env (see resolveMethodBaseURL).
+func buildCredential(value string, src KeySource, m AuthMethod, keyFromProject bool) Credential {
 	baseURL := m.BaseURL
-	if m.RequiresBaseURL {
-		if u := resolveMethodBaseURL(m); u != "" {
+	if m.RequiresBaseURL || m.BaseURLEnv != "" {
+		if u := resolveMethodBaseURL(m, keyFromProject); u != "" {
 			baseURL = u
 		}
 	}
@@ -246,15 +257,29 @@ func buildCredential(value string, src KeySource, m AuthMethod) Credential {
 }
 
 // resolveMethodBaseURL returns the user-supplied endpoint for a method: the
-// BaseURLEnv environment variable first, then the keychain entry stored next to
-// the key. Returns "" when neither is set.
-func resolveMethodBaseURL(m AuthMethod) string {
+// BaseURLEnv variable first (environment, then the trusted .env files), then,
+// for RequiresBaseURL methods, the keychain entry stored next to the key.
+// Returns "" when none is set.
+//
+// The project .env in the CWD is consulted for BaseURLEnv only when the key
+// itself came from that same file (keyFromProject). Otherwise a .env in a
+// cloned repository could redirect requests carrying the user's own key (from
+// the environment, keychain or ~/.vix/.env) to a server of its choosing.
+func resolveMethodBaseURL(m AuthMethod, keyFromProject bool) string {
 	if m.BaseURLEnv != "" {
 		if v := os.Getenv(m.BaseURLEnv); v != "" {
 			return v
 		}
+		if v, ok := lookupTrustedEnvFiles(m.BaseURLEnv); ok {
+			return v
+		}
+		if keyFromProject {
+			if v := loadKeyFromEnvFile(projectEnvFilePath, m.BaseURLEnv); v != "" {
+				return v
+			}
+		}
 	}
-	if m.Keyring != "" {
+	if m.RequiresBaseURL && m.Keyring != "" {
 		if v, err := defaultStore().Get(methodBaseURLKeyringUser(m.Keyring)); err == nil && v != "" {
 			return v
 		}
@@ -515,7 +540,8 @@ func GetProviderAuthStatus(provider string) ProviderAuthStatus {
 			RequiresBaseURL: m.RequiresBaseURL,
 		}
 		if m.RequiresBaseURL && stored {
-			ms.BaseURL = resolveMethodBaseURL(m)
+			_, _, fromProject := resolveKeyOrigin(m.EnvVar, m.Keyring)
+			ms.BaseURL = resolveMethodBaseURL(m, fromProject)
 		}
 		st.Methods = append(st.Methods, ms)
 	}
@@ -584,6 +610,31 @@ func loadExeEnvFilePath() string {
 		return ""
 	}
 	return filepath.Join(filepath.Dir(exe), "..", "..", ".env")
+}
+
+// projectEnvFilePath is the project-local .env, resolved against the CWD. Its
+// contents are untrusted: any cloned repository can ship one.
+const projectEnvFilePath = ".env"
+
+// trustedEnvFilePaths returns the user-controlled .env files, in lookup order:
+// the one next to the executable, then ~/.vix/.env.
+func trustedEnvFilePaths() []string {
+	paths := []string{loadExeEnvFilePath()}
+	if home := HomeVixDir(); home != "" {
+		paths = append(paths, filepath.Join(home, ".env"))
+	}
+	return paths
+}
+
+// lookupTrustedEnvFiles returns the first non-empty value of name found in the
+// trusted .env files (see trustedEnvFilePaths).
+func lookupTrustedEnvFiles(name string) (string, bool) {
+	for _, p := range trustedEnvFilePaths() {
+		if v := loadKeyFromEnvFile(p, name); v != "" {
+			return v, true
+		}
+	}
+	return "", false
 }
 
 // loadKeyFromEnvFile reads a .env file and extracts the value of the given variable name.
