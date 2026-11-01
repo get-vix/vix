@@ -169,8 +169,10 @@ type CredentialMethod struct {
 	// rather than baked into the provider spec. The UI prompts for it and it is
 	// stored alongside the key.
 	RequiresBaseURL bool `json:"requires_base_url"`
-	// BaseURLEnv, when set, is an environment variable that overrides the stored
-	// user-supplied base URL for a RequiresBaseURL method.
+	// BaseURLEnv, when set, is a variable that overrides the method's endpoint
+	// (the stored user-supplied base URL for a RequiresBaseURL method, else the
+	// adapter default). It is read from the environment and the trusted .env
+	// files; the project .env is honored only when it also supplied the key.
 	BaseURLEnv string `json:"base_url_env"`
 }
 

@@ -7,23 +7,12 @@ import (
 	"github.com/get-vix/vix/e2e/harness"
 )
 
-// TestEnvFileCredentialResolution is a staged acceptance spec for issues #29 and
-// #30. On current main, resolveKey searches the CWD .env for API keys but NOT
-// ~/.vix/.env (#30), and resolveMethodBaseURL reads ANTHROPIC_BASE_URL via
-// os.Getenv only — bypassing the .env search (#29). Until both land, this test
-// can't route to the mock through a .env, so it is skipped.
-//
-// When enabled it proves: with no API-key/base-URL env vars, both the key and
-// the base URL resolve from a .env (CWD and ~/.vix variants), so a turn reaches
-// the mock. T1.3 · asserts wire (request reached the mock via .env resolution).
+// TestEnvFileCredentialResolution is the acceptance spec for issues #29 and
+// #30: with no API-key/base-URL env vars, both the key and the base URL
+// (ANTHROPIC_BASE_URL, declared as the method's base_url_env) resolve from a
+// .env (CWD and ~/.vix variants), so a turn reaches the mock. T1.3 · asserts
+// wire (request reached the mock via .env resolution).
 func TestEnvFileCredentialResolution(t *testing.T) {
-	harness.SkipScenario(t, harness.Meta{
-		Category:    "creds",
-		Subcategory: "creds.env_files",
-		Description: "API key + base URL resolve from a .env so the request reaches the mock (#29/#30)",
-		Wire:        harness.WireMessages,
-	}, "acceptance spec for #29/#30 (open): ANTHROPIC_BASE_URL and ~/.vix/.env are not yet resolved from .env files; enable when fixed")
-
 	cases := []struct {
 		name string
 		opts []harness.Option
@@ -63,6 +52,35 @@ func TestEnvFileCredentialResolution(t *testing.T) {
 				t.Fatalf("no request reached the mock — .env credentials were not resolved")
 			}
 		})
+	}
+}
+
+// TestProjectDotEnvCannotRedirectTrustedKey is the security counterpart of
+// TestEnvFileCredentialResolution: the key and base URL come from ~/.vix/.env
+// (pointing at the mock) while the project .env in the workdir tries to
+// redirect ANTHROPIC_BASE_URL to an unreachable address. The project file must
+// be ignored for a key it did not supply, so the turn still reaches the mock.
+// Asserts wire (request reached the trusted endpoint).
+func TestProjectDotEnvCannotRedirectTrustedKey(t *testing.T) {
+	h := harness.Start(t, harness.Meta{
+		Category:    "creds",
+		Subcategory: "creds.env_files",
+		Description: "a project .env cannot redirect ANTHROPIC_BASE_URL for a key from ~/.vix/.env",
+		Wire:        harness.WireMessages,
+	},
+		harness.WithoutDefaultCreds(),
+		harness.WithHomeFile(".vix/.env", "ANTHROPIC_API_KEY=test\nANTHROPIC_BASE_URL={{MOCK_URL}}\n"),
+		harness.WithWorkdirFile(".env", "ANTHROPIC_BASE_URL=http://127.0.0.1:9/\n"),
+	)
+
+	h.UI.WaitStable(400 * time.Millisecond)
+	h.Mock.Enqueue(harness.Text("Trusted endpoint used."))
+	h.UI.Type("say hello")
+	h.UI.Enter()
+	h.UI.WaitFor("Trusted endpoint used.")
+
+	if len(h.Mock.Requests()) == 0 {
+		t.Fatalf("no request reached the mock — the project .env redirected the base URL")
 	}
 }
 

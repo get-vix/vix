@@ -190,6 +190,140 @@ func TestListStoredProviderKeys(t *testing.T) {
 	}
 }
 
+// envFileTest isolates HOME and the CWD for .env resolution tests and clears
+// the Anthropic credential sources the tests rely on.
+func envFileTest(t *testing.T) (home, cwd string) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	for _, v := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN", "OPENROUTER_API_KEY", "OPENROUTER_BASE_URL"} {
+		t.Setenv(v, "")
+	}
+	DeleteProviderKey("anthropic")
+	DeleteProviderKey("openrouter")
+	t.Cleanup(func() {
+		DeleteProviderKey("anthropic")
+		DeleteProviderKey("openrouter")
+	})
+	cwd = t.TempDir()
+	t.Chdir(cwd)
+	return HomeVixDir(), cwd
+}
+
+func writeEnvFile(t *testing.T, dir, content string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(content), 0o600); err != nil {
+		t.Fatalf("write %s/.env: %v", dir, err)
+	}
+}
+
+// TestResolveEnvVarSearchesHomeVixDotEnv covers #30: ~/.vix/.env is searched.
+func TestResolveEnvVarSearchesHomeVixDotEnv(t *testing.T) {
+	home, _ := envFileTest(t)
+	writeEnvFile(t, home, "ANTHROPIC_API_KEY=home-file-key\n")
+
+	got, ok := ResolveEnvVar("ANTHROPIC_API_KEY")
+	if !ok || got != "home-file-key" {
+		t.Fatalf("ResolveEnvVar = %q, %v; want home-file-key, true", got, ok)
+	}
+	cred := ResolveProviderCredential("anthropic")
+	if cred.Value != "home-file-key" || cred.Source != KeySourceEnvFile {
+		t.Fatalf("credential = %+v; want key from ~/.vix/.env", cred)
+	}
+}
+
+// TestBaseURLFromDotEnv covers #29: the declared base_url_env
+// (ANTHROPIC_BASE_URL) resolves from a .env that also supplies the key.
+func TestBaseURLFromDotEnv(t *testing.T) {
+	const content = "ANTHROPIC_API_KEY=dotenv-key\nANTHROPIC_BASE_URL=https://mock.example/v1\n"
+	t.Run("home-vix", func(t *testing.T) {
+		home, _ := envFileTest(t)
+		writeEnvFile(t, home, content)
+		cred := ResolveProviderCredential("anthropic")
+		if cred.Value != "dotenv-key" || cred.BaseURL != "https://mock.example/v1" {
+			t.Fatalf("credential = %+v; want key and base URL from ~/.vix/.env", cred)
+		}
+	})
+	t.Run("project", func(t *testing.T) {
+		_, cwd := envFileTest(t)
+		writeEnvFile(t, cwd, content)
+		cred := ResolveProviderCredential("anthropic")
+		if cred.Value != "dotenv-key" || cred.BaseURL != "https://mock.example/v1" {
+			t.Fatalf("credential = %+v; want key and base URL from project .env", cred)
+		}
+	})
+	t.Run("home-vix-url-with-keychain-key", func(t *testing.T) {
+		home, _ := envFileTest(t)
+		writeEnvFile(t, home, "ANTHROPIC_BASE_URL=https://proxy.example/v1\n")
+		if err := StoreProviderKey("anthropic", "keychain-key"); err != nil {
+			t.Fatalf("StoreProviderKey: %v", err)
+		}
+		cred := ResolveProviderCredential("anthropic")
+		if cred.Value != "keychain-key" || cred.BaseURL != "https://proxy.example/v1" {
+			t.Fatalf("credential = %+v; want keychain key with ~/.vix/.env base URL", cred)
+		}
+	})
+}
+
+// TestProjectDotEnvCannotRedirectTrustedKey is the security case: a project
+// .env (e.g. in a cloned repo) must not redirect requests that carry a key
+// from the environment, the keychain or ~/.vix/.env.
+func TestProjectDotEnvCannotRedirectTrustedKey(t *testing.T) {
+	const evil = "ANTHROPIC_BASE_URL=https://attacker.example/v1\n"
+	cases := []struct {
+		name    string
+		setup   func(t *testing.T, home string)
+		wantKey string
+	}{
+		{"env-key", func(t *testing.T, _ string) { t.Setenv("ANTHROPIC_API_KEY", "env-key") }, "env-key"},
+		{"keychain-key", func(t *testing.T, _ string) {
+			if err := StoreProviderKey("anthropic", "keychain-key"); err != nil {
+				t.Fatalf("StoreProviderKey: %v", err)
+			}
+		}, "keychain-key"},
+		{"home-vix-key", func(t *testing.T, home string) {
+			writeEnvFile(t, home, "ANTHROPIC_API_KEY=home-key\n")
+		}, "home-key"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			home, cwd := envFileTest(t)
+			c.setup(t, home)
+			// The project file even carries its own key: it must not win
+			// over the user's key, and its base URL must be ignored.
+			writeEnvFile(t, cwd, "ANTHROPIC_API_KEY=project-key\n"+evil)
+
+			cred := ResolveProviderCredential("anthropic")
+			if cred.Value != c.wantKey {
+				t.Fatalf("value = %q, want %q", cred.Value, c.wantKey)
+			}
+			if cred.BaseURL != "" {
+				t.Fatalf("baseURL = %q; project .env must not redirect a trusted key", cred.BaseURL)
+			}
+		})
+	}
+}
+
+// TestBaseURLOverrideRequiresBaseURLEnv checks that a provider whose method
+// does not declare base_url_env (OpenRouter) ignores a stray *_BASE_URL from
+// the environment and from every .env file.
+func TestBaseURLOverrideRequiresBaseURLEnv(t *testing.T) {
+	home, cwd := envFileTest(t)
+	t.Setenv("OPENROUTER_BASE_URL", "https://env.example/v1")
+	writeEnvFile(t, home, "OPENROUTER_API_KEY=home-key\nOPENROUTER_BASE_URL=https://home.example/v1\n")
+	writeEnvFile(t, cwd, "OPENROUTER_BASE_URL=https://project.example/v1\n")
+
+	cred := ResolveProviderCredential("openrouter")
+	if cred.Value != "home-key" {
+		t.Fatalf("value = %q, want home-key", cred.Value)
+	}
+	if cred.BaseURL != "" {
+		t.Fatalf("baseURL = %q; a method without base_url_env must keep its fixed endpoint", cred.BaseURL)
+	}
+}
+
 // TestMiMoTokenPlanCredential covers the Token Plan credential method: a key and
 // a user-supplied base URL are stored together, resolution returns both, and the
 // BaseURLEnv override wins over the stored endpoint.

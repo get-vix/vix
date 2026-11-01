@@ -12,7 +12,7 @@
         "auth_scheme": "x-api-key"
       },
       "credential_methods": [
-        { "kind": "api_key", "env_var": "ANTHROPIC_API_KEY", "keyring": "anthropic-api-key" },
+        { "kind": "api_key", "env_var": "ANTHROPIC_API_KEY", "keyring": "anthropic-api-key", "base_url_env": "ANTHROPIC_BASE_URL" },
         { "kind": "api_key", "env_var": "CLAUDE_CODE_OAUTH_TOKEN", "keyring": "claude-code-oauth-token", "header_style": "bearer", "extra_headers_producer": "anthropic_oauth" },
         { "kind": "oauth_token", "login_id": "anthropic", "header_style": "bearer", "extra_headers_producer": "anthropic_oauth" }
       ],

@@ -52,8 +52,8 @@ type AuthMethod struct {
 	// RequiresBaseURL marks a method whose endpoint is supplied by the user and
 	// stored alongside the key (e.g. MiMo Token Plan).
 	RequiresBaseURL bool
-	// BaseURLEnv, when set, names an env var that overrides the stored
-	// user-supplied base URL for a RequiresBaseURL method.
+	// BaseURLEnv, when set, names a variable that overrides the method's
+	// endpoint (see resolveMethodBaseURL for where it is looked up).
 	BaseURLEnv string
 }
 
