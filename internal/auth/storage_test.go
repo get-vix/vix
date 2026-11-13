@@ -142,6 +142,11 @@ func TestFileBackendRoundTrip(t *testing.T) {
 }
 
 func TestSelectDefaultBackend(t *testing.T) {
+	// Isolate HOME: selection now consults features.daz_secrets in
+	// ~/.vix/settings.json, so an ambient opt-in on the developer's machine
+	// must not leak into this test.
+	t.Setenv("HOME", t.TempDir())
+
 	authFile := filepath.Join(t.TempDir(), "auth.json")
 	t.Cleanup(func() { SetAuthFilePath("") })
 	SetAuthFilePath(authFile)
@@ -161,6 +166,52 @@ func TestSelectDefaultBackend(t *testing.T) {
 	}
 	if b.path != authFile {
 		t.Errorf("fileBackend path = %q, want %q", b.path, authFile)
+	}
+}
+
+func TestSelectDefaultBackendOptedIn(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".vix"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	settings := filepath.Join(home, ".vix", "settings.json")
+	if err := os.WriteFile(settings, []byte(`{"features":{"daz_secrets":true}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Opted in: daz-secrets wins even though the OS keychain is usable.
+	keyring.MockInit()
+	if _, ok := selectDefaultBackend().(dazSecretsBackend); !ok {
+		t.Errorf("opted in: expected dazSecretsBackend, got %T", selectDefaultBackend())
+	}
+}
+
+// TestSelectDefaultBackendDefaultUnaffected pins the compatibility promise from
+// review: without the flag, backend selection is exactly what it was before
+// daz-secrets existed (keychain when usable, auth.json when not).
+func TestSelectDefaultBackendDefaultUnaffected(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".vix"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// An unrelated settings file must not disturb the default path.
+	settings := filepath.Join(home, ".vix", "settings.json")
+	if err := os.WriteFile(settings, []byte(`{"theme":"dark"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { SetAuthFilePath("") })
+	SetAuthFilePath(filepath.Join(t.TempDir(), "auth.json"))
+
+	keyring.MockInit()
+	if _, ok := selectDefaultBackend().(keyringBackend); !ok {
+		t.Errorf("flag off: expected keyringBackend, got %T", selectDefaultBackend())
+	}
+	keyring.MockInitWithError(errors.New("no keychain"))
+	if _, ok := selectDefaultBackend().(*fileBackend); !ok {
+		t.Errorf("flag off, keyless: expected *fileBackend, got %T", selectDefaultBackend())
 	}
 }
 
