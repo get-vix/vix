@@ -182,8 +182,16 @@ func (d *dazSecretsStore) Set(user, secret string) error {
 }
 
 func (d *dazSecretsStore) Delete(user string) error {
-	_, err := d.store.Delete(user)
-	return err
+	deleted, err := d.store.Delete(user)
+	if err != nil {
+		return err
+	}
+	if !deleted {
+		// Mirror keyringStore/fileStore: deleting an absent secret reports
+		// ErrCredNotFound so callers can treat it as already-gone.
+		return ErrCredNotFound
+	}
+	return nil
 }
 
 func (d *dazSecretsStore) Backend() string { return BackendDazSecrets }
