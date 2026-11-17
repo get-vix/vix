@@ -23,6 +23,9 @@ charm.land/glamour/v2/styles
 ## explicit; go 1.25.0
 charm.land/lipgloss/v2
 charm.land/lipgloss/v2/table
+# github.com/Mattbusel/llm-prices/go v0.1.1
+## explicit; go 1.21
+github.com/Mattbusel/llm-prices/go
 # github.com/alecthomas/chroma/v2 v2.14.0
 ## explicit; go 1.19
 github.com/alecthomas/chroma/v2
