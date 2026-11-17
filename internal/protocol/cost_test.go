@@ -68,8 +68,8 @@ func TestCalculateCost(t *testing.T) {
 			model:  "openai/gpt-5.1",
 			input:  1_000_000,
 			output: 100_000,
-			// uncached input 1M * 2.5/1M + 100k * 10/1M = 2.5 + 1.0 = 3.5
-			wantMin: 3.49, wantMax: 3.51,
+			// uncached input 1M * 1.25/1M + 100k * 10/1M = 1.25 + 1.0 = 2.25
+			wantMin: 2.24, wantMax: 2.26,
 		},
 		{
 			name:   "openai o3",
@@ -166,6 +166,24 @@ func TestCalculateCost(t *testing.T) {
 				t.Errorf("CalculateCost() = %f, want [%f, %f]", got, tt.wantMin, tt.wantMax)
 			}
 		})
+	}
+}
+
+func TestCalculateCostListPrices(t *testing.T) {
+	cases := []struct {
+		model string
+		want  float64 // 1M uncached input + 1M output
+	}{
+		{"openai/gpt-5", 11.25},
+		{"openai/gpt-5.4", 17.5}, // was priced from the gpt-5 prefix row
+		{"openai/gpt-5.5", 35.0}, // likewise
+		{"anthropic/claude-opus-4-8", 30.0},
+		{"claude-sonnet-4-6", 18.0},
+	}
+	for _, c := range cases {
+		if got := CalculateCost(c.model, 1_000_000, 1_000_000, 0, 0); math.Abs(got-c.want) > 0.001 {
+			t.Errorf("%s: cost = %f, want %f", c.model, got, c.want)
+		}
 	}
 }
 

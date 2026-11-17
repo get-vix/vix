@@ -1,6 +1,10 @@
 package protocol
 
-import "strings"
+import (
+	"strings"
+
+	llmprices "github.com/Mattbusel/llm-prices/go"
+)
 
 type modelPricing struct {
 	prefix     string
@@ -29,9 +33,9 @@ var pricingByProvider = map[string][]modelPricing{
 	},
 	"openai": {
 		// OpenAI has no cache_creation surcharge; cacheWrite=0 everywhere.
-		{"gpt-5.1", 2.50, 10.00, 0, 0.25},
-		{"gpt-5-thinking", 2.50, 10.00, 0, 0.25},
-		{"gpt-5", 2.50, 10.00, 0, 0.25},
+		{"gpt-5.1", 1.25, 10.00, 0, 0.125},
+		{"gpt-5-thinking", 1.25, 10.00, 0, 0.125},
+		{"gpt-5", 1.25, 10.00, 0, 0.125},
 		{"o4-mini", 1.10, 4.40, 0, 0.275},
 		{"o3-mini", 1.10, 4.40, 0, 0.55},
 		{"o3", 2.00, 8.00, 0, 0.50},
@@ -72,7 +76,13 @@ func CalculateCost(model string, input, output, cacheWrite, cacheRead int64) flo
 	}
 
 	var p *modelPricing
+	if lp, ok := listPrice(provider, bare); ok {
+		p = &lp
+	}
 	for i := range table {
+		if p != nil {
+			break
+		}
 		if strings.HasPrefix(bare, table[i].prefix) {
 			p = &table[i]
 			break
@@ -93,6 +103,25 @@ func CalculateCost(model string, input, output, cacheWrite, cacheRead int64) flo
 		float64(cacheRead)*p.cacheRead) / 1_000_000
 
 	return cost
+}
+
+// listPrice looks Anthropic and OpenAI ids up in the llm-prices Go module, whose rows are
+// read from each provider's pricing page and dated, so models released after this table
+// (gpt-5.4, gpt-5.5, ...) are not priced from an older prefix row. Other providers use
+// the table above.
+func listPrice(provider, bare string) (modelPricing, bool) {
+	if provider != "anthropic" && provider != "openai" {
+		return modelPricing{}, false
+	}
+	lp, ok := llmprices.LookupProvider(provider, bare)
+	if !ok || lp.Input == nil || lp.Output == nil {
+		return modelPricing{}, false
+	}
+	p := modelPricing{prefix: bare, input: *lp.Input, output: *lp.Output, cacheWrite: lp.CacheWrite["5m"]}
+	if lp.CacheRead != nil {
+		p.cacheRead = *lp.CacheRead
+	}
+	return p, true
 }
 
 // splitModelSpec returns (provider, bareModelName) from a vix model spec.
